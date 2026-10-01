@@ -1,0 +1,50 @@
+name: Tempo CI
+on:
+  push:
+    branches: [integration]
+  pull_request:
+    branches: [integration]
+permissions:
+  contents: read
+concurrency:
+  group: tempo-${{ github.event.pull_request.head.ref || github.ref_name }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    name: Format, vet, tests, race, build
+    runs-on: [self-hosted, Linux, X64, tempo]
+    timeout-minutes: 15
+    env:
+      HARVEST_TOKEN: ''
+      HARVEST_ACCOUNT_ID: ''
+      TEMPO_CONFIG: /tmp/tempo-ci-config-unused.json
+      GOMAXPROCS: "2"
+      GOFLAGS: "-p=2"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Select pinned Go through mise
+        env:
+          MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}/mise.toml
+        run: |
+          mise install go@1.27.1
+          printf '%s/bin\n' "$(mise where go@1.27.1)" >> "$GITHUB_PATH"
+      - run: go version
+      - name: Format
+        run: test -z "$(gofmt -l cmd internal)"
+      - run: go vet ./...
+      - run: go test -race -coverpkg=./internal/... -coverprofile=coverage.out ./...
+      - name: Build Linux single binary
+        run: go build -trimpath -ldflags="-s -w -X github.com/rbeene/tempo/internal/cli.Version=${GITHUB_SHA}" -o bin/tempo ./cmd/tempo
+      - name: Offline smoke checks and schema drift
+        run: |
+          bin/tempo version
+          bin/tempo help
+          bin/tempo schema > /tmp/tempo-schema.json
+          cmp docs/cli-schema.json /tmp/tempo-schema.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tempo-linux-${{ runner.arch }}
+          path: |
+            bin/tempo
+            coverage.out
+          retention-days: 7
