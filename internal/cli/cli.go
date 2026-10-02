@@ -79,7 +79,7 @@ func exitCode(code string) int {
 func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer, d Dependencies) int {
 	jsonMode := wantsJSON(args) || wantsLocalJSON(args)
 	p, err := parse(args)
-	if strings.HasPrefix(p.command.Name, "activity ") && p.flags["non-interactive"] == "true" {
+	if (strings.HasPrefix(p.command.Name, "activity ") || linkCommand(p.command.Name)) && p.flags["non-interactive"] == "true" {
 		jsonMode = true
 	}
 	var data any
@@ -185,6 +185,24 @@ func validate(p *parsed, now time.Time) error {
 		}
 	}
 	switch n {
+	case "link":
+		if len(p.args) == 0 {
+			return &activity.Error{Code: "input_required", Message: "an explicit project ID is required", Details: map[string]any{"required_fields": []string{"project_id"}}}
+		}
+	case "links show":
+		if len(p.args) > 0 && f["path"] != "" {
+			return problem("validation", "use binding ID or --path, not both")
+		}
+	case "links unlink", "links repair":
+		if f["if-revision"] == "" {
+			return problem("validation", "binding mutation requires --if-revision")
+		}
+		if f["yes"] != "true" {
+			return problem("confirmation_required", "this command requires explicit --yes")
+		}
+		if n == "links repair" && f["path"] == "" {
+			return problem("validation", "repair requires --path")
+		}
 	case "activity event":
 		if f["input-stdin"] != "true" {
 			return problem("validation", "activity event requires --input-stdin")
@@ -262,6 +280,9 @@ func execute(ctx context.Context, p parsed, in io.Reader, d Dependencies) (any, 
 		return map[string]string{"version": Version}, nil
 	}
 
+	if linkCommand(p.command.Name) {
+		return executeLinks(ctx, p, d)
+	}
 	if strings.HasPrefix(p.command.Name, "activity ") {
 		service := d.Activity
 		if service == nil {

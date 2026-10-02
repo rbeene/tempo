@@ -74,16 +74,16 @@ Failure with `--json`, stderr (stdout empty):
 | Exit | Codes / meaning |
 |---|---|
 | 0 | success |
-| 1 | internal, config, keychain |
-| 2 | usage, validation |
+| 1 | internal, config, keychain, state_corrupt, clock_unavailable |
+| 2 | usage, validation, input_required, invalid_transition, unsupported_contract |
 | 3 | auth |
 | 4 | forbidden |
-| 5 | not_found |
-| 6 | conflict, confirmation_required |
+| 5 | not_found, binding_unavailable |
+| 6 | conflict, confirmation_required, attribution_conflict, binding_in_use, revision_conflict, request_conflict, event_conflict, event_gap, clock_conflict, state_busy |
 | 7 | network, api, rate_limit, response |
-| 8 | uncertain_write |
+| 8 | uncertain_write, local_write_unknown |
 
-`retryable` describes a read/rejection that may succeed later; it does not authorize blindly repeating a mutation. Exit 8 always requires read-only reconciliation. Upstream validation bodies are deliberately suppressed because they may echo sensitive input. Check the supplied IDs, project/task assignment, account mode and fields.
+`retryable` describes a read/rejection that may succeed later; it does not authorize blindly repeating a mutation. Remote `uncertain_write` requires read-only reconciliation. For local `local_write_unknown`, inspect local state and retry only the exact same request/event identity, as described below. Upstream validation bodies are deliberately suppressed because they may echo sensitive input. Check the supplied IDs, project/task assignment, account mode and fields.
 
 Examples for an agent (substitute actual discovered IDs):
 
@@ -99,17 +99,38 @@ The complete generated interface is [cli-schema.json](cli-schema.json). `make sc
 
 ## Planned agent activity interface
 
-The [agent activity contract](agent-contracts.md) and [planned operation catalog](agent-operations.json) define `tempo link [PROJECT_ID]`, local `activity` status/recovery, setup, hooks, worker, sync and themes for the agent timing epic. They also define equal CLI/UI access, searchable arrow-key pickers and forced finite JSON output. `activity status` and `activity event --input-stdin` are now shipped as described below. Linking, recovery, setup, hooks, worker, sync, themes and interactive activity views remain planned. The generated schema describes available commands. `timer …` retains its Harvest meaning; `activity …` describes local computer activity.
+The [agent activity contract](agent-contracts.md) and [planned operation catalog](agent-operations.json) define `tempo link [PROJECT_ID]`, local `activity` status/recovery, setup, hooks, worker, sync and themes for the agent timing epic. They also define equal CLI/UI access, searchable arrow-key pickers and forced finite JSON output. `activity status` and `activity event --input-stdin` are now shipped as described below. Explicit linking and link inspection/mutation are also shipped. Recovery, setup pickers, hooks, worker, sync, themes and interactive activity views remain planned. The generated schema describes available commands. `timer …` retains its Harvest meaning; `activity …` describes local computer activity.
 
 ## Local agent activity
 
 | Command | Behavior |
 |---|---|
 | `activity status` | Finite local snapshot; no credentials, configuration reads or network. `--json` and `--non-interactive` emit the versioned envelope. An absent store returns null computer ID, revision `"0"` and empty collections without creating files. |
-| `activity event --input-stdin` | Accept exactly one normalized v1 lifecycle JSON event, at most 16KiB. Adapter/internal operation; no prompts or arbitrary attribution fields. Requires initialized identity and a validated binding resolver for tracked work; otherwise returns `untracked` without starting a timer. |
+| `activity event --input-stdin` | Accept exactly one normalized v1 lifecycle JSON event, at most 16KiB. Adapter/internal operation; no prompts or arbitrary attribution fields. Uses the persisted computer identity and a linked path or binding ID/revision for tracked work; an unlinked location returns `untracked` without starting a timer. |
 
-Local activity is independent of Harvest `timer` commands. `TEMPO_STATE` selects an absolute private state-file path for isolated operation; default is the OS user config directory under `tempo/activity-state.json`. No public fake-binding/init command is provided. Linking and supported host bridges are delivered in their dependent tickets; this engine release alone does not install or automatically capture agent callbacks. Interactive watch and recovery commands are not yet shipped.
+Local activity is independent of Harvest `timer` commands. `TEMPO_STATE` selects an absolute private state-file path for isolated operation; default is the OS user config directory under `tempo/activity-state.json`. No public fake-binding/init command is provided. Explicit linking is available below; supported host bridges remain separate, and these commands do not install or automatically capture agent callbacks. Interactive watch and recovery commands are not yet shipped.
 
 Every accepted event has stable source/actor/generation/sequence identity. Retry the exact same event after an uncertain local write; a conflicting payload returns `event_conflict`. `state_busy` is retryable; `local_write_unknown` exits 8 with uncertainty set. State and clock failures use safe errors, never raw payloads. Binding, ordering and attribution conflicts use exit 6; unsupported contract/input/transition uses exit 2. Local `--non-interactive` errors use one stderr JSON envelope and empty stdout.
 
 Working actors contribute to one union per computer/account/project; separate projects run concurrently. Waits close only that actor's segment. Parent termination never stops a child. Reliable closed unions appear with queued counts, but this slice makes no Harvest requests and has no active synchronization worker. Uncertainties remain separate and cannot become queued time through an ordinary later stop or resume.
+
+## Project and directory links
+
+| Command | Behavior |
+|---|---|
+| `link PROJECT_ID --task ID --timezone IANA [--path PATH]` | Validate accessible account, authenticated current user and active assigned project/task, then persist a nonsecret binding. Path defaults to cwd. Account precedence: `--account`, environment, saved configuration. |
+| `links list` | List live local bindings, their scope, attribution, revision and attached actors, without credentials or network. |
+| `links show [BINDING_ID] [--path PATH]` | Inspect one binding by UUID or path, never both; defaults to cwd. Missing mapping returns `not_found`; a missing stored locator returns `binding_unavailable`. |
+| `link PROJECT_ID … --if-revision REV` | Update a mapping using its current revision. Without a revision, a different mapping conflicts; an identical mapping is a no-op. |
+| `links unlink BINDING_ID --if-revision REV --yes` | Remove the live mapping and retain a tombstone and all historical attribution. |
+| `links repair BINDING_ID --path PATH --if-revision REV --yes` | Explicitly replace a moved locator while preserving binding identity/attribution. The new location must have the same scope kind and no conflicting binding. |
+
+Inside Git, `link` applies to the **entire local repository and all its worktrees**. Results show `kind: "repository"` and its canonical absolute Git common-directory locator. A subdirectory or symlink resolves to that same repository; remote URL, project name and checkout basename are never identities. Separate clones, independent nested repositories and submodules require their own explicit links. In an ordinary directory, `kind: "directory"` applies to descendants: the nearest linked ancestor wins, and any Git repository boundary stops inheritance. Git discovery failures never fall back to ordinary-directory scope. Git must be installed for discovery; inherited Git path/configuration overrides are ignored.
+
+`--task` may be omitted only when the existing binding has a still-active saved task for the same account/project or exactly one active assigned task is available. `--timezone` may use a previously verified choice on that binding; there is no machine-timezone fallback. Missing project or unresolved choices return `input_required` with safe required field names. Interactive selection arrives with guided setup; current commands never prompt.
+
+All local mutations accept `--request-id UUID`. The CLI generates one when omitted; automation should supply and retain it. After `local_write_unknown` (exit 8), use the same arguments and request ID from the error details: an exact replay returns the original result after checking local durability, even if the original path or saved credentials/account selection changed. Changed explicit intent with the same ID returns `request_conflict`. This is local replay, never permission to retry a Harvest write.
+
+Relink, unlink and repair reject `binding_in_use` while working, waiting or stale actors remain attached. Identical linking remains a no-op. Compatible idle bindings for the same account/project must agree on user, task and timezone; disagreement returns `attribution_conflict`. Historical actors, segments, uncertainties and intervals keep their captured attribution after later permitted changes. Existing-generation stop/wait events use that history, regardless of their current directory.
+
+`links list/show/unlink/repair` use only local state. Link performs read-only Harvest validation through current-user assignments with complete pagination, without administrator project/task catalogs. New `link`/`links` commands with `--non-interactive` always emit one finite JSON envelope; failures use stderr and leave stdout empty. No host hooks or background sync worker are installed by linking.

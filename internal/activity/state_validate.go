@@ -11,7 +11,7 @@ func validBinding(b BindingSnapshot) bool {
 	return validUUID(b.ID) && ok && n > 0 && validAttribution(b.Attribution)
 }
 func validState(st *state) bool {
-	if st.SchemaVersion != stateVersion || !validUUID(st.ComputerID) {
+	if st.SchemaVersion != stateVersion || !validUUID(st.ComputerID) || !validBindingState(st) {
 		return false
 	}
 	revision, ok := counter(st.Revision)
