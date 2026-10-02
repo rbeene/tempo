@@ -73,6 +73,64 @@ class HarnessTests(unittest.TestCase):
             with self.subTest(change=new), self.assertRaises(smoke.FixtureFailure):
                 smoke.review_hook_screen(screen.replace(old, new), "SessionStart", "/tmp/native/tempo hook codex --input-stdin", "~/.codex/hooks.json")
 
+    def test_inventory_waits_for_complete_validated_row_before_navigation(self):
+        class ReachedNextRow(Exception): pass
+        class Terminal:
+            def __init__(self, rows):
+                self.screens = iter(["gpt-6.1-sol", "Lifecycle hooks from config and enabled plugins.", *rows])
+                self.sent = []
+            def until(self, predicate, category, **_):
+                for screen in self.screens:
+                    if predicate(screen): return screen
+                raise smoke.FixtureFailure(category)
+            def command(self, value): self.asserted_command = value
+            def send(self, value):
+                self.sent.append(value)
+                if value == b"\x1b[B": raise ReachedNextRow()
+        with mock.patch.object(smoke, "EVENT_ORDER", ("PreToolUse",)):
+            good = Terminal(["› PreToolUse ", "› PreToolUse 1 0 1 \n"])
+            with self.assertRaises(ReachedNextRow):
+                smoke.normal_trust(good, Path("/tmp/project"), "unused", [])
+            self.assertEqual(good.sent, [b"\x1b[H", b"\x1b[B"])
+            for row in ("› PreToolUse ", "› PreToolUse 2 0 2 \n", "› PreToolUse 1 0 1 \nIssues"):
+                bad = Terminal([row])
+                with self.assertRaises(smoke.FixtureFailure):
+                    smoke.normal_trust(bad, Path("/tmp/project"), "unused", [])
+                self.assertEqual(bad.sent, [b"\x1b[H"])
+
+    def test_details_wait_for_entire_validated_definition_before_trust(self):
+        class ReachedTrust(Exception): pass
+        command = "/tmp/native/tempo hook codex --input-stdin"
+        full = "PreToolUse hooks\n› [!] Hook 1 · new\nEvent: PreToolUse\nSource: User - ~/.codex/hooks.json\nCommand: " + command + "\nMode: Sync\nTimeout: 2s\nTrust: New hook - review required\nt trust · esc back"
+        class Terminal:
+            def __init__(self, details):
+                self.screens = iter(["gpt-6.1-sol", "Lifecycle hooks from config and enabled plugins.",
+                                     "› PreToolUse 1 0 1 \n", "› PreToolUse 1 0 1 \n", *details])
+                self.sent = []
+            def until(self, predicate, category, **_):
+                for screen in self.screens:
+                    if predicate(screen): return screen
+                raise smoke.FixtureFailure(category)
+            def command(self, _): pass
+            def send(self, value):
+                self.sent.append(value)
+                if value == b"t": raise ReachedTrust()
+        with mock.patch.object(smoke, "EVENT_ORDER", ("PreToolUse",)):
+            good = Terminal(["PreToolUse hooks\nTrust", full])
+            with self.assertRaises(ReachedTrust):
+                smoke.normal_trust(good, Path("/tmp/project"), command, [])
+            self.assertEqual(good.sent[-1], b"t")
+            for screen in ("PreToolUse hooks\nTrust", full.replace("Mode: Sync", "Mode: Async"), full.replace(command, "/tmp/other")):
+                bad = Terminal([screen])
+                with self.assertRaises(smoke.FixtureFailure):
+                    smoke.normal_trust(bad, Path("/tmp/project"), command, [])
+                self.assertNotIn(b"t", bad.sent)
+            unexpected = Terminal([full])
+            with mock.patch.object(smoke, "review_hook_screen", side_effect=RuntimeError("synthetic")):
+                with self.assertRaises(RuntimeError):
+                    smoke.normal_trust(unexpected, Path("/tmp/project"), command, [])
+            self.assertNotIn(b"t", unexpected.sent)
+
     def test_screen_redraw_does_not_leave_old_trust_evidence(self):
         screen = smoke.Screen(6, 80)
         screen.feed(b"\x1b[2J\x1b[HCommand: expected\r\nTrust: New hook - review required")

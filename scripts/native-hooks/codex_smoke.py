@@ -679,7 +679,9 @@ def normal_trust(terminal, repo, command, trusted_events, probe=None, startup_pr
     terminal.send(b"\x1b[H")
     for event in EVENT_ORDER:
         expected = 1 if event in EVENTS else 0
-        screen = terminal.until(lambda s: re.search(r"›\s+" + event + r"\s", s), "hook_inventory_navigation")
+        screen = terminal.until(lambda s: "Issues" not in s and re.search(
+            r"›\s+" + event + r"\s+" + str(expected) + r"\s+0\s+" + str(expected) + r"\s", s),
+            "hook_inventory_navigation")
         require("Issues" not in screen, "hook_inventory_issues")
         require(re.search(r"›\s+" + event + r"\s+" + str(expected) + r"\s+0\s+" + str(expected) + r"\s", screen), "hook_inventory_mismatch")
         terminal.send(b"\x1b[B")
@@ -688,7 +690,13 @@ def normal_trust(terminal, repo, command, trusted_events, probe=None, startup_pr
         terminal.until(lambda s: re.search(r"›\s+" + event + r"\s", s), "hook_inventory_navigation")
         if event in EVENTS:
             terminal.send(b"\r")
-            screen = terminal.until(lambda s: event + " hooks" in s and "Trust" in s, "hook_details_unavailable")
+            def details_ready(screen):
+                try:
+                    review_hook_screen(screen, event, command, "~/.codex/hooks.json")
+                except FixtureFailure:
+                    return False
+                return True
+            screen = terminal.until(details_ready, "hook_details_unavailable")
             review_hook_screen(screen, event, command, "~/.codex/hooks.json")
             terminal.send(b"t")
             terminal.until(lambda s: event + " hooks" in s and re.search(r"Trust\s+Trusted", s) and "[x] Hook 1" in s, "hook_trust_failed")
