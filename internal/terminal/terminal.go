@@ -43,6 +43,22 @@ type Session struct {
 	resize                      <-chan os.Signal
 	stopSignals                 func()
 	pending                     *byte
+	styler                      Styler
+	styled                      bool
+}
+
+// SetStyler configures semantic spans for finite prompts owned by this session.
+// Call before presenting prompts, on their sole presentation goroutine.
+func (s *Session) SetStyler(style Styler) { s.styler = style }
+
+func (s *Session) paint(role Role, text string) string {
+	text = Sanitize(text)
+	if s.styler == nil {
+		return text
+	}
+	span := s.styler.Paint(role, text)
+	s.styled = s.styled || span != text
+	return span
 }
 
 func Eligible(in io.Reader, out io.Writer) bool {
@@ -94,10 +110,16 @@ func (s *Session) Close() error {
 			s.cancel(&ExitError{Code: 0})
 			<-s.stopped
 		}
-		if s.screen || s.paste {
+		if s.screen || s.paste || s.styled {
 			// Restoration must remain possible after input or action cancellation.
 			ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
-			restore := "\x1b[?2004l"
+			restore := ""
+			if s.paste || s.screen {
+				restore = "\x1b[?2004l"
+			}
+			if s.styled && !s.screen {
+				restore = "\x1b[0m" + restore
+			}
 			if s.screen {
 				restore = "\x1b[0m" + restore + "\x1b[?25h\x1b[?1049l"
 			}
@@ -272,12 +294,12 @@ func (s *Session) readKey(ctx context.Context) (string, error) {
 	}
 	return "text:" + string(data), nil
 }
-func (s *Session) render(ctx context.Context, title string, lines []string) error {
+func (s *Session) render(ctx context.Context, title string, titleRole Role, lines []string) error {
 	var b strings.Builder
 	if s.lines > 0 {
 		fmt.Fprintf(&b, "\x1b[%dA\r\x1b[J", s.lines)
 	}
-	b.WriteString(Sanitize(title) + "\r\n")
+	b.WriteString(s.paint(titleRole, title) + "\r\n")
 	for _, line := range lines {
 		b.WriteString(line + "\r\n")
 	}
@@ -285,6 +307,10 @@ func (s *Session) render(ctx context.Context, title string, lines []string) erro
 	return s.write(ctx, b.String())
 }
 func (s *Session) Choose(ctx context.Context, title string, choices []Choice) (string, error) {
+	return s.choose(ctx, title, choices, RoleAccent)
+}
+
+func (s *Session) choose(ctx context.Context, title string, choices []Choice, titleRole Role) (string, error) {
 	if err := s.ensurePaste(ctx); err != nil {
 		return "", err
 	}
@@ -301,9 +327,9 @@ func (s *Session) Choose(ctx context.Context, title string, choices []Choice) (s
 		if selected >= len(filtered) {
 			selected = 0
 		}
-		lines := []string{"Search: " + query + "  (↑/↓ Enter select; Escape cancel)"}
+		lines := []string{s.paint(RoleMuted, "Search: "+query) + s.paint(RoleKey, "  (↑/↓ Enter select; Escape cancel)")}
 		if len(filtered) == 0 {
-			lines = append(lines, "No matches")
+			lines = append(lines, s.paint(RoleInfo, "No matches"))
 		}
 		start := 0
 		if selected > 7 {
@@ -315,12 +341,14 @@ func (s *Session) Choose(ctx context.Context, title string, choices []Choice) (s
 		}
 		for i := start; i < end; i++ {
 			prefix := "  "
+			role := RoleText
 			if i == selected {
 				prefix = "> "
+				role = RoleSelection
 			}
-			lines = append(lines, prefix+Sanitize(filtered[i].Label))
+			lines = append(lines, s.paint(role, prefix+filtered[i].Label))
 		}
-		if e := s.render(ctx, title, lines); e != nil {
+		if e := s.render(ctx, title, titleRole, lines); e != nil {
 			return "", e
 		}
 		k, e := s.key(ctx)
@@ -365,11 +393,11 @@ func (s *Session) input(ctx context.Context, title, defaultValue string, secret 
 	defer func() { s.lines = 0 }()
 	data := []byte{}
 	defer func() { clear(data) }()
-	prompt := Sanitize(title)
+	prompt := s.paint(RoleAccent, title)
 	if defaultValue != "" && !secret {
-		prompt += " [" + Sanitize(defaultValue) + "]"
+		prompt += s.paint(RoleMuted, " ["+defaultValue+"]")
 	}
-	if e := s.write(ctx, prompt+": "); e != nil {
+	if e := s.write(ctx, prompt+s.paint(RoleText, ": ")); e != nil {
 		return nil, e
 	}
 	for {
@@ -404,7 +432,7 @@ func (s *Session) input(ctx context.Context, title, defaultValue string, secret 
 				}
 				data = append(data, v...)
 				if !secret {
-					if e = s.write(ctx, v); e != nil {
+					if e = s.write(ctx, s.paint(RoleText, v)); e != nil {
 						return nil, e
 					}
 				}
@@ -418,7 +446,7 @@ func (s *Session) Text(c context.Context, t, d string) (string, error) {
 }
 func (s *Session) Secret(c context.Context, t string) ([]byte, error) { return s.input(c, t, "", true) }
 func (s *Session) Confirm(c context.Context, t string) (bool, error) {
-	id, e := s.Choose(c, t, []Choice{{"no", "Cancel"}, {"yes", "Confirm"}})
+	id, e := s.choose(c, t, []Choice{{"no", "Cancel"}, {"yes", "Confirm"}}, RoleWarning)
 	return id == "yes", e
 }
 

@@ -10,6 +10,7 @@ import (
 	"github.com/rbeene/tempo/internal/auth"
 	"github.com/rbeene/tempo/internal/setup"
 	"github.com/rbeene/tempo/internal/terminal"
+	"github.com/rbeene/tempo/internal/themes"
 )
 
 // Screen is the existing terminal owner's presentation and event boundary.
@@ -28,16 +29,18 @@ type SnapshotReader interface {
 }
 
 type Options struct {
-	Styler      terminal.Styler
-	Views       *ReadViews
-	Links       *LinkActions
-	Activity    *ActivityActions
-	Auth        *AuthActions
-	Hooks       *HookActions
-	Worker      *WorkerActions
-	Sync        *SyncActions
-	Setup       *SetupActions
-	Diagnostics func(context.Context, bool) (setup.Diagnostics, error)
+	Appearance   *themes.Service
+	Capabilities themes.Capabilities
+	Styler       terminal.Styler
+	Views        *ReadViews
+	Links        *LinkActions
+	Activity     *ActivityActions
+	Auth         *AuthActions
+	Hooks        *HookActions
+	Worker       *WorkerActions
+	Sync         *SyncActions
+	Setup        *SetupActions
+	Diagnostics  func(context.Context, bool) (setup.Diagnostics, error)
 	// Outcome callbacks run only after owned work joins and Close has attempted
 	// terminal restoration. They must report safe shared observations only.
 	OnAuthResult         func(string, auth.Result, error)
