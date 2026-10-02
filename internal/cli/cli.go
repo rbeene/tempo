@@ -18,6 +18,7 @@ import (
 	"github.com/rbeene/tempo/internal/hookstate"
 	"github.com/rbeene/tempo/internal/setup"
 	"github.com/rbeene/tempo/internal/terminal"
+	"github.com/rbeene/tempo/internal/themes"
 	"github.com/rbeene/tempo/internal/ui"
 	"github.com/rbeene/tempo/internal/worker"
 )
@@ -26,6 +27,8 @@ var Version = "dev"
 
 type Dependencies struct {
 	Hooks            *hookstate.Service
+	Themes           *themes.Service
+	OutputTTY        func(io.Writer) bool
 	Worker           *worker.Service
 	Auth             *auth.Service
 	Prompter         terminal.Prompter
@@ -52,6 +55,10 @@ func safeError(err error) *cliError {
 	var ce *cliError
 	if errors.As(err, &ce) {
 		return ce
+	}
+	var te *themes.Error
+	if errors.As(err, &te) {
+		return &cliError{Code: te.Code, Message: te.Message, Retryable: te.Retryable, Uncertain: te.Uncertain, Details: te.Details}
 	}
 	var ae *activity.Error
 	if errors.As(err, &ae) {
@@ -191,6 +198,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		}
 	}
 	if err != nil {
+		presentationFailed := false
 		completed := []setup.Step{}
 		if status, ok := data.(setup.Status); ok {
 			for _, step := range status.Steps {
@@ -200,8 +208,12 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 			}
 		}
 		if len(completed) > 0 && !jsonMode {
+			p := presentation(ctx, d, errOut, errOut)
 			for _, step := range completed {
-				fmt.Fprintf(errOut, "tempo: completed %s: %s\n", step.Action, step.SafeMessage)
+				p.line(terminal.RoleSuccess, fmt.Sprintf("tempo: completed %s: %s", step.Action, step.SafeMessage))
+			}
+			if p.close() != nil {
+				presentationFailed = true
 			}
 		}
 		var ended *terminal.ExitError
@@ -227,7 +239,14 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		if jsonMode {
 			_ = json.NewEncoder(errOut).Encode(map[string]any{"schema_version": 1, "error": e})
 		} else {
-			fmt.Fprintf(errOut, "tempo: %s: %s\n", e.Code, e.Message)
+			p := presentation(ctx, d, errOut, errOut)
+			p.line(terminal.RoleError, fmt.Sprintf("tempo: %s: %s", e.Code, e.Message))
+			if p.close() != nil {
+				presentationFailed = true
+			}
+		}
+		if presentationFailed && !e.Uncertain {
+			return 1
 		}
 		return exitCode(e.Code)
 	}
@@ -241,11 +260,31 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		return 0
 	}
 	if p.command.Name == "help" {
-		printHelp(out)
+		p := presentation(ctx, d, out, errOut)
+		printHumanHelp(&p)
+		if p.close() != nil {
+			return 1
+		}
 		return 0
 	}
 	if p.command.Name == "version" {
-		fmt.Fprintln(out, "tempo "+Version)
+		p := presentation(ctx, d, out, errOut)
+		p.line(terminal.RoleAccent, "tempo "+Version)
+		if p.close() != nil {
+			return 1
+		}
+		return 0
+	}
+	if themeCommand(p.command.Name) {
+		id := ""
+		if result, ok := data.(themes.ThemeResult); ok {
+			id = result.Theme.ID
+		}
+		p := themePresentation(ctx, d, out, errOut, id)
+		printThemes(&p, data)
+		if p.close() != nil {
+			return 1
+		}
 		return 0
 	}
 	enc := json.NewEncoder(out)
@@ -280,6 +319,9 @@ func validate(p *parsed, now time.Time) error {
 	n := p.command.Name
 	if hooksCommand(n) {
 		return validateHooksCLI(p)
+	}
+	if themeCommand(n) {
+		return validateThemeCLI(p)
 	}
 	if workerCommand(n) {
 		return validateWorkerCLI(p)
@@ -419,6 +461,9 @@ type session struct {
 func execute(ctx context.Context, p parsed, in io.Reader, d Dependencies) (any, error) {
 	if hooksCommand(p.command.Name) {
 		return executeHooks(ctx, p, d)
+	}
+	if themeCommand(p.command.Name) {
+		return executeThemes(ctx, p, d)
 	}
 	if workerCommand(p.command.Name) {
 		return executeWorker(ctx, p, d)

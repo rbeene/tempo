@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/rbeene/tempo/internal/identity"
+	"github.com/rbeene/tempo/internal/themes"
 )
 
 type parsed struct {
@@ -100,10 +101,16 @@ func parse(args []string) (parsed, error) {
 			}
 		}
 	}
-	if p.command.Positionals == "" && len(p.args) != 0 || (p.command.Positionals == "ID" || p.command.Positionals == "UUID") && len(p.args) != 1 || (p.command.Positionals == "[ID]" || p.command.Positionals == "[UUID]") && len(p.args) > 1 {
+	if p.command.Positionals == "" && len(p.args) != 0 || (p.command.Positionals == "ID" || p.command.Positionals == "UUID" || p.command.Positionals == "THEME") && len(p.args) != 1 || (p.command.Positionals == "[ID]" || p.command.Positionals == "[UUID]" || p.command.Positionals == "[THEME]") && len(p.args) > 1 {
 		return p, problem("usage", "invalid arguments for "+name)
 	}
 	for _, id := range p.args {
+		if strings.Contains(p.command.Positionals, "THEME") {
+			if _, err := themes.Lookup(id); err != nil {
+				return p, problem("validation", "unknown appearance theme")
+			}
+			continue
+		}
 		if strings.Contains(p.command.Positionals, "UUID") {
 			if !uuidPattern.MatchString(id) {
 				return p, problem("validation", "ID must be a canonical UUID")
@@ -245,5 +252,5 @@ func wantsLocalJSON(args []string, redirected bool) bool {
 			first = token
 		}
 	}
-	return (first == "" || first == "ui" || first == "hooks" || first == "worker" || first == "sync" || first == "activity" || first == "link" || first == "links" || first == "setup" || first == "doctor") && forced || (first == "" || first == "ui" || first == "hooks" || first == "worker" || first == "sync" || first == "activity" || first == "setup" || first == "doctor" || first == "link") && redirected
+	return (first == "" || first == "ui" || first == "hooks" || first == "themes" || first == "worker" || first == "sync" || first == "activity" || first == "link" || first == "links" || first == "setup" || first == "doctor") && forced || (first == "" || first == "ui" || first == "hooks" || first == "themes" || first == "worker" || first == "sync" || first == "activity" || first == "setup" || first == "doctor" || first == "link") && redirected
 }

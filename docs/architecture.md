@@ -30,6 +30,26 @@ Public PR verification uses one ephemeral GitHub-hosted Ubuntu job, read-only to
 
 The [agent activity contract](agent-contracts.md) specifies the next implementation slices: one local union timer per computer/account/project, durable actor history and uncertainty, immutable attribution, and shared CLI/UI actions. Its [operation catalog](agent-operations.json) and [acceptance vectors](agent-acceptance.json) are design contracts, not shipped features. They preserve the existing Harvest provider and direct time/timer commands. The finite foreground sync service/CLI, guided setup/link lifetimes and optional worker are implemented. The terminal dashboard reads authoritative project timers and exposes explicit link, activity recovery, authentication, Sync, Hook, Worker, diagnostic and guided Setup controls through the same shared services. Opening or refreshing the dashboard performs only bounded local activity reads. A single terminal owner and private prompt broker handle forms; retained partial or uncertain operation outcomes are reported after owned work joins and terminal restoration is attempted.
 
+## Local appearance
+
+Appearance lives in `internal/themes.Service`, an independent private preferences
+store under the OS config directory (`tempo/preferences.json`, overridable with
+`TEMPO_PREFERENCES`). Reads and previews do not initialize files or activity
+identity. A short advisory lock, complete retained request ledger and atomic
+file/directory synchronization provide scoped revision checks and exact historical
+replay. Preference revisions count selection changes; transaction revisions count
+first-admitted successful requests including no-ops. Reset retains both counters
+and all receipts. A same-ID retry re-synchronizes uncertain durability without
+reapplying a later-replaced selection. Malformed/newer/unsafe files are preserved.
+The bounded 4 MiB store refuses new admissions rather than evicting receipts.
+
+`terminal.Styler` formats flat sanitized spans with immutable semantic roles.
+Named palettes restore base foreground/background after every span. Capability
+values and per-destination TTY evidence determine color mode; no terminal queries,
+OSC commands, global palette mutation or runtime download occur. Machine JSON
+bypasses presentation preferences. CLI calls the typed theme service directly;
+the planned Appearance view will share this service and local preview styling.
+
 ## Durable local activity
 
 `internal/activity.Service` is the shared local operation boundary. `activity status` and normalized `activity event` execute before account configuration, credential stores or Harvest providers. Construction is lazy. The default private state is the OS user config directory under `tempo/activity-state.json`; `TEMPO_STATE` or an injected service isolates tests. Explicit linking initializes computer identity and validated binding snapshots; unlinked ingress is a no-op. Actor attribution is fixed on first work and later callbacks never re-resolve their current directory.

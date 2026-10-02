@@ -4,6 +4,41 @@ All commands accept `--json`, `--account ID`, `--yes`, and `--non-interactive` b
 
 IDs must be canonical positive decimal integers without leading zeroes, within signed 64-bit range. Account precedence is command flag, `HARVEST_ACCOUNT_ID`, then saved config. Token precedence is `HARVEST_TOKEN`, then macOS Keychain. `TEMPO_CONFIG` overrides the config file path; the default is the OS user config directory under `tempo/config.json` (macOS: `~/Library/Application Support/tempo/config.json`).
 
+## Appearance
+
+| Command | Behavior |
+|---|---|
+| `themes list` | List the four built-in palettes, saved selection and preference revision. |
+| `themes show [THEME]` | Inspect the saved theme, or preview an explicit ID without saving. `selected` reflects the saved choice. |
+| `themes set THEME [--if-revision REV] [--request-id UUID]` | Save `terminal-default`, `tokyo-night`, `gruvbox` or `catppuccin`. Omitted revision allows last-writer selection. |
+| `themes reset [--if-revision REV] [--request-id UUID]` | Select terminal default while retaining receipts and revision counters. |
+
+Appearance commands use only a separate private preference store: the OS user
+config directory under `tempo/preferences.json`, or `TEMPO_PREFERENCES` for an
+isolated path. They reject `--account` and `--yes`, never initialize activity
+identity or access credentials, and return a finite JSON envelope when redirected,
+with `--json` or with `--non-interactive`. List and preview do not create files.
+
+The preference revision advances only when the selected ID changes. For these
+two mutations only, `MutationResult.snapshot_revision` is the independent
+preference transaction revision: every first-admitted successful request advances
+it once, including a selection no-op. `entity_revision` is the resulting preference
+revision, `changed` means selection change and `affected_ids` is `[]`. Neither
+counter is comparable to an activity revision.
+
+Keep the exact input and request ID after `local_write_unknown` (exit 8). Exact
+replay checks durability and returns the historical result without reapplying the
+selection; reread `themes show` for the current choice. Known request identity is
+checked before revision. Omitted and explicit revisions are distinct intents;
+Reset is equivalent to Set terminal-default. A revision conflict requires a fresh
+read and reviewed choice, not substitution of a new revision into the same request.
+
+Terminal default inherits the emulator's colors. Named palettes use truecolor,
+fixed xterm 256-color mappings or semantic ANSI16 colors when supported. A
+nonempty `NO_COLOR`, unknown/dumb terminal or redirected destination disables
+styling. Machine JSON and schema bypass appearance lookup and remain uncolored.
+See [theme-palettes.md](theme-palettes.md) for sources and color adaptations.
+
 ## Authentication and configuration
 
 | Command | Behavior |
@@ -100,7 +135,7 @@ The complete generated interface is [cli-schema.json](cli-schema.json). `make sc
 
 ## Agent activity interface
 
-The [agent activity contract](agent-contracts.md) and [operation catalog](agent-operations.json) define `tempo link [PROJECT_ID]`, local `activity` status/recovery, setup, hooks, worker, sync and themes for the agent timing epic. They also define equal CLI/UI access, searchable arrow-key pickers and forced finite JSON output. `activity status` and `activity event --input-stdin` are now shipped as described below. Explicit linking, link inspection/mutation and local recovery are also shipped. Guided setup, project/task pickers and finite doctor diagnostics are shipped. Automatic sync and the optional worker are shipped below. Native hook management is available below. The activity dashboard provides timers, details, links, activity recovery, secure authentication, reviewed hook installation, worker controls, diagnostics and the shared guided Setup wizard. Sync controls provide configuration, bounded upload passes, reconciliation, reviewed resolution and pause/resume. Themes remain planned for #17. The generated schema describes available commands. `timer …` retains its Harvest meaning; `activity …` describes local computer activity.
+The [agent activity contract](agent-contracts.md) and [operation catalog](agent-operations.json) define `tempo link [PROJECT_ID]`, local `activity` status/recovery, setup, hooks, worker, sync and themes for the agent timing epic. They also define equal CLI/UI access, searchable arrow-key pickers and forced finite JSON output. `activity status` and `activity event --input-stdin` are now shipped as described below. Explicit linking, link inspection/mutation and local recovery are also shipped. Guided setup, project/task pickers and finite doctor diagnostics are shipped. Automatic sync and the optional worker are shipped below. Native hook management is available below. The activity dashboard provides timers, details, links, activity recovery, secure authentication, reviewed hook installation, worker controls, diagnostics and the shared guided Setup wizard. Sync controls provide configuration, bounded upload passes, reconciliation, reviewed resolution and pause/resume. Finite theme commands are available below; dashboard Appearance integration follows #17. The generated schema describes available commands. `timer …` retains its Harvest meaning; `activity …` describes local computer activity.
 
 ## Local agent activity
 
