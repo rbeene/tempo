@@ -1,0 +1,32 @@
+version: 2
+project_name: tempo
+dist: dist/linux
+builds:
+  - id: linux
+    main: ./cmd/tempo
+    binary: tempo
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X github.com/rbeene/tempo/internal/cli.Version={{.Version}}
+archives:
+  - id: linux
+    formats: [tar.gz]
+    name_template: 'tempo_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    files: [README.md, docs/commands.md]
+checksum:
+  name_template: checksums-linux.txt
+snapshot:
+  version_template: '{{ incpatch .Version }}-next-{{ .ShortCommit }}'
+changelog:
+  disable: true
+release:
+  github:
+    owner: rbeene
+    name: tempo
+  draft: true
+  extra_files:
+    - glob: release-macos/tempo_*_darwin_*.tar.gz
+    - glob: release-macos/checksums-darwin.txt

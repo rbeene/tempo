@@ -1,0 +1,27 @@
+# Run on macOS: the native Keychain bridge needs Apple's SDK and cgo.
+version: 2
+project_name: tempo
+dist: dist/macos
+builds:
+  - id: macos
+    main: ./cmd/tempo
+    binary: tempo
+    env: [CGO_ENABLED=1]
+    goos: [darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X github.com/rbeene/tempo/internal/cli.Version={{.Version}}
+archives:
+  - id: macos
+    formats: [tar.gz]
+    name_template: 'tempo_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    files: [README.md, docs/commands.md]
+checksum:
+  name_template: checksums-darwin.txt
+snapshot:
+  version_template: '{{ incpatch .Version }}-next-{{ .ShortCommit }}'
+changelog:
+  disable: true
+release:
+  disable: true

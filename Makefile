@@ -16,3 +16,7 @@ schema: build
 
 clean:
 	rm -rf bin coverage.out
+
+.PHONY: snapshot
+snapshot:
+	goreleaser release --snapshot --clean --skip=publish --parallelism=1

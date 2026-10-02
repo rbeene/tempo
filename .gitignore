@@ -3,3 +3,4 @@
 /coverage.out
 .agent-handoffs/
 .DS_Store
+release-macos/

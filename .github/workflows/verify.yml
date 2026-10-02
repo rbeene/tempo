@@ -1,4 +1,4 @@
-name: Tempo CI
+name: Tempo verification
 on:
   push:
     branches: [integration]
@@ -12,7 +12,7 @@ concurrency:
 jobs:
   verify:
     name: Format, vet, tests, race, build
-    runs-on: [self-hosted, Linux, X64, tempo]
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
       HARVEST_TOKEN: ''
@@ -22,17 +22,28 @@ jobs:
       GOFLAGS: "-p=2"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Select pinned Go through mise
-        env:
-          MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}/mise.toml
-        run: |
-          mise install go@1.27.1
-          printf '%s/bin\n' "$(mise where go@1.27.1)" >> "$GITHUB_PATH"
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: false
       - run: go version
       - name: Format
         run: test -z "$(gofmt -l cmd internal)"
       - run: go vet ./...
       - run: go test -race -coverpkg=./internal/... -coverprofile=coverage.out ./...
+      - run: sh scripts/test-install.sh
+      - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
+        with:
+          version: v2.18.2
+          install-only: true
+      - name: Validate release configurations and Linux snapshot
+        run: |
+          goreleaser check
+          goreleaser check --config .goreleaser.macos.yaml
+          goreleaser release --snapshot --clean --skip=publish --parallelism=1
       - name: Build Linux single binary
         run: go build -trimpath -ldflags="-s -w -X github.com/rbeene/tempo/internal/cli.Version=${GITHUB_SHA}" -o bin/tempo ./cmd/tempo
       - name: Offline smoke checks and schema drift

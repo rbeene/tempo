@@ -1,6 +1,6 @@
 # Verification evidence
 
-2026-10-01, Robert's Mac Studio (Apple Silicon). Personal owner verified with `gh api user`: `rbeene` / Robert Beene. Repository is private: `rbeene/tempo`. Integration checkout: `/Users/rbeene/src/beene/Tempo`; implementation is in a separate issue-linked feature worktree, branch `feature/1-harvest-cli`.
+Initial implementation verification: 2026-10-01, Apple Silicon macOS. The initial private repository is now public, with a separate public-distribution change described in [distribution.md](distribution.md). Historical measurements below describe the original CLI build.
 
 ## Local checks
 
@@ -37,8 +37,16 @@ Compiled native Go 1.27.1 binary; ten warmups, then 100 new-process launches per
 
 ## CI and remaining acceptance
 
-CI is one lightweight Linux job on Titan with no matrix. It runs on pull requests and integration pushes, avoiding duplicate feature-push/PR jobs. At first there were no repository runners; Robert subsequently explicitly authorized creating one. The new repository-scoped runner is `titan-tempo-1`, service `tempo-runner.service`, directory `/home/rbeene/gh-runners/tempo-1`, labels `self-hosted, Linux, X64, tempo, titan`. It uses the official checksum-verified runner 2.337.0, a two-core CPU quota and 3 GiB memory cap. The five existing Titan runners remained active. No organization permissions or AWS resources were changed. Private Linux artifacts are retained for seven days; the local macOS binary is separate.
+Initial private CI passed on one dedicated Titan Linux runner, with a two-core CPU quota and 3 GiB memory cap. During public conversion, that workflow was disabled and its runner parked. Public PR verification now uses a hosted Ubuntu runner. New release packaging and installer evidence is recorded below; native Keychain integration remains a manual acceptance gap.
 
 Final commit and CI result are reported in the draft PR and delivery response, rather than embedded into a file whose commit would change that same SHA.
 
-Live Harvest login and Keychain access prompts remain a manual acceptance step for Robert. The native bridge compiles, but those live interactions are deliberately not claimed as tested. Harvest permissions and account configuration are checked at runtime. No real credentials were created, copied or read, and no real Harvest data was mutated. No merge, release, deployment, AWS work or public publication was performed.
+Live Harvest login and Keychain access prompts remain a manual acceptance step for Robert. The native bridge compiles, but those live interactions are deliberately not claimed as tested. Harvest permissions and account configuration are checked at runtime. No real credentials were created, copied or read, and no real Harvest data was mutated. The initial implementation was subsequently merged by the owner. This distribution change creates no tag, release, deployment or AWS resources.
+
+## Public distribution verification
+
+GoReleaser 2.18.2 `check` validates both configurations. Snapshot release builds with `--skip=publish --parallelism=1` produced macOS amd64/arm64 with cgo and Linux amd64/arm64 without cgo, four versioned tar archives and platform SHA256 lists. The Mac arm64 snapshot runs offline and links Security/CoreFoundation; other targets have the expected executable architecture. Installer regression tests use temporary fixtures, injected download tools and no network; they cover platform detection, pinned versions, corruption/missing/duplicate checksums, archive links/traversal/unknown entries, literal whitespace paths, atomic preservation and no execution of downloaded binaries.
+
+Final distribution checks also passed formatting, vet, ordinary and race tests, schema comparison, seven installer test groups, and actionlint 1.7.12. The Linux snapshot was additionally built without Mac staging files, matching hosted CI. Independent installer QA, fresh distribution review and the Codex output gate passed; actual release upload and live authentication remain untested.
+
+The public-content audit reviewed tracked history and metadata, issues/PRs/comments and existing artifacts. No secret-pattern findings or private client records were found; test tokens are synthetic. Repository visibility is verified public. External workflow approval policy is `all_external_contributors`. The old self-hosted CI workflow is disabled, and the Tempo runner service is disabled/stopped. Public release execution on Titan is intentionally blocked pending separately approved server-side isolation; a YAML condition does not provide that isolation.
