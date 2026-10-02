@@ -1,8 +1,10 @@
 package activity
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"os"
 	"reflect"
 	"slices"
 	"strconv"
@@ -267,5 +269,62 @@ func TestQASyncMalformedReturnedDecimalIsUnknown(t *testing.T) {
 				t.Fatalf("malformed decimal adopted %+v", item)
 			}
 		})
+	}
+}
+
+func TestQASyncDayAccountingIncludesCapturedNeverPlannedPortion(t *testing.T) {
+	s, path, _ := qaSyncFixture(t, 137482*time.Millisecond)
+	p := qaNewSyncProvider(t)
+	qaSyncConfigure(t, s, p)
+	qaSyncEnable(t, s)
+	_, err := s.SyncNow(context.Background(), SyncRunInput{RequestID: qaSyncID(240)}, qaSyncDeps(t, p))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := qaSyncOnlyItem(t, s)
+	if first.State != "synced" {
+		t.Fatal("fixture not synced")
+	}
+	qaSyncAppendCapturedInterval(t, s)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := s.SyncStatus(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) || len(p.posts) != 1 {
+		t.Fatal("offline accounting changed evidence or effects")
+	}
+	if status.Totals.ExactDurationNS != "173482000000" || status.Totals.PlannedDurationNS != nil || status.Totals.ConfirmedDurationNS != nil {
+		t.Fatalf("global incomplete totals=%+v", status.Totals)
+	}
+	seenDay := false
+	for _, group := range status.Accounting {
+		if group.Scope == "project" && !reflect.DeepEqual(group.Totals, status.Totals) {
+			t.Fatalf("project does not conserve global total: %+v", group)
+		}
+		if group.Scope == "day" && group.Date != nil && *group.Date == "2026-10-02" {
+			seenDay = true
+			if group.Totals.ExactDurationNS != "173482000000" || group.Totals.PlannedDurationNS != nil || group.Totals.ConfirmedDurationNS != nil || group.Totals.PlannedResidualNS != nil || group.Totals.TotalResidualNS != nil {
+				t.Fatalf("day omitted neverplanned capture or falsely complete: %+v", group)
+			}
+		}
+	}
+	if !seenDay {
+		t.Fatal("day accounting absent")
+	}
+	for _, item := range status.Items {
+		if item.ID != first.ID && item.Plan != nil {
+			t.Fatal("offline status manufactured plan")
+		}
+		if item.ID == first.ID && !reflect.DeepEqual(item.Plan, first.Plan) {
+			t.Fatal("incomplete aggregate erased known part accounting")
+		}
 	}
 }

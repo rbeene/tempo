@@ -4,6 +4,8 @@ import (
 	"context"
 	"math/big"
 	"sort"
+	"strconv"
+	"time"
 )
 
 func syncString(s string) *string { return &s }
@@ -100,7 +102,21 @@ func (s *Service) SyncStatus(ctx context.Context) (SyncStatus, error) {
 			r.Worker.UnknownCount++
 		}
 		if o.Plan == nil {
-			add(o.Interval.Attribution, nil, o.Interval.DurationNS, nil, nil)
+			loc, e := time.LoadLocation(o.Interval.Attribution.Timezone)
+			if e != nil {
+				return SyncStatus{}, failure("state_corrupt")
+			}
+			for cursor := o.Interval.Start; cursor.Before(o.Interval.End); {
+				end := syncNextDay(cursor, loc)
+				if end.IsZero() || !end.After(cursor) {
+					return SyncStatus{}, failure("state_corrupt")
+				}
+				if end.After(o.Interval.End) {
+					end = o.Interval.End
+				}
+				add(o.Interval.Attribution, syncString(cursor.In(loc).Format("2006-01-02")), strconv.FormatInt(int64(end.Sub(cursor)), 10), nil, nil)
+				cursor = end
+			}
 			continue
 		}
 		for _, p := range o.Plan.Parts {
