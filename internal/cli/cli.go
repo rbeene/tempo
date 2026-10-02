@@ -9,8 +9,10 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
+	"github.com/rbeene/tempo/internal/activity"
 	"github.com/rbeene/tempo/internal/auth"
 	"github.com/rbeene/tempo/internal/harvest"
 )
@@ -18,6 +20,7 @@ import (
 var Version = "dev"
 
 type Dependencies struct {
+	Activity    *activity.Service
 	Store       auth.Store
 	ConfigPath  string
 	Getenv      func(string) string
@@ -26,10 +29,11 @@ type Dependencies struct {
 	SaveConfig  func(string, auth.Config) error
 }
 type cliError struct {
-	Code      string `json:"code"`
-	Message   string `json:"message"`
-	Retryable bool   `json:"retryable"`
-	Uncertain bool   `json:"uncertain"`
+	Code      string         `json:"code"`
+	Message   string         `json:"message"`
+	Retryable bool           `json:"retryable"`
+	Uncertain bool           `json:"uncertain"`
+	Details   map[string]any `json:"details,omitempty"`
 }
 
 func (e *cliError) Error() string    { return e.Message }
@@ -39,6 +43,10 @@ func safeError(err error) *cliError {
 	if errors.As(err, &ce) {
 		return ce
 	}
+	var ae *activity.Error
+	if errors.As(err, &ae) {
+		return &cliError{Code: ae.Code, Message: ae.Message, Retryable: ae.Retryable, Uncertain: ae.Uncertain, Details: ae.Details}
+	}
 	var he *harvest.Error
 	if errors.As(err, &he) {
 		return &cliError{Code: he.Code, Message: apiMessage(he.Code), Retryable: he.Retryable, Uncertain: he.Uncertain}
@@ -47,19 +55,19 @@ func safeError(err error) *cliError {
 }
 func exitCode(code string) int {
 	switch code {
-	case "usage", "validation":
+	case "usage", "validation", "input_required", "invalid_transition", "recovery_bounds", "unsupported_contract":
 		return 2
 	case "auth":
 		return 3
 	case "forbidden":
 		return 4
-	case "not_found":
+	case "not_found", "binding_unavailable", "actor_not_found", "uncertainty_not_found":
 		return 5
-	case "conflict", "confirmation_required":
+	case "conflict", "confirmation_required", "attribution_conflict", "binding_in_use", "revision_conflict", "request_conflict", "event_conflict", "event_gap", "ordering_unavailable", "clock_conflict", "state_busy":
 		return 6
 	case "network", "api", "rate_limit", "response":
 		return 7
-	case "uncertain_write":
+	case "uncertain_write", "local_write_unknown":
 		return 8
 	default:
 		return 1
@@ -69,8 +77,11 @@ func exitCode(code string) int {
 // Run never exits the process. Dependencies permit tests without personal config,
 // OS credential access or real API requests. Writes are explicit commands only.
 func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer, d Dependencies) int {
-	jsonMode := wantsJSON(args)
+	jsonMode := wantsJSON(args) || wantsLocalJSON(args)
 	p, err := parse(args)
+	if strings.HasPrefix(p.command.Name, "activity ") && p.flags["non-interactive"] == "true" {
+		jsonMode = true
+	}
 	var data any
 	if err == nil {
 		if d.Now == nil {
@@ -174,6 +185,10 @@ func validate(p *parsed, now time.Time) error {
 		}
 	}
 	switch n {
+	case "activity event":
+		if f["input-stdin"] != "true" {
+			return problem("validation", "activity event requires --input-stdin")
+		}
 	case "time create":
 		if f["project"] == "" || f["task"] == "" || f["date"] == "" {
 			return problem("validation", "create requires --project, --task and --date")
@@ -245,6 +260,33 @@ func execute(ctx context.Context, p parsed, in io.Reader, d Dependencies) (any, 
 		return schema(), nil
 	case "version":
 		return map[string]string{"version": Version}, nil
+	}
+
+	if strings.HasPrefix(p.command.Name, "activity ") {
+		service := d.Activity
+		if service == nil {
+			service = activity.New(activity.Options{Path: d.Getenv("TEMPO_STATE")})
+		}
+		if p.command.Name == "activity status" {
+			return service.Status(ctx)
+		}
+		eventCtx, cancel := context.WithTimeout(ctx, time.Second)
+		defer cancel()
+		if f, ok := in.(*os.File); ok {
+			if deadline, ok := eventCtx.Deadline(); ok {
+				if f.SetReadDeadline(deadline) == nil {
+					defer f.SetReadDeadline(time.Time{})
+				}
+			}
+		}
+		event, err := activity.DecodeEvent(in)
+		if err != nil {
+			return nil, err
+		}
+		if eventCtx.Err() != nil {
+			return nil, problem("validation", "activity event input deadline exceeded")
+		}
+		return service.Ingest(eventCtx, event)
 	}
 	path := d.ConfigPath
 	if path == "" {
@@ -455,7 +497,7 @@ func apiMessage(code string) string {
 		return "Harvest authentication failed; check the configured token"
 	case "forbidden":
 		return "Harvest denied access to this operation"
-	case "not_found":
+	case "not_found", "binding_unavailable", "actor_not_found", "uncertainty_not_found":
 		return "Harvest could not find the requested resource"
 	case "validation":
 		return "Harvest rejected the request; check project/task access, company mode and supplied fields"
@@ -465,7 +507,7 @@ func apiMessage(code string) string {
 		return "Harvest request failed or was canceled"
 	case "response":
 		return "Harvest returned an invalid or incomplete response"
-	case "uncertain_write":
+	case "uncertain_write", "local_write_unknown":
 		return "write outcome is uncertain; inspect time list/show or timer status before retrying manually"
 	default:
 		return "Harvest could not complete the request"

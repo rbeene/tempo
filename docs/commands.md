@@ -99,4 +99,17 @@ The complete generated interface is [cli-schema.json](cli-schema.json). `make sc
 
 ## Planned agent activity interface
 
-The [agent activity contract](agent-contracts.md) and [planned operation catalog](agent-operations.json) define `tempo link [PROJECT_ID]`, local `activity` status/recovery, setup, hooks, worker, sync and themes for the agent timing epic. They also define equal CLI/UI access, searchable arrow-key pickers and forced finite JSON output. These commands are not implemented by this specification change. The generated schema above continues to describe available commands. `timer …` retains its Harvest meaning; future `activity …` commands describe local computer activity.
+The [agent activity contract](agent-contracts.md) and [planned operation catalog](agent-operations.json) define `tempo link [PROJECT_ID]`, local `activity` status/recovery, setup, hooks, worker, sync and themes for the agent timing epic. They also define equal CLI/UI access, searchable arrow-key pickers and forced finite JSON output. `activity status` and `activity event --input-stdin` are now shipped as described below. Linking, recovery, setup, hooks, worker, sync, themes and interactive activity views remain planned. The generated schema describes available commands. `timer …` retains its Harvest meaning; `activity …` describes local computer activity.
+
+## Local agent activity
+
+| Command | Behavior |
+|---|---|
+| `activity status` | Finite local snapshot; no credentials, configuration reads or network. `--json` and `--non-interactive` emit the versioned envelope. An absent store returns null computer ID, revision `"0"` and empty collections without creating files. |
+| `activity event --input-stdin` | Accept exactly one normalized v1 lifecycle JSON event, at most 16KiB. Adapter/internal operation; no prompts or arbitrary attribution fields. Requires initialized identity and a validated binding resolver for tracked work; otherwise returns `untracked` without starting a timer. |
+
+Local activity is independent of Harvest `timer` commands. `TEMPO_STATE` selects an absolute private state-file path for isolated operation; default is the OS user config directory under `tempo/activity-state.json`. No public fake-binding/init command is provided. Linking and supported host bridges are delivered in their dependent tickets; this engine release alone does not install or automatically capture agent callbacks. Interactive watch and recovery commands are not yet shipped.
+
+Every accepted event has stable source/actor/generation/sequence identity. Retry the exact same event after an uncertain local write; a conflicting payload returns `event_conflict`. `state_busy` is retryable; `local_write_unknown` exits 8 with uncertainty set. State and clock failures use safe errors, never raw payloads. Binding, ordering and attribution conflicts use exit 6; unsupported contract/input/transition uses exit 2. Local `--non-interactive` errors use one stderr JSON envelope and empty stdout.
+
+Working actors contribute to one union per computer/account/project; separate projects run concurrently. Waits close only that actor's segment. Parent termination never stops a child. Reliable closed unions appear with queued counts, but this slice makes no Harvest requests and has no active synchronization worker. Uncertainties remain separate and cannot become queued time through an ordinary later stop or resume.

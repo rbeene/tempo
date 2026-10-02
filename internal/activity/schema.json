@@ -1,0 +1,126 @@
+{
+  "contract_version": 1,
+  "types": {
+    "uuid": "canonical UUID string",
+    "harvest_id": "canonical decimal string, 1..9223372036854775807",
+    "counter": "canonical nonnegative decimal string",
+    "utc": "RFC3339 UTC timestamp with up to nanosecond precision",
+    "timezone": "canonical IANA timezone name",
+    "Attribution": {
+      "account_id": "harvest_id",
+      "user_id": "harvest_id",
+      "project_id": "harvest_id",
+      "task_id": "harvest_id",
+      "timezone": "timezone"
+    },
+    "ActorKey": {
+      "computer_id": "uuid",
+      "source": "codex|claude|manual-test",
+      "session_id": "string",
+      "agent_id": "string"
+    },
+    "ActorRef": {
+      "key": "ActorKey",
+      "generation": "counter"
+    },
+    "ClockSample": {
+      "wall_utc": "utc",
+      "capability": "available|unavailable",
+      "epoch": "string|null",
+      "elapsed_ns": "counter|null",
+      "awake_ns": "counter|null"
+    },
+    "Actor": {
+      "id": "uuid",
+      "revision": "counter",
+      "ref": "ActorRef",
+      "sequence": "counter",
+      "state": "working|wait_user|wait_permission|wait_children|interrupted|finished",
+      "health": "continuous|stale|order_blocked",
+      "binding_id": "uuid",
+      "binding_revision": "counter",
+      "attribution": "Attribution",
+      "parent": "ActorRef|null",
+      "segment_id": "uuid|null",
+      "last_evidence": "ClockSample",
+      "uncertainty_ids": "uuid[]"
+    },
+    "Interval": {
+      "id": "uuid",
+      "computer_id": "uuid",
+      "attribution": "Attribution",
+      "start": "utc",
+      "end": "utc",
+      "duration_ns": "counter",
+      "segment_ids": "uuid[]"
+    },
+    "Uncertainty": {
+      "id": "uuid",
+      "revision": "counter",
+      "actor": "ActorRef",
+      "segment_id": "uuid",
+      "attribution": "Attribution",
+      "lower_bound": "utc",
+      "upper_bound": "utc|null",
+      "reason": "source_lost|ordering_unavailable|suspend|clock_changed|restart_unknown|event_gap|superseded",
+      "state": "unresolved|resolved",
+      "resolution_end": "utc|null",
+      "discarded": "bool"
+    },
+    "ProjectActivity": {
+      "computer_id": "uuid",
+      "attribution": "Attribution",
+      "active_actor_refs": "ActorRef[]",
+      "waiting_actor_refs": "ActorRef[]",
+      "provisional_union_ns": "counter",
+      "confirmed_closed_ns": "counter",
+      "unresolved_ids": "uuid[]",
+      "queued_count": "integer",
+      "synced_count": "integer",
+      "needs_attention_count": "integer"
+    },
+    "ActivitySnapshot": {
+      "contract_version": "integer=1",
+      "snapshot_revision": "counter",
+      "observed_at": "utc",
+      "computer_id": "uuid|null",
+      "projects": "ProjectActivity[]",
+      "actors": "Actor[]",
+      "uncertainties": "Uncertainty[]",
+      "closed_intervals": "Interval[]",
+      "worker": "WorkerStatus",
+      "sync_enabled": "bool"
+    },
+    "WorkerStatus": {
+      "state": "not_installed|stopped|running|unsupported|needs_attention",
+      "last_success": "utc|null",
+      "queued_count": "integer",
+      "unknown_count": "integer",
+      "failure_category": "string|null",
+      "sync_enabled": "bool"
+    },
+    "Event": {
+      "contract_version": "integer=1",
+      "actor": "ActorKey",
+      "generation": "counter",
+      "sequence": "counter",
+      "event_id": "string",
+      "kind": "work|wait_user|wait_permission|wait_children|interrupt|finish|observe_work",
+      "binding_id?": "uuid",
+      "binding_revision?": "counter",
+      "parent?": "ActorRef",
+      "cwd?": "path"
+    },
+    "EventResult": {
+      "contract_version": "integer=1",
+      "snapshot_revision": "counter",
+      "disposition": "applied|duplicate|stale|untracked",
+      "actor": "ActorRef",
+      "segment_id": "uuid|null",
+      "uncertainty_ids": "uuid[]"
+    }
+  },
+  "input_limit_bytes": 16384,
+  "status_read_only": true,
+  "initialization": "Explicit linking owns store identity. Before linking is implemented or no binding resolves, initial work returns untracked without creating state."
+}

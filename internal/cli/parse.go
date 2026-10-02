@@ -63,7 +63,12 @@ func parse(args []string) (parsed, error) {
 		p.flags[k] = v
 	}
 	if help {
-		p.command = commands[len(commands)-3]
+		for _, c := range commands {
+			if c.Name == "help" {
+				p.command = c
+				break
+			}
+		}
 		return p, nil
 	}
 	if len(words) == 0 {
@@ -195,4 +200,32 @@ func wantsJSON(args []string) bool {
 		}
 	}
 	return false
+}
+
+// Determine forced local output even when parsing later fails, while treating
+// option values (including Harvest notes containing "activity") as literals.
+func wantsLocalJSON(args []string) bool {
+	options := optionTypes()
+	first := ""
+	forced := false
+	for i := 0; i < len(args); i++ {
+		token := args[i]
+		if strings.HasPrefix(token, "--") {
+			key, _, eq := strings.Cut(strings.TrimPrefix(token, "--"), "=")
+			if key == "non-interactive" && !eq {
+				forced = true
+			}
+			if kind, ok := options[key]; ok && kind != "bool" && !eq {
+				i++
+			}
+			continue
+		}
+		if strings.HasPrefix(token, "-") {
+			continue
+		}
+		if first == "" {
+			first = token
+		}
+	}
+	return first == "activity" && forced
 }
