@@ -26,7 +26,7 @@ func platformSample() (string, uint64, uint64, error) {
 		if errno != 0 {
 			return 0, errno
 		}
-		if ts.Sec < 0 || ts.Nsec < 0 || ts.Nsec >= 1e9 || uint64(ts.Sec) > math.MaxUint64/1e9 {
+		if ts.Sec < 0 || ts.Nsec < 0 || ts.Nsec >= 1e9 || uint64(ts.Sec) > math.MaxUint64/1_000_000_000 {
 			return 0, errors.New("invalid clock counter")
 		}
 		return uint64(ts.Sec)*1e9 + uint64(ts.Nsec), nil
