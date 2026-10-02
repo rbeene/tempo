@@ -605,12 +605,36 @@ stream_max_retries = 0
 '''
 
 
-def normal_trust(terminal, repo, command, trusted_events):
-    initial = terminal.until(lambda s: "Trust this folder?" in s or "gpt-6.1-sol" in s, "startup_ui_unavailable")
+def workspace_trust_probe(screen, repo):
+    lines = [line.strip() for line in screen.splitlines()]
+    return {"title_present": "Trust this folder?" in screen,
+            "exact_path_line_present": str(repo) in lines,
+            "path_substring_present": str(repo) in screen,
+            "trust_choice_present": "Trust and continue" in screen,
+            "quit_choice_present": "Quit" in screen,
+            "alternate_root_warning_present": "Trusting will apply to the repository root:" in screen,
+            "nonempty_rows": min(80, sum(bool(line) for line in lines))}
+
+
+def normal_trust(terminal, repo, command, trusted_events, probe=None):
+    if probe is None:
+        probe = {}
+    probe.clear()
+    probe.update(workspace_trust_probe("", repo))
+
+    def observe_until(predicate, category):
+        def observed(screen):
+            # Replace each observation; never union stale evidence or retain text.
+            probe.clear()
+            probe.update(workspace_trust_probe(screen, repo))
+            return predicate(screen)
+        return terminal.until(observed, category)
+
+    initial = observe_until(lambda s: "Trust this folder?" in s or "gpt-6.1-sol" in s, "startup_ui_unavailable")
     if "Trust this folder?" in initial:
         # A PTY read can end halfway through a redraw. Wait for the complete
         # exact folder/choice display before taking the normal trust action.
-        terminal.until(lambda s: "Trust this folder?" in s
+        observe_until(lambda s: "Trust this folder?" in s
                        and str(repo) in [line.strip() for line in s.splitlines()]
                        and "Trust and continue" in s and "Quit" in s
                        and "Trusting will apply to the repository root:" not in s,
@@ -706,7 +730,7 @@ def run(args, report):
         report["stage"] = "normal_trust_ui"
         report["trusted_events"] = []
         terminal = Terminal(argv, env, repo, deadline)
-        normal_trust(terminal, repo, command, report["trusted_events"])
+        normal_trust(terminal, repo, command, report["trusted_events"], report.setdefault("workspace_trust_probe", {}))
         terminal.close(); terminal = None
         require(not model.requests and model.error is None, "unexpected_pretrust_inference")
         report["stage"] = "production_policy_confirmation"

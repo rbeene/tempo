@@ -137,6 +137,42 @@ class HarnessTests(unittest.TestCase):
                     smoke.normal_trust(terminal, Path("/tmp/exact-project"), "unused", [])
                 self.assertEqual(terminal.sent, [])
 
+    def test_workspace_probe_exports_only_fixed_booleans_and_bounded_count(self):
+        screen = "Trust this folder?\n/tmp/exact-project-other\nTrust and continue\nQuit\nPRIVATE-SCREEN-TEXT\n" + "secret\n" * 100
+        probe = smoke.workspace_trust_probe(screen, Path("/tmp/exact-project"))
+        self.assertEqual(probe, {"title_present": True, "exact_path_line_present": False,
+                                "path_substring_present": True, "trust_choice_present": True,
+                                "quit_choice_present": True, "alternate_root_warning_present": False,
+                                "nonempty_rows": 80})
+        self.assertNotIn("PRIVATE", json.dumps(probe))
+        self.assertNotIn("/tmp", json.dumps(probe))
+        complete = smoke.workspace_trust_probe("Trust this folder?\n /tmp/exact-project \nTrust and continue\nQuit\nTrusting will apply to the repository root:", Path("/tmp/exact-project"))
+        self.assertTrue(complete["exact_path_line_present"])
+        self.assertTrue(complete["alternate_root_warning_present"])
+
+    def test_workspace_probe_is_initialized_and_retains_last_timeout_observation(self):
+        class Terminal:
+            def __init__(self, screens): self.screens, self.sent = iter(screens), []
+            def until(self, predicate, category, **_):
+                for screen in self.screens:
+                    if predicate(screen): return screen
+                raise smoke.FixtureFailure(category)
+            def send(self, data): self.sent.append(data)
+        for screens, title, rows in (([], False, 0), (["Trust this folder?", "Trust this folder?\nPRIVATE"], True, 2),
+                                    (["Trust this folder?", "Trust this folder?\n/tmp/exact-project-other\nTrust and continue\nQuit", ""], False, 0)):
+            with self.subTest(screens=screens):
+                evidence = {}
+                terminal = Terminal(screens)
+                with self.assertRaises(smoke.FixtureFailure):
+                    smoke.normal_trust(terminal, Path("/tmp/exact-project"), "unused", [], evidence)
+                self.assertEqual(terminal.sent, [])
+                self.assertEqual(evidence["title_present"], title)
+                self.assertEqual(evidence["nonempty_rows"], rows)
+                self.assertFalse(evidence["exact_path_line_present"])
+                if rows == 0:
+                    self.assertFalse(any(evidence.values()))
+                self.assertNotIn("PRIVATE", json.dumps(evidence))
+
     def test_receipt_projection_cannot_export_raw_payload_or_unknown_status(self):
         receipt = self.receipt("SessionStart")
         receipt.update(prompt="SECRET", headers={"Authorization": "SECRET"}, diagnostic_code="SECRET")
