@@ -168,6 +168,55 @@ class HarnessTests(unittest.TestCase):
         with self.assertRaisesRegex(smoke.FixtureFailure, "unsupported_terminal_parameters"):
             smoke.Screen().feed(b"\x1b[?1H")
 
+    def test_pinned_scroll_region_and_reverse_index_preserve_surrounding_rows(self):
+        screen = smoke.Screen(6, 12)
+        for row, label in enumerate("ABCDEF", 1): screen.feed(("\x1b[" + str(row) + ";1H" + label).encode())
+        for byte in b"\x1b[2;5r": screen.feed(bytes([byte]))
+        self.assertEqual((screen.row, screen.col), (0, 0))
+        screen.feed(b"\x1b[2;1H\x1bM")
+        self.assertEqual(screen.text().splitlines(), ["A", "", "B", "C", "D", "F"])
+        self.assertEqual((screen.row, screen.col), (1, 0))
+        screen.feed(b"\x1b[r\x1b[6;1H\n")
+        self.assertEqual(screen.text().split("\n"), ["", "B", "C", "D", "F", ""])
+
+    def test_linefeed_and_scroll_controls_obey_active_margins(self):
+        for control, expected in ((b"\n", ["A", "C", "D", "E", "", "F"]),
+                                  (b"\x1b[S", ["A", "C", "D", "E", "", "F"]),
+                                  (b"\x1b[T", ["A", "", "B", "C", "D", "F"])):
+            with self.subTest(control=control):
+                screen = smoke.Screen(6, 12)
+                for row, label in enumerate("ABCDEF", 1): screen.feed(("\x1b[" + str(row) + ";1H" + label).encode())
+                screen.feed(b"\x1b[2;5r\x1b[5;1H" + control)
+                self.assertEqual(screen.text().splitlines(), expected)
+
+    def test_scroll_region_bounds_defaults_and_reverse_index_outside_margin(self):
+        for control in (b"\x1b[5;2r", b"\x1b[2;7r", b"\x1b[3;3r", b"\x1b[1;2;3r"):
+            with self.subTest(control=control), self.assertRaisesRegex(smoke.FixtureFailure, "^unsupported_terminal_scroll_region$"):
+                smoke.Screen(6, 12).feed(control)
+        screen = smoke.Screen(6, 12)
+        screen.feed(b"\x1b[1;1HA\x1b[6;1HF\x1b[2;5r\x1b[6;1H\x1bM")
+        self.assertEqual((screen.row, screen.col), (4, 0))
+        self.assertEqual(screen.text().splitlines(), ["A", "", "", "", "", "F"])
+        screen.feed(b"\x1b[999S")
+        self.assertEqual(screen.text().splitlines(), ["A", "", "", "", "", "F"])
+        screen.feed(b"\x1b[0;0r")
+        self.assertEqual((screen.scroll_top, screen.scroll_bottom, screen.row, screen.col), (0, 5, 0, 0))
+
+    def test_different_csi_intermediate_cannot_change_scroll_margins(self):
+        screen = smoke.Screen(6, 12)
+        screen.feed(b"\x1b[3;4Hknown")
+        before = (screen.scroll_top, screen.scroll_bottom, screen.row, screen.col, screen.text())
+        with self.assertRaisesRegex(smoke.FixtureFailure, "^unsupported_terminal_scroll_region$"):
+            screen.feed(b"\x1b[2;5$r")
+        self.assertEqual((screen.scroll_top, screen.scroll_bottom, screen.row, screen.col, screen.text()), before)
+
+    def test_unsupported_control_diagnostic_is_fixed_family_and_operation_only(self):
+        for control, category in ((b"\x1b(BPRIVATE", "unsupported_terminal_escape_character_set"),
+                                  (b"\x1b[123LPRIVATE", "unsupported_terminal_csi_insert_lines"),
+                                  (b"\x1b[123zPRIVATE", "unsupported_terminal_csi_other")):
+            with self.subTest(control=control), self.assertRaisesRegex(smoke.FixtureFailure, "^" + category + "$"):
+                smoke.Screen().feed(control)
+
     def test_workspace_trust_waits_for_complete_exact_prompt_before_enter(self):
         class ReachedHooks(Exception):
             pass

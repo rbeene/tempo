@@ -192,12 +192,28 @@ class Screen:
         self.rows, self.cols = rows, cols
         self.grid = [[" "] * cols for _ in range(rows)]
         self.row = self.col = 0
+        self.scroll_top, self.scroll_bottom = 0, rows - 1
         self.saved = (0, 0)
         self.pending = ""
         self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
 
     def text(self):
         return "\n".join("".join(row).rstrip() for row in self.grid)
+
+    def scroll(self, count, down=False):
+        for _ in range(min(count, self.scroll_bottom - self.scroll_top + 1)):
+            if down:
+                self.grid.pop(self.scroll_bottom)
+                self.grid.insert(self.scroll_top, [" "] * self.cols)
+            else:
+                self.grid.pop(self.scroll_top)
+                self.grid.insert(self.scroll_bottom, [" "] * self.cols)
+
+    def linefeed(self):
+        if self.row == self.scroll_bottom:
+            self.scroll(1)
+        else:
+            self.row = min(self.rows - 1, self.row + 1)
 
     def feed(self, raw):
         data = self.pending + self.decoder.decode(raw)
@@ -215,7 +231,7 @@ class Screen:
                         self.pending = data[i:]
                         require(len(self.pending) < 256, "terminal_control_overflow")
                         break
-                    self.csi(match[1], match[3])
+                    self.csi(match[1], match[3], match[2])
                     i += len(match[0])
                     continue
                 if data[i + 1] == "]":
@@ -231,18 +247,20 @@ class Screen:
                     self.saved = self.row, self.col
                 elif code == "8":
                     self.row, self.col = self.saved
+                elif code == "M":
+                    if self.row == self.scroll_top:
+                        self.scroll(1, down=True)
+                    else:
+                        self.row = max(0, self.row - 1)
                 elif code not in ("=", ">", "\\"):
-                    raise FixtureFailure("unsupported_terminal_control")
+                    kind = {"(": "character_set", ")": "character_set", "D": "index", "E": "next_line"}.get(code, "other")
+                    raise FixtureFailure("unsupported_terminal_escape_" + kind)
                 i += 2
                 continue
             if ch == "\r":
                 self.col = 0
             elif ch == "\n":
-                self.row += 1
-                if self.row >= self.rows:
-                    self.grid.pop(0)
-                    self.grid.append([" "] * self.cols)
-                    self.row = self.rows - 1
+                self.linefeed()
             elif ch == "\b":
                 self.col = max(0, self.col - 1)
             elif ch == "\t":
@@ -250,12 +268,12 @@ class Screen:
             elif ord(ch) >= 32 and ch != "\x7f":
                 if self.col >= self.cols:
                     self.col = 0
-                    self.row = min(self.row + 1, self.rows - 1)
+                    self.linefeed()
                 self.grid[self.row][self.col] = ch
                 self.col += 1
             i += 1
 
-    def csi(self, params, op):
+    def csi(self, params, op, intermediate=""):
         if op in "mhlncqt":  # attributes, mode switches, terminal queries
             return
         # Pinned Codex startup queries keyboard capabilities, then pushes/pops
@@ -290,15 +308,21 @@ class Screen:
             start, end = (0, self.cols) if p[0] == 2 else ((0, self.col + 1) if p[0] == 1 else (self.col, self.cols))
             self.grid[self.row][start:end] = [" "] * (end - start)
         elif op == "S":
-            for _ in range(min(n, self.rows)):
-                self.grid.pop(0); self.grid.append([" "] * self.cols)
+            self.scroll(n)
         elif op == "T":
-            for _ in range(min(n, self.rows)):
-                self.grid.pop(); self.grid.insert(0, [" "] * self.cols)
+            self.scroll(n, down=True)
+        elif op == "r":
+            require(not intermediate, "unsupported_terminal_scroll_region")
+            bottom = p[1] if len(p) == 2 and p[1] else self.rows
+            require(len(p) <= 2 and 1 <= n < bottom <= self.rows, "unsupported_terminal_scroll_region")
+            self.scroll_top, self.scroll_bottom = n - 1, bottom - 1
+            self.row = self.col = 0
         elif op == "s": self.saved = self.row, self.col
         elif op == "u": self.row, self.col = self.saved
         else:
-            raise FixtureFailure("unsupported_terminal_control")
+            kind = {"L": "insert_lines", "M": "delete_lines", "P": "delete_characters", "@": "insert_characters",
+                    "X": "erase_characters", "b": "repeat_character"}.get(op, "other")
+            raise FixtureFailure("unsupported_terminal_csi_" + kind)
 
 
 class Terminal:
