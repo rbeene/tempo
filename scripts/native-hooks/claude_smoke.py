@@ -617,10 +617,71 @@ def _message_request_signature(body):
     return None
 
 
+_MESSAGES_STRUCTURE_VALUES = {
+    'envelope': frozenset(('bare_core', 'metadata_core', 'temperature_metadata_core',
+        'system_metadata_core', 'thinking_system_metadata_core', 'extended_system_metadata_core', 'other')),
+    'budget': frozenset(('literal_one', 'namer_pair', 'classifier_pair', 'other_integer', 'non_integer')),
+    'message_form': frozenset(('user_string', 'user_cached_text', 'user_cached_text_long', 'other')),
+    'system_form': frozenset(('absent', 'empty', 'plain_text', 'cached_text', 'other')),
+}
+
+
+def _structural_cached_text_block(value, allow_scope=False):
+    return (_exact_keys(value, {'type', 'text', 'cache_control'})
+            and _literal(value['type'], 'text') and type(value['text']) is str
+            and _cache_control(value['cache_control'], allow_scope=allow_scope))
+
+
+def _messages_structure(body):
+    """Classify an eligible exact dict using types and fixed protocol tags only."""
+    core = {'model', 'max_tokens', 'messages'}
+    system_core = core | {'system', 'metadata'}
+    optional = {'tools', 'tool_choice', 'output_config', 'temperature', 'thinking', 'stop_sequences'}
+    envelope = 'other'
+    if all(type(key) is str for key in body):
+        keys = body.keys()
+        if keys == core: envelope = 'bare_core'
+        elif keys == core | {'metadata'}: envelope = 'metadata_core'
+        elif keys == core | {'metadata', 'temperature'}: envelope = 'temperature_metadata_core'
+        elif keys == system_core: envelope = 'system_metadata_core'
+        elif keys == system_core | {'thinking'}: envelope = 'thinking_system_metadata_core'
+        elif system_core < keys <= system_core | optional: envelope = 'extended_system_metadata_core'
+
+    tokens = body.get('max_tokens')
+    budget = 'non_integer'
+    if type(tokens) is int:
+        if tokens == 1: budget = 'literal_one'
+        elif tokens in (32, 2080): budget = 'namer_pair'
+        elif tokens in (1024, 3072): budget = 'classifier_pair'
+        else: budget = 'other_integer'
+
+    # Text values remain opaque, including lone surrogates and arbitrary lengths.
+    message_form, messages = 'other', body.get('messages')
+    if (type(messages) is list and len(messages) == 1
+            and _exact_keys(messages[0], {'role', 'content'}) and _literal(messages[0]['role'], 'user')):
+        content = messages[0]['content']
+        if type(content) is str: message_form = 'user_string'
+        elif type(content) is list and len(content) == 1 and _structural_cached_text_block(content[0]):
+            message_form = ('user_cached_text_long' if 'ttl' in content[0]['cache_control']
+                            else 'user_cached_text')
+
+    system_form = 'absent' if 'system' not in body else 'other'
+    system = body.get('system')
+    if type(system) is list:
+        if not system: system_form = 'empty'
+        elif len(system) in (1, 2):
+            if all(_attribution_block(block) for block in system): system_form = 'plain_text'
+            elif ((len(system) == 1 or _attribution_block(system[0]))
+                    and _structural_cached_text_block(system[-1], allow_scope=True)):
+                system_form = 'cached_text'
+    return {'envelope': envelope, 'budget': budget, 'message_form': message_form, 'system_form': system_form}
+
+
 class ProviderBudget:
     def __init__(self):
         self.lock, self.active, self.requests = threading.Lock(), 0, 0
         self.first_rejections = {}
+        self._first_messages_structure = None
 
     def claim(self):
         with self.lock:
@@ -657,6 +718,27 @@ class ProviderBudget:
                                      'stream': stream, 'model': model}
             return projected
 
+    def _project_first_messages_structure(self):
+        # First records never change. Project the old row before taking this lock,
+        # since project_first_rejections acquires the same non-reentrant lock.
+        first = self.project_first_rejections().get('messages')
+        if first != {'category': 'provider_request_contract', 'endpoint_family': 'messages',
+                     'stream': 'missing', 'model': 'fixture'}: return None
+        with self.lock:
+            row = self._first_messages_structure
+            if type(row) is not dict: return None
+            projected = {}
+            for key, allowed in _MESSAGES_STRUCTURE_VALUES.items():
+                value = row.get(key)
+                if type(value) is not str or value not in allowed: return None
+                projected[key] = value
+            envelope, system = projected['envelope'], projected['system_form']
+            if (envelope in ('bare_core', 'metadata_core', 'temperature_metadata_core')
+                    and system != 'absent'): return None
+            if (envelope in ('system_metadata_core', 'thinking_system_metadata_core', 'extended_system_metadata_core')
+                    and system == 'absent'): return None
+            return projected
+
 
 def record_failure(provider, exc, path=None, body=None, method=None):
     # Preserve the terminal veto while retaining only closed, detached diagnostic values.
@@ -685,10 +767,15 @@ def record_failure(provider, exc, path=None, body=None, method=None):
     elif (category == 'unexpected_provider_endpoint' and family == 'other' and body is None
             and _literal(path, '/claude/api/hello') and _literal(method, 'HEAD')):
         category = PROVIDER_HELLO_SIGNATURE
+    structure = None
+    if (type(body) is dict and (category, family, stream, model)
+            == ('provider_request_contract', 'messages', 'missing', 'fixture')):
+        structure = _messages_structure(body)
+    rejection = {'category': category, 'endpoint_family': family, 'stream': stream, 'model': model}
     with provider.budget.lock:
         if family not in provider.budget.first_rejections:
-            provider.budget.first_rejections[family] = {'category': category, 'endpoint_family': family,
-                                                       'stream': stream, 'model': model}
+            provider.budget.first_rejections[family] = rejection
+            if family == 'messages': provider.budget._first_messages_structure = structure
         provider.error = terminal
 
 
@@ -965,6 +1052,8 @@ def run(args, report):
                     report['provider_entry_count'] = min(provider.budget.requests, 9)
                     rejections = provider.budget.project_first_rejections()
                     if rejections: report['provider_first_rejections'] = rejections
+                    structure = provider.budget._project_first_messages_structure()
+                    if structure is not None: report['provider_first_messages_structure'] = structure
                 if conversation is not None:
                     if conversation.error_domains is not None:
                         report['agent_error_domains'] = project_error_domains(conversation.error_domains)

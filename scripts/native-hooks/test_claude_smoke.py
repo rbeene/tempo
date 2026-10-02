@@ -1516,4 +1516,385 @@ class NativeSignatureTests(unittest.TestCase):
                 self.assertNotIn('provider_first_rejections', report); self.assertNotIn(self.CANARY, json.dumps(report))
 
 
+class MessagesStructureTests(unittest.TestCase):
+    """Type-only structural annotation of the same first rejected Messages request."""
+    CANARY = NativeSignatureTests.CANARY
+    SYSTEM = NativeSignatureTests.SYSTEM
+    NAMER_PREFIX = NativeSignatureTests.NAMER_PREFIX
+    NAMER_END = NativeSignatureTests.NAMER_END
+    RETRY = NativeSignatureTests.RETRY
+    ABSENT = object()
+    setUp = NativeSignatureTests.setUp
+    provider = ProviderFirstRejectionTests.provider
+    handler = ProviderFirstRejectionTests.handler
+    record = ProviderFirstRejectionTests.record
+    projected = ProviderFirstRejectionTests.projected
+    assert_empty_rejection = ProviderFirstRejectionTests.assert_empty_rejection
+    literal = NativeSignatureTests.literal
+    namer = NativeSignatureTests.namer
+    classifier = NativeSignatureTests.classifier
+
+    def structure(self, provider):
+        # Safe absent seam gives a compiled behavioral RED, never AttributeError.
+        return getattr(provider.budget, '_project_first_messages_structure', lambda: None)()
+
+    def annotation(self, envelope='bare_core', budget='other_integer', message='user_string', system='absent'):
+        return {'envelope': envelope, 'budget': budget, 'message_form': message, 'system_form': system}
+
+    def body(self):
+        return {'model': smoke.MODEL, 'max_tokens': 42,
+            'messages': [{'role': 'user', 'content': self.CANARY}]}
+
+    def block(self, cache=None):
+        value = {'type': 'text', 'text': self.CANARY}
+        if cache is not None: value['cache_control'] = cache
+        return value
+
+    def rejected(self, body, expected, path='/claude/v1/messages'):
+        provider = self.provider(); h = self.handler(provider, body, path)
+        h.headers['X-Private-Fixture'] = self.CANARY; h.do_POST()
+        self.assert_empty_rejection(h); self.assertEqual(provider.error, 'provider_request_contract')
+        self.assertEqual(provider.budget.requests, 1); self.assertEqual(provider.conversation.counts, {})
+        self.assertEqual(self.projected(provider), {'messages': self.record('provider_request_contract', 'messages', 'missing', 'fixture')})
+        actual = self.structure(provider)
+        self.assertNotIn(self.CANARY, json.dumps(actual)); self.assertEqual(actual, expected)
+        return provider
+
+    def test_handler_all_envelopes_extended_subsets_and_unknown_keys(self):
+        base = self.body()
+        cases = [(base, self.annotation()),
+            (dict(base, metadata=None), self.annotation('metadata_core')),
+            (dict(base, metadata=self.CANARY, temperature=self.CANARY), self.annotation('temperature_metadata_core')),
+            (dict(base, metadata={}, system=[]), self.annotation('system_metadata_core', system='empty')),
+            (dict(base, metadata={}, system=[], thinking=None), self.annotation('thinking_system_metadata_core', system='empty')),
+            (dict(base, **{self.CANARY: self.CANARY}), self.annotation('other')),
+            (dict(base, system=[]), self.annotation('other', system='empty')),
+            (dict(base, metadata={}, system=[], **{self.CANARY: self.CANARY}), self.annotation('other', system='empty'))]
+        optional = ('tools', 'tool_choice', 'output_config', 'temperature', 'thinking', 'stop_sequences')
+        for mask in range(1, 64):
+            extras = {key: {'opaque': self.CANARY} for i, key in enumerate(optional) if mask & (1 << i)}
+            envelope = 'thinking_system_metadata_core' if set(extras) == {'thinking'} else 'extended_system_metadata_core'
+            cases.append((dict(base, metadata=None, system=[], **extras), self.annotation(envelope, system='empty')))
+        for i, (body, expected) in enumerate(cases):
+            with self.subTest(case=i): self.rejected(body, expected, '/claude/v1/messages?beta=true' if i % 2 else '/claude/v1/messages')
+
+    def test_handler_all_budget_classes_source_pairs_and_noninteger_types(self):
+        cases = [(1, 'literal_one'), (32, 'namer_pair'), (2080, 'namer_pair'),
+            (1024, 'classifier_pair'), (3072, 'classifier_pair'), (0, 'other_integer'),
+            (-1, 'other_integer'), (43, 'other_integer'), (10**100, 'other_integer')]
+        cases += [(value, 'non_integer') for value in (None, True, False, 1.0, '32', [], {})]
+        for i, (value, budget) in enumerate(cases):
+            with self.subTest(case=i): self.rejected(dict(self.body(), max_tokens=value), self.annotation(budget=budget))
+        body = self.body(); del body['max_tokens']
+        with self.subTest(missing=True): self.rejected(body, self.annotation('other', 'non_integer'))
+
+    def test_handler_message_forms_and_cache_variants_are_type_only(self):
+        cases = [(self.CANARY, 'user_string'), ('\ud800', 'user_string'),
+            ([self.block({'type': 'ephemeral'})], 'user_cached_text'),
+            ([self.block({'type': 'ephemeral', 'ttl': '1h'})], 'user_cached_text_long'),
+            ([self.block()], 'other'), ([], 'other'), (None, 'other'), ({}, 'other')]
+        cases += [([self.block(cache)], 'other') for cache in ({}, {'type': 'permanent'},
+            [], {'type': True}, {'type': 'ephemeral', 'ttl': None},
+            {'type': 'ephemeral', 'ttl': '5m'}, {'type': 'ephemeral', 'scope': 'global'},
+            {'type': 'ephemeral', 'ttl': '1h', 'scope': 'global'}, {'type': 'ephemeral', self.CANARY: self.CANARY})]
+        for i, (content, form) in enumerate(cases):
+            with self.subTest(case=i):
+                body = self.body(); body['messages'][0]['content'] = content
+                self.rejected(body, self.annotation(message=form))
+        malformed = [None, [], {}, [None], [self.body()['messages'][0]]*2,
+            [{'role': 'assistant', 'content': self.CANARY}], [{'role': True, 'content': self.CANARY}],
+            [{'content': self.CANARY}], [{'role': 'user'}],
+            [{'role': 'user', 'content': self.CANARY, self.CANARY: self.CANARY}],
+            [{'role': 'user', 'content': [dict(self.block({'type': 'ephemeral'}), text=None)]}],
+            [{'role': 'user', 'content': [dict(self.block({'type': 'ephemeral'}), type='image')]}],
+            [{'role': 'user', 'content': [{'type': 'text', 'cache_control': {'type': 'ephemeral'}}]}],
+            [{'role': 'user', 'content': [{'text': self.CANARY, 'cache_control': {'type': 'ephemeral'}}]}],
+            [{'role': 'user', 'content': [self.block({'type': 'ephemeral'})]*2}]]
+        for i, messages in enumerate(malformed):
+            with self.subTest(malformed=i): self.rejected(dict(self.body(), messages=messages), self.annotation(message='other'))
+        missing = self.body(); del missing['messages']
+        with self.subTest(missing_messages=True): self.rejected(missing, self.annotation('other', message='other'))
+
+    def test_handler_system_forms_cache_combinations_order_and_malformed_blocks(self):
+        plain = self.block(); cached = self.block({'type': 'ephemeral'})
+        cases = [([], 'empty'), ([plain], 'plain_text'), ([plain, plain], 'plain_text'),
+            ([cached], 'cached_text'), ([plain, cached], 'cached_text'), (None, 'other'), ({}, 'other'),
+            ([plain]*3, 'other'), ([cached, plain], 'other'), ([cached, cached], 'other'),
+            ([plain, plain, cached], 'other'), ([None], 'other'), (['text'], 'other'),
+            ([dict(plain, text=None)], 'other'), ([dict(plain, type='image')], 'other'),
+            ([{'type': 'text'}], 'other'), ([{'text': self.CANARY}], 'other'),
+            ([dict(plain, **{self.CANARY: self.CANARY})], 'other')]
+        for cache in ({'type': 'ephemeral'}, {'type': 'ephemeral', 'ttl': '1h'},
+                {'type': 'ephemeral', 'scope': 'global'}, {'type': 'ephemeral', 'ttl': '1h', 'scope': 'global'}):
+            cases.append(([self.block(cache)], 'cached_text'))
+            cases.append(([plain, self.block(cache)], 'cached_text'))
+        for cache in ({}, {'type': 'permanent'}, {'type': 'ephemeral', 'ttl': '5m'},
+                [], {'type': True}, {'type': 'ephemeral', 'scope': None},
+                {'type': 'ephemeral', 'scope': 'local'}, {'type': 'ephemeral', self.CANARY: self.CANARY}):
+            cases.append(([self.block(cache)], 'other'))
+        for i, (system, form) in enumerate(cases):
+            with self.subTest(case=i):
+                self.rejected(dict(self.body(), metadata={}, system=system), self.annotation('system_metadata_core', system=form))
+
+    def test_handler_opaque_unicode_metadata_options_do_not_encode_traverse_or_leak(self):
+        for text in (self.CANARY, '\ud800', '😀\u200b', self.CANARY*20000):
+            with self.subTest(text_kind='surrogate' if text == '\ud800' else 'opaque'):
+                body = self.body(); body['messages'][0]['content'] = text
+                body.update(metadata={'opaque': ['\ud800', self.CANARY]}, system=[{'type': 'text', 'text': text}],
+                    tools={'raw': self.CANARY}, output_config={'raw': '\ud800'}, stop_sequences={'raw': text})
+                self.rejected(body, self.annotation('extended_system_metadata_core', system='plain_text'))
+        # Existing template encoder rejects this fingerprint; structural text stays type-only.
+        body = self.namer(agent='\ud800')
+        with self.subTest(template_miss=True):
+            self.rejected(body, self.annotation('thinking_system_metadata_core', 'namer_pair', system='empty'))
+
+    def test_direct_exact_python_types_and_nonstring_keys(self):
+        class D(dict): pass
+        class L(list): pass
+        class S(str): pass
+        class I(int): pass
+        cases = [(D(self.body()), None),
+            (dict(self.body(), max_tokens=I(1)), self.annotation(budget='non_integer')),
+            (dict(self.body(), messages=L(self.body()['messages'])), self.annotation(message='other')),
+            (dict(self.body(), messages=[D(self.body()['messages'][0])]), self.annotation(message='other')),
+            (dict(self.body(), messages=[{'role': S('user'), 'content': self.CANARY}]), self.annotation(message='other')),
+            (dict(self.body(), messages=[{'role': 'user', 'content': S(self.CANARY)}]), self.annotation(message='other')),
+            (dict(self.body(), metadata={}, system=L([])), self.annotation('system_metadata_core', system='other')),
+            (dict(self.body(), metadata={}, system=[D(self.block())]), self.annotation('system_metadata_core', system='other')),
+            (dict(self.body(), metadata={}, system=[{'type': 'text', 'text': S(self.CANARY)}]), self.annotation('system_metadata_core', system='other'))]
+        for cache in (D(type='ephemeral'), {'type': S('ephemeral')}, {'type': 'ephemeral', 'ttl': S('1h')}):
+            cases.append((dict(self.body(), messages=[{'role': 'user', 'content': [self.block(cache)]}]), self.annotation(message='other')))
+        for key in (1, True, None, S('metadata')):
+            body = self.body(); body[key] = self.CANARY; cases.append((body, self.annotation('other')))
+        for i, (body, expected) in enumerate(cases):
+            with self.subTest(case=i):
+                provider = self.provider()
+                smoke.record_failure(provider, smoke.FixtureFailure('provider_request_contract'), '/claude/v1/messages', body)
+                self.assertEqual(provider.error, 'provider_request_contract')
+                self.assertEqual(self.structure(provider), expected)
+
+    def test_handler_known_fingerprints_and_other_ineligible_rejections_have_no_sibling(self):
+        cases = [(self.literal(), NativeSignatureTests.LABELS[0]), (self.literal('key'), NativeSignatureTests.LABELS[1]),
+            (self.literal('quota'), NativeSignatureTests.LABELS[2]), (self.namer(), NativeSignatureTests.LABELS[3]),
+            (self.classifier(), NativeSignatureTests.LABELS[4])]
+        for body, category in cases:
+            provider = self.provider(); h = self.handler(provider, body); h.do_POST(); self.assert_empty_rejection(h)
+            self.assertEqual(self.projected(provider)['messages']['category'], category)
+            self.assertEqual(provider.error, 'provider_request_contract'); self.assertIsNone(self.structure(provider))
+        for body in (dict(self.body(), stream=False), dict(self.body(), model=self.CANARY),
+                dict(self.body(), model=None), {'messages': []}):
+            provider = self.provider(); h = self.handler(provider, body); h.do_POST(); self.assert_empty_rejection(h)
+            self.assertIsNone(self.structure(provider))
+        for raw in (b'[]', b'null', b'{PRIVATE_SIGNATURE_CANARY'):
+            provider = self.provider(); h = self.handler(provider, raw=raw); h.do_POST(); self.assert_empty_rejection(h)
+            self.assertIsNone(self.structure(provider))
+
+    def test_handler_auxiliary_spies_and_hello_count_semantics_remain_unread(self):
+        class Unread:
+            def read(self, *_): raise AssertionError('auxiliary structural diagnostics read body')
+        for path in ('/claude/v1/messages/count_tokens', '/claude/v1/messages/count_tokens?beta=true', '/'+self.CANARY):
+            provider = self.provider(); h = self.handler(provider, path=path, reader=Unread()); h.do_POST()
+            self.assert_empty_rejection(h); self.assertEqual(provider.budget.requests, 1)
+            self.assertEqual(provider.conversation.counts, {}); self.assertIsNone(self.structure(provider))
+        provider = self.provider(); h = self.handler(provider, path='/claude/api/hello', reader=Unread()); h.command = 'HEAD'; h.do_HEAD()
+        self.assert_empty_rejection(h, 404); self.assertEqual(provider.budget.requests, 0)
+        self.assertEqual(self.projected(provider)['other']['category'], NativeSignatureTests.HELLO)
+        self.assertIsNone(self.structure(provider))
+
+    def test_handler_later_agent_terminal_veto_preserves_original_structure(self):
+        rows = [receipt('SessionStart'), receipt('UserPromptSubmit')]
+        provider = self.provider(smoke.Conversation(lambda: snapshot(rows), Path('/tmp/project')))
+        bad = self.handler(provider, self.body()); bad.do_POST(); self.assert_empty_rejection(bad)
+        first = self.handler(provider); first.do_POST(); self.assertEqual(first.codes, [200])
+        rows.extend([receipt('PreToolUse', tool='tempo-read'), receipt('PostToolUse', tool='tempo-read')])
+        second = self.handler(provider, request(results=[result('tempo-read')])); second.do_POST(); self.assertEqual(second.codes, [200])
+        agent = self.handler(provider, request(results=[dict(result('tempo-agent', self.CANARY), is_error=True)]))
+        agent.do_POST(); self.assert_empty_rejection(agent)
+        self.assertEqual(provider.error, 'agent_tool_error_unclassified_text_blocks')
+        self.assertEqual(provider.budget.requests, 4); self.assertEqual(provider.conversation.counts, {'parent': 2})
+        self.assertEqual(self.projected(provider), {'messages': self.record('provider_request_contract', 'messages', 'missing', 'fixture')})
+        self.assertEqual(self.structure(provider), self.annotation())
+
+    def test_controlled_first_record_races_bind_structure_to_same_winner(self):
+        eligible_a = self.body()
+        eligible_b = dict(self.body(), metadata=None, system=[self.block({'type': 'ephemeral'})], max_tokens=3072,
+            messages=[{'role': 'user', 'content': [self.block({'type': 'ephemeral', 'ttl': '1h'})]}])
+        expected_b = self.annotation('system_metadata_core', 'classifier_pair', 'user_cached_text_long', 'cached_text')
+        cases = [(eligible_a, self.annotation(), eligible_b, expected_b),
+            (eligible_a, self.annotation(), dict(self.body(), stream=False, model=self.CANARY), None),
+            (eligible_a, self.annotation(), self.literal(), None)]
+        for i, case in enumerate(cases):
+            for reverse in (False, True):
+                with self.subTest(pair=i, reverse=reverse):
+                    first, expected, later, _ = case if not reverse else (case[2], case[3], case[0], case[1])
+                    provider = self.provider(); winner_done = threading.Event(); loser_waiting = threading.Event()
+                    counts, errors, entered = {}, [], threading.Barrier(3)
+                    raw_lock = provider.budget.lock
+                    class ControlledLock:
+                        def __enter__(self):
+                            name = threading.current_thread().name
+                            counts[name] = counts.get(name, 0)+1
+                            # Handler entry is first; record_failure's winner decision is second.
+                            if name == 'structure-loser' and counts[name] == 2:
+                                loser_waiting.set()
+                                if not winner_done.wait(2): raise AssertionError('winner lock decision did not complete')
+                            if name == 'structure-winner' and counts[name] == 2:
+                                if not loser_waiting.wait(2): raise AssertionError('loser never reached first-record decision')
+                            raw_lock.acquire(); return self
+                        def __exit__(self, *_):
+                            is_winner = threading.current_thread().name == 'structure-winner'
+                            retained = 'messages' in provider.budget.first_rejections
+                            raw_lock.release()
+                            if is_winner and retained: winner_done.set()
+                    provider.budget.lock = ControlledLock()
+                    def worker(body):
+                        try:
+                            h = self.handler(provider, body); entered.wait(2); h.do_POST(); self.assert_empty_rejection(h)
+                        except BaseException as exc: errors.append(exc)
+                    threads = [threading.Thread(name=name, target=worker, args=(copy.deepcopy(body),))
+                        for name, body in (('structure-winner', first), ('structure-loser', later))]
+                    for thread in threads: thread.start()
+                    entered.wait(2)
+                    for thread in threads: thread.join(3)
+                    self.assertFalse(any(thread.is_alive() for thread in threads)); self.assertEqual(errors, [])
+                    self.assertTrue(loser_waiting.is_set()); self.assertTrue(winner_done.is_set())
+                    self.assertEqual(provider.budget.requests, 2); self.assertEqual(provider.conversation.counts, {})
+                    category = NativeSignatureTests.LABELS[0] if first.get('max_tokens') == 1 else 'provider_request_contract'
+                    stream = 'false' if 'stream' in first else 'missing'
+                    model = 'other' if first['model'] != smoke.MODEL else 'fixture'
+                    self.assertEqual(self.projected(provider), {'messages': self.record(category, 'messages', stream, model)})
+                    self.assertEqual(self.structure(provider), expected)
+
+    def test_first_wins_structure_is_detached_from_body_later_calls_and_projection(self):
+        body = dict(self.body(), metadata={'raw': self.CANARY}, system=[self.block()])
+        provider = self.provider(); h = self.handler(provider, body); h.do_POST(); self.assert_empty_rejection(h)
+        expected = self.annotation('system_metadata_core', system='plain_text')
+        body.clear(); body[self.CANARY] = []
+        later = self.handler(provider, self.body()); later.do_POST(); self.assert_empty_rejection(later)
+        self.assertEqual(self.structure(provider), expected)
+        projected = self.structure(provider); projected['envelope'] = self.CANARY; projected[self.CANARY] = self.CANARY
+        self.assertEqual(self.structure(provider), expected)
+        smoke.record_failure(provider, RuntimeError(self.CANARY), '/claude/v1/messages', {})
+        self.assertEqual(provider.error, 'provider_protocol_failed'); self.assertEqual(self.structure(provider), expected)
+
+    def test_direct_retention_detaches_caller_and_ignores_untraversable_metadata(self):
+        class Opaque:
+            def __iter__(self): raise AssertionError('metadata traversed')
+            def __str__(self): raise AssertionError('metadata stringified')
+            def __len__(self): raise AssertionError('metadata measured')
+        body = dict(self.body(), metadata=Opaque(), system=[self.block()])
+        provider = self.provider()
+        smoke.record_failure(provider, smoke.FixtureFailure('provider_request_contract'), '/claude/v1/messages', body)
+        # Mutate the actual caller-owned parsed container, not a JSON copy.
+        body['system'][0].clear(); body['messages'][0].clear(); body.clear()
+        self.assertEqual(provider.error, 'provider_request_contract')
+        self.assertEqual(self.projected(provider), {'messages': self.record('provider_request_contract', 'messages', 'missing', 'fixture')})
+        self.assertEqual(self.structure(provider), self.annotation('system_metadata_core', system='plain_text'))
+
+    def run_structural_report(self, old, structural=ABSENT, terminal='provider_protocol_failed'):
+        # Real run/Provider.close/finally, only inert process and owned-path seams.
+        with tempfile.TemporaryDirectory(prefix='tempo-structure-qa-') as tmp:
+            fixture = Path(tmp).resolve(); root, home = fixture/'owned', fixture/'home'; home.mkdir()
+            runtime, tempo, helper = (fixture/name for name in ('runtime', 'tempo', 'helper'))
+            for path in (runtime, tempo, helper): path.write_text('inert file')
+            model = smoke.Conversation(lambda: {'receipts': []}, fixture/'project')
+            provider = smoke.Provider.__new__(smoke.Provider)
+            provider.budget, provider.error, provider.shutdown = smoke.ProviderBudget(), None, threading.Event()
+            provider.server, provider.thread = mock.Mock(server_port=43210), mock.Mock()
+            def close_site():
+                provider.budget.first_rejections = copy.deepcopy(old)
+                if structural is not self.ABSENT: setattr(provider.budget, '_first_messages_structure', copy.deepcopy(structural))
+                provider.error = terminal
+            provider.server.server_close.side_effect = close_site
+            def bounded(argv, *_args, **_kwargs):
+                if argv[0] == str(runtime): return b'2.1.286 (Claude Code)\n' if argv[1:] == ['--version'] else b''
+                if argv[2] == 'confirm': return json.dumps({'basis': 'operator_declared', 'fingerprint': 'a'*64}).encode()
+                return b'{"receipts":[],"queued":0,"uncertainties":0,"capture_reviews":0}' if argv[2] == 'read' else b''
+            def owned_root(**_kwargs): root.mkdir(); return str(root)
+            real_home = os.environ['HOME']
+            def boundary_path(value): return home if str(value) == real_home else Path(value)
+            report = {}
+            with mock.patch.dict(os.environ, {'RUNNER_TEMP': str(fixture), 'GITHUB_SHA': 'd'*40}), \
+                 mock.patch.object(smoke, 'Path', side_effect=boundary_path), \
+                 mock.patch.object(smoke, 'hosted_precondition'), mock.patch.object(smoke, 'require_absent'), \
+                 mock.patch.object(smoke, 'child_environment', return_value={'TEMPO_STATE': str(root/'state'), 'TEMPO_HOOK_STATE': str(root/'policy')}), \
+                 mock.patch.object(smoke.tempfile, 'mkdtemp', side_effect=owned_root), \
+                 mock.patch.object(smoke, 'download_runtime', return_value=runtime), \
+                 mock.patch.object(smoke, 'bounded_run', side_effect=bounded), \
+                 mock.patch.object(smoke, 'Conversation', return_value=model), \
+                 mock.patch.object(smoke, 'Provider', return_value=provider), mock.patch.object(smoke, 'require_final'):
+                with self.assertRaises(smoke.FixtureFailure) as caught:
+                    smoke.run(types.SimpleNamespace(tempo=str(tempo), helper=str(helper)), report)
+                self.assertEqual(str(caught.exception), terminal)
+            self.assertEqual(os.environ['HOME'], real_home); self.assertFalse(root.exists())
+            provider.server.shutdown.assert_called_once(); provider.server.server_close.assert_called_once()
+            provider.thread.join.assert_called_once(); self.assertTrue(provider.shutdown.is_set())
+            self.assertNotEqual(report.get('status'), 'passed')
+            return report
+
+    def test_actual_finally_valid_sibling_discards_extras_canaries_and_preserves_agent_veto(self):
+        old = {'messages': self.record('provider_request_contract', 'messages', 'missing', 'fixture')}
+        dirty = dict(self.annotation(), **{self.CANARY: self.CANARY, 'raw_budget': 987654321, 'raw_digest': self.CANARY})
+        report = self.run_structural_report(old, dirty, 'agent_tool_error_unclassified_text_string')
+        self.assertEqual(report['provider_first_rejections'], old)
+        serialized = json.dumps(report)
+        for raw in (self.CANARY, '987654321', 'raw_budget', 'raw_digest', '/claude/v1/messages', 'X-Private-Fixture'):
+            self.assertNotIn(raw, serialized)
+        self.assertEqual(report.get('provider_first_messages_structure'), self.annotation())
+
+    def test_actual_finally_all_closed_enum_values_and_only_required_system_relations(self):
+        old = {'messages': self.record('provider_request_contract', 'messages', 'missing', 'fixture')}
+        envelopes = ('bare_core', 'metadata_core', 'temperature_metadata_core', 'system_metadata_core',
+            'thinking_system_metadata_core', 'extended_system_metadata_core', 'other')
+        budgets = ('literal_one', 'namer_pair', 'classifier_pair', 'other_integer', 'non_integer')
+        messages = ('user_string', 'user_cached_text', 'user_cached_text_long', 'other')
+        systems = ('absent', 'empty', 'plain_text', 'cached_text', 'other')
+        for index in range(35):
+            envelope = envelopes[index % 7]
+            system = 'absent' if index % 7 < 3 else systems[1 + (index // 7) % 4]
+            expected = self.annotation(envelope, budgets[index % 5], messages[index % 4], system)
+            with self.subTest(case=index):
+                report = self.run_structural_report(old, expected)
+                self.assertEqual(report['provider_first_rejections'], old)
+                self.assertEqual(report.get('provider_first_messages_structure'), expected)
+        for system in systems:
+            expected = self.annotation('other', 'non_integer', 'other', system)
+            with self.subTest(other_system=system):
+                self.assertEqual(self.run_structural_report(old, expected).get('provider_first_messages_structure'), expected)
+
+    def test_actual_finally_malformed_structure_drops_only_sibling(self):
+        class D(dict): pass
+        class S(str): pass
+        old = {'messages': self.record('provider_request_contract', 'messages', 'missing', 'fixture')}
+        good = self.annotation()
+        faults = [self.ABSENT, None, [], self.CANARY, D(good)]
+        for field in good:
+            faults.append({key: value for key, value in good.items() if key != field})
+            for value in (None, True, 1, [], {}, self.CANARY, S(good[field])):
+                faults.append(dict(good, **{field: value}))
+        for envelope in ('bare_core', 'metadata_core', 'temperature_metadata_core'):
+            for system in ('empty', 'plain_text', 'cached_text', 'other'): faults.append(self.annotation(envelope, system=system))
+        for envelope in ('system_metadata_core', 'thinking_system_metadata_core', 'extended_system_metadata_core'):
+            faults.append(self.annotation(envelope, system='absent'))
+        for i, fault in enumerate(faults):
+            with self.subTest(fault=i):
+                report = self.run_structural_report(old, fault)
+                self.assertEqual(report['provider_first_rejections'], old)
+                self.assertNotIn('provider_first_messages_structure', report); self.assertNotIn(self.CANARY, json.dumps(report))
+
+    def test_actual_finally_valid_structure_cannot_attach_to_absent_bad_or_ineligible_old_record(self):
+        records = [None, {}, [], {'messages': []},
+            {'messages': self.record('provider_request_contract', 'messages', 'false', 'fixture')},
+            {'messages': self.record('provider_request_contract', 'messages', 'missing', 'other')},
+            {'messages': self.record('provider_request_contract', 'other', 'missing', 'fixture')},
+            {'messages': self.record(NativeSignatureTests.LABELS[0], 'messages', 'missing', 'fixture')},
+            {'messages': self.record('agent_result_error', 'messages', 'missing', 'fixture')},
+            {'count_tokens': self.record('unexpected_provider_endpoint', 'count_tokens')}]
+        for i, old in enumerate(records):
+            with self.subTest(case=i):
+                report = self.run_structural_report(old, self.annotation())
+                self.assertNotIn('provider_first_messages_structure', report); self.assertNotIn(self.CANARY, json.dumps(report))
+                if i in (4, 5, 7, 8, 9): self.assertEqual(report['provider_first_rejections'], old)
+
+
 if __name__=='__main__':unittest.main()
