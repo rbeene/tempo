@@ -208,14 +208,29 @@ def agent_error_category(content):
     """
     if isinstance(content, str):
         parts = [content]
-    elif isinstance(content, list) and len(content) <= 128:
+        shape = 'string'
+    elif isinstance(content, list):
+        if len(content) > 128:
+            return 'agent_tool_error_too_many_blocks'
         parts = [v['text'] for v in content if isinstance(v, dict)
                  and v.get('type') == 'text' and isinstance(v.get('text'), str)]
+        shape = 'blocks'
     else:
-        return 'agent_tool_error_unclassified'
+        return 'agent_tool_error_unsupported_content'
+    if not parts:
+        return 'agent_tool_error_no_text'
     if sum(len(v) for v in parts) > 16384:
-        return 'agent_tool_error_unclassified'
+        return 'agent_tool_error_oversized_text'
     text = '\n'.join(parts)
+    if not text.strip():
+        return 'agent_tool_error_empty_text'
+    # The native permission formatter interpolates a tool label/rule/reason.
+    # Match only its static fragments within this already-correlated Agent error.
+    if ("but you haven't granted it yet." in text
+            or ('Permission to use ' in text and ' has been denied' in text)
+            or 'requires approval for this ' in text
+            or 'User rejected tool use' in text or 'User denied permission' in text):
+        return 'agent_tool_error_permission'
     categories = (
         ('type_unavailable', ("Agent type 'tempo-fixture-child' not found.",
                               "Agent type 'tempo-fixture-child' is not offered in this session.")),
@@ -254,7 +269,7 @@ def agent_error_category(content):
         return 'agent_tool_error_filesystem'
     if 'Error calling tool (Agent):' in text:
         return 'agent_tool_error_dispatch_exception'
-    return 'agent_tool_error_unclassified'
+    return 'agent_tool_error_unclassified_text_' + shape
 
 
 def require_tool_result(body, tool_id, marker=None):

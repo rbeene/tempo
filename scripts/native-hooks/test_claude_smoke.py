@@ -195,7 +195,7 @@ class ProtocolTests(unittest.TestCase):
                ([dict(good,is_error='true')], 'actual_tool_result_invalid_error_flag'),
                ([dict(good,is_error=0)], 'actual_tool_result_invalid_error_flag'),
                ([dict(good,is_error=None)], 'actual_tool_result_invalid_error_flag'),
-               ([dict(good,is_error=True)], 'agent_tool_error_unclassified')]
+               ([dict(good,is_error=True)], 'agent_tool_error_unclassified_text_blocks')]
         for results,category in cases:
             with self.subTest(category=category),self.assertRaises(smoke.FixtureFailure) as failure:
                 smoke.require_tool_result(request(results=results),'tempo-agent')
@@ -221,13 +221,16 @@ class ProtocolTests(unittest.TestCase):
                 bad=dict(result('tempo-agent'),is_error=True,content=content)
                 with self.subTest(category=category),self.assertRaises(smoke.FixtureFailure) as failure:
                     smoke.require_tool_result(request(results=[bad]),'tempo-agent')
-                self.assertEqual(str(failure.exception),'agent_tool_error_'+category)
+                expected=category if category!='unclassified' else 'unclassified_text_'+('string' if isinstance(content,str) else 'blocks')
+                self.assertEqual(str(failure.exception),'agent_tool_error_'+expected)
                 self.assertNotIn('private-canary',str(failure.exception))
-        for content in (None,{'error':'private-canary'},[{'type':'image','text':cases[0][0]}],
-                        'private-canary'*2000,[{'type':'text','text':cases[0][0]}]*129):
+        for content,category in ((None,'unsupported_content'),({'error':'private-canary'},'unsupported_content'),
+                                ([{'type':'image','text':cases[0][0]}],'no_text'),
+                                ('private-canary'*2000,'oversized_text'),
+                                ([{'type':'text','text':cases[0][0]}]*129,'too_many_blocks')):
             with self.assertRaises(smoke.FixtureFailure) as failure:
                 smoke.require_tool_result(request(results=[dict(result('tempo-agent'),is_error=True,content=content)]),'tempo-agent')
-            self.assertEqual(str(failure.exception),'agent_tool_error_unclassified')
+            self.assertEqual(str(failure.exception),'agent_tool_error_'+category)
 
     def test_errored_agent_result_cannot_pass_complete_native_receipt_barriers(self):
         rows=[receipt('SessionStart'),receipt('UserPromptSubmit')]
@@ -241,7 +244,7 @@ class ProtocolTests(unittest.TestCase):
         model.respond(request(smoke.CHILD_PROMPT))
         with self.assertRaises(smoke.FixtureFailure) as failure:
             model.respond(request(results=[dict(result('tempo-agent','private-canary'),is_error=True)]))
-        self.assertEqual(str(failure.exception),'agent_tool_error_unclassified')
+        self.assertEqual(str(failure.exception),'agent_tool_error_unclassified_text_blocks')
         self.assertEqual(model.phase,'agent');self.assertEqual(model.counts,{'parent':2,'child':1})
 
     def test_shared_dispatch_errors_have_bounded_fixed_diagnostics(self):
@@ -263,14 +266,31 @@ class ProtocolTests(unittest.TestCase):
                ('ENOENT: no such file or directory, open private-canary','filesystem'),
                ('EACCES: permission denied, open private-canary','filesystem'),
                ('Error calling tool (Agent): private-canary','dispatch_exception'),
-               ('private-canary contains XENOENTZ and a taskRegistry mention','unclassified')]
+               ('private-canary contains XENOENTZ and a taskRegistry mention','unclassified_text_blocks')]
         for text,category in cases:
             with self.subTest(category=category),self.assertRaises(smoke.FixtureFailure) as failure:
                 smoke.require_tool_result(request(results=[dict(result('tempo-agent',text+' private-canary'),is_error=True)]),'tempo-agent')
             self.assertEqual(str(failure.exception),'agent_tool_error_'+category)
         # The aggregate text cap must apply before recognizing any fragment.
         oversized=[{'type':'text','text':cases[0][0]}]+[{'type':'text','text':'x'*200}]*127
-        self.assertEqual(smoke.agent_error_category(oversized),'agent_tool_error_unclassified')
+        self.assertEqual(smoke.agent_error_category(oversized),'agent_tool_error_oversized_text')
+
+    def test_permission_formatter_variants_and_empty_content_stay_fixed(self):
+        permission=["Claude requested permissions to use Task, but you haven't granted it yet.",
+                    "Claude requested permissions to use Agent(private-canary), but you haven't granted it yet.",
+                    'Permission to use private-canary has been denied',
+                    "Permission rule 'private-canary' requires approval for this Task command",
+                    'User rejected tool use', 'User denied permission']
+        for text in permission:
+            self.assertEqual(smoke.agent_error_category(text),'agent_tool_error_permission')
+        for content,category in (([],'no_text'),('', 'empty_text'),(' \n\t','empty_text'),
+                                 ([{'type':'text','text':''}],'empty_text'),
+                                 ([{'type':'text','text':17}],'no_text'),
+                                 ('private-canary','unclassified_text_string'),
+                                 ([{'type':'text','text':'private-canary'}],'unclassified_text_blocks'),
+                                 ('Permission to use private-canary','unclassified_text_string'),
+                                 ('private-canary has been denied','unclassified_text_string')):
+            self.assertEqual(smoke.agent_error_category(content),'agent_tool_error_'+category)
 
     def test_initial_response_requires_unique_accepted_native_start_and_prompt(self):
         base=[receipt('SessionStart'),receipt('UserPromptSubmit')]
@@ -412,7 +432,7 @@ class ProcessTests(unittest.TestCase):
             self.assertEqual(json.loads(data)['status'],'failed')
 
     def test_main_exports_agent_failure_category_without_raw_result_or_canary(self):
-        for text,category in [('private-canary','agent_tool_error_unclassified'),
+        for text,category in [('private-canary','agent_tool_error_unclassified_text_blocks'),
                               ('Permission to use Agent has been denied: private-canary','agent_tool_error_permission'),
                               ('private-canary is not a function','agent_tool_error_runtime_type_other'),
                               ('ENOENT private-canary','agent_tool_error_filesystem')]:
