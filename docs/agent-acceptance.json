@@ -1,0 +1,2244 @@
+{
+  "fixture_version": 1,
+  "status": "acceptance specification; no production driver exists in issue 6",
+  "notation": {
+    "time": "at and range endpoints are integer seconds after 2026-10-02T09:00:00Z; range is half-open. Default clock epoch boot-1 has equal elapsed/awake deltas matching at. Explicit clock_sample overrides it. For rollback cases wall_utc_seconds overrides the UTC anchor while at remains the chronological dispatch offset; this explicitly separates wall reversal from elapsed time.",
+    "identifiers": "A/B/P and default/computer-a are aliases. A test driver substitutes stable UUIDs/actor keys per case; all actors initially share computer-a/account 1/user 2/project 3/task 4/UTC and a live default binding unless overridden.",
+    "event": "op event calls activity.ingest with the given actor/generation/sequence/kind. event_id is stable case-ID plus first event index; replay reuses identity and input, never at as payload. First work resolves default binding. All source input is trusted normalized evidence unless a bridge case says otherwise.",
+    "health": "source_lost and clock_sample are injected durable source/clock observation transactions, not fabricated host lifecycle callbacks. They persist uncertainty before the next read. Status remains read-only; a new discontinuity noticed only by status may be displayed as stale provisionally, but the next event/observation transaction must persist quarantine before finalization.",
+    "recovery": "actor+generation selects that case's sole earlier uncertain segment; if_revision current resolves the actual current record revision, old is a previously read superseded revision. Every mutation has a stable per-step request UUID.",
+    "expected": "confirmed_segments include closed confirmed prefixes; open work is provisional. finalized_union excludes ranges blocked by open/uncertain reservations, including touching endpoints. Arrays omitted in expected mean no assertion; empty arrays explicitly assert empty."
+  },
+  "timelines": [
+    {
+      "id": "work_wait_resume_finish",
+      "steps": [
+        {
+          "at": 0,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "1",
+          "kind": "work"
+        },
+        {
+          "at": 30,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "2",
+          "kind": "wait_user"
+        },
+        {
+          "at": 50,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "3",
+          "kind": "work"
+        },
+        {
+          "at": 80,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "4",
+          "kind": "finish"
+        }
+      ],
+      "expected": {
+        "confirmed_segments": [
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              0,
+              30
+            ]
+          },
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              50,
+              80
+            ]
+          }
+        ],
+        "finalized_union": [
+          [
+            0,
+            30
+          ],
+          [
+            50,
+            80
+          ]
+        ],
+        "total_finalized_seconds": 60,
+        "unresolved": [],
+        "actor_states": {
+          "A": "finished"
+        }
+      }
+    },
+    {
+      "id": "overlapping_actors_one_union",
+      "steps": [
+        {
+          "at": 0,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "1",
+          "kind": "work"
+        },
+        {
+          "at": 30,
+          "op": "event",
+          "actor": "B",
+          "generation": "1",
+          "sequence": "1",
+          "kind": "work"
+        },
+        {
+          "at": 60,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "2",
+          "kind": "finish"
+        },
+        {
+          "at": 90,
+          "op": "event",
+          "actor": "B",
+          "generation": "1",
+          "sequence": "2",
+          "kind": "finish"
+        }
+      ],
+      "expected": {
+        "confirmed_segments": [
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              0,
+              60
+            ]
+          },
+          {
+            "actor": "B",
+            "generation": "1",
+            "range": [
+              30,
+              90
+            ]
+          }
+        ],
+        "finalized_union": [
+          [
+            0,
+            90
+          ]
+        ],
+        "total_finalized_seconds": 90,
+        "unresolved": []
+      }
+    },
+    {
+      "id": "parent_waits_for_nested_children",
+      "steps": [
+        {
+          "at": 0,
+          "op": "event",
+          "actor": "P",
+          "generation": "1",
+          "sequence": "1",
+          "kind": "work"
+        },
+        {
+          "at": 10,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "1",
+          "kind": "work",
+          "parent": "P"
+        },
+        {
+          "at": 20,
+          "op": "event",
+          "actor": "P",
+          "generation": "1",
+          "sequence": "2",
+          "kind": "wait_children"
+        },
+        {
+          "at": 30,
+          "op": "event",
+          "actor": "B",
+          "generation": "1",
+          "sequence": "1",
+          "kind": "work",
+          "parent": "A"
+        },
+        {
+          "at": 60,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "2",
+          "kind": "finish"
+        },
+        {
+          "at": 90,
+          "op": "event",
+          "actor": "B",
+          "generation": "1",
+          "sequence": "2",
+          "kind": "finish"
+        },
+        {
+          "at": 100,
+          "op": "event",
+          "actor": "P",
+          "generation": "1",
+          "sequence": "3",
+          "kind": "finish"
+        }
+      ],
+      "expected": {
+        "confirmed_segments": [
+          {
+            "actor": "P",
+            "generation": "1",
+            "range": [
+              0,
+              20
+            ]
+          },
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              10,
+              60
+            ]
+          },
+          {
+            "actor": "B",
+            "generation": "1",
+            "range": [
+              30,
+              90
+            ]
+          }
+        ],
+        "finalized_union": [
+          [
+            0,
+            90
+          ]
+        ],
+        "total_finalized_seconds": 90,
+        "unresolved": [],
+        "parent_added_seconds_while_waiting": 0
+      }
+    },
+    {
+      "id": "normal_silent_thirty_minute_turn",
+      "steps": [
+        {
+          "at": 0,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "1",
+          "kind": "work"
+        },
+        {
+          "at": 900,
+          "op": "status",
+          "expect_active": [
+            "A"
+          ],
+          "expect_queued": 0
+        },
+        {
+          "at": 1000,
+          "op": "worker_restart",
+          "clock_and_source_continuity": true
+        },
+        {
+          "at": 1800,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "2",
+          "kind": "wait_user",
+          "source_event": "Stop without verified finality"
+        }
+      ],
+      "expected": {
+        "confirmed_segments": [
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              0,
+              1800
+            ]
+          }
+        ],
+        "finalized_union": [
+          [
+            0,
+            1800
+          ]
+        ],
+        "total_finalized_seconds": 1800,
+        "unresolved": [],
+        "actor_states": {
+          "A": "wait_user"
+        }
+      }
+    },
+    {
+      "id": "stop_continuation_is_not_terminal",
+      "steps": [
+        {
+          "at": 0,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "1",
+          "kind": "work"
+        },
+        {
+          "at": 30,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "2",
+          "kind": "wait_user",
+          "source_event": "Stop proposal cycle 1"
+        },
+        {
+          "at": 40,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "3",
+          "kind": "work",
+          "source_event": "verified continuation cycle 2"
+        },
+        {
+          "at": 45,
+          "op": "replay",
+          "event_index": 1,
+          "expect": "duplicate"
+        },
+        {
+          "at": 70,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "4",
+          "kind": "wait_user",
+          "source_event": "Stop proposal cycle 2"
+        },
+        {
+          "at": 80,
+          "op": "event",
+          "actor": "A",
+          "generation": "2",
+          "sequence": "1",
+          "kind": "work",
+          "source_event": "new source prompt"
+        },
+        {
+          "at": 100,
+          "op": "event",
+          "actor": "A",
+          "generation": "2",
+          "sequence": "2",
+          "kind": "finish"
+        }
+      ],
+      "expected": {
+        "confirmed_segments": [
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              0,
+              30
+            ]
+          },
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              40,
+              70
+            ]
+          },
+          {
+            "actor": "A",
+            "generation": "2",
+            "range": [
+              80,
+              100
+            ]
+          }
+        ],
+        "finalized_union": [
+          [
+            0,
+            30
+          ],
+          [
+            40,
+            70
+          ],
+          [
+            80,
+            100
+          ]
+        ],
+        "total_finalized_seconds": 80,
+        "unresolved": []
+      }
+    },
+    {
+      "id": "replay_tombstones_survive_restart",
+      "steps": [
+        {
+          "at": 0,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "1",
+          "kind": "work"
+        },
+        {
+          "at": 20,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "2",
+          "kind": "wait_user"
+        },
+        {
+          "at": 25,
+          "op": "replay",
+          "event_index": 0,
+          "expect": "duplicate"
+        },
+        {
+          "at": 40,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "3",
+          "kind": "work"
+        },
+        {
+          "at": 60,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "4",
+          "kind": "finish"
+        },
+        {
+          "at": 70,
+          "op": "store_restart",
+          "clock_and_source_continuity": true
+        },
+        {
+          "at": 80,
+          "op": "event",
+          "actor": "A",
+          "generation": "2",
+          "sequence": "1",
+          "kind": "work"
+        },
+        {
+          "at": 85,
+          "op": "replay",
+          "event_index": 1,
+          "expect": "duplicate"
+        },
+        {
+          "at": 86,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "5",
+          "kind": "work",
+          "expect": "stale"
+        },
+        {
+          "at": 87,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "6",
+          "kind": "wait_user",
+          "expect": "stale"
+        },
+        {
+          "at": 88,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "7",
+          "kind": "finish",
+          "expect": "stale"
+        },
+        {
+          "at": 100,
+          "op": "event",
+          "actor": "A",
+          "generation": "2",
+          "sequence": "2",
+          "kind": "finish"
+        }
+      ],
+      "expected": {
+        "confirmed_segments": [
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              0,
+              20
+            ]
+          },
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              40,
+              60
+            ]
+          },
+          {
+            "actor": "A",
+            "generation": "2",
+            "range": [
+              80,
+              100
+            ]
+          }
+        ],
+        "finalized_union": [
+          [
+            0,
+            20
+          ],
+          [
+            40,
+            60
+          ],
+          [
+            80,
+            100
+          ]
+        ],
+        "total_finalized_seconds": 60,
+        "unresolved": [],
+        "generation_high_water": "2"
+      }
+    },
+    {
+      "id": "conflicting_duplicate_no_effect",
+      "steps": [
+        {
+          "at": 0,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "1",
+          "kind": "work"
+        },
+        {
+          "at": 20,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "2",
+          "kind": "wait_user"
+        },
+        {
+          "at": 30,
+          "op": "replay",
+          "event_index": 0,
+          "replace": {
+            "kind": "finish"
+          },
+          "expect_error": "event_conflict"
+        },
+        {
+          "at": 40,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "3",
+          "kind": "finish"
+        }
+      ],
+      "expected": {
+        "confirmed_segments": [
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              0,
+              20
+            ]
+          }
+        ],
+        "finalized_union": [
+          [
+            0,
+            20
+          ]
+        ],
+        "total_finalized_seconds": 20,
+        "unresolved": []
+      }
+    },
+    {
+      "id": "sequence_gap_is_not_continuous_work",
+      "steps": [
+        {
+          "at": 0,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "1",
+          "kind": "work"
+        },
+        {
+          "at": 30,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "3",
+          "kind": "work",
+          "expect_error": "event_gap"
+        },
+        {
+          "at": 40,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "4",
+          "kind": "finish",
+          "expect_error": "event_gap"
+        },
+        {
+          "at": 50,
+          "op": "store_restart",
+          "clock_and_source_continuity": true
+        },
+        {
+          "at": 60,
+          "op": "event",
+          "actor": "A",
+          "generation": "2",
+          "sequence": "1",
+          "kind": "work"
+        },
+        {
+          "at": 90,
+          "op": "event",
+          "actor": "A",
+          "generation": "2",
+          "sequence": "2",
+          "kind": "finish"
+        }
+      ],
+      "expected": {
+        "confirmed_segments": [
+          {
+            "actor": "A",
+            "generation": "2",
+            "range": [
+              60,
+              90
+            ]
+          }
+        ],
+        "finalized_union": [],
+        "total_finalized_seconds": 0,
+        "unresolved": [
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              0,
+              60
+            ],
+            "reason": "event_gap"
+          }
+        ],
+        "blocked_closed_union": [
+          [
+            60,
+            90
+          ]
+        ]
+      }
+    },
+    {
+      "id": "recovery_preserves_gap",
+      "steps": [
+        {
+          "at": 0,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "1",
+          "kind": "work"
+        },
+        {
+          "at": 1800,
+          "op": "source_lost",
+          "actor": "A"
+        },
+        {
+          "at": 7200,
+          "op": "event",
+          "actor": "B",
+          "generation": "1",
+          "sequence": "1",
+          "kind": "work"
+        },
+        {
+          "at": 10800,
+          "op": "activity.resolve",
+          "actor": "A",
+          "generation": "1",
+          "end": 3600,
+          "if_revision": "current",
+          "confirmed": true
+        },
+        {
+          "at": 10800,
+          "op": "event",
+          "actor": "B",
+          "generation": "1",
+          "sequence": "2",
+          "kind": "finish"
+        }
+      ],
+      "expected": {
+        "confirmed_segments": [
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              0,
+              3600
+            ]
+          },
+          {
+            "actor": "B",
+            "generation": "1",
+            "range": [
+              7200,
+              10800
+            ]
+          }
+        ],
+        "finalized_union": [
+          [
+            0,
+            3600
+          ],
+          [
+            7200,
+            10800
+          ]
+        ],
+        "total_finalized_seconds": 7200,
+        "unresolved": [],
+        "explicit_unbilled_gaps": [
+          [
+            3600,
+            7200
+          ]
+        ],
+        "exact_example": "09:00 A start; 11:00 B start; recover A end 10:00; B ends 12:00"
+      }
+    },
+    {
+      "id": "stale_resume_does_not_resolve_old_tail",
+      "steps": [
+        {
+          "at": 0,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "1",
+          "kind": "work"
+        },
+        {
+          "at": 30,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "2",
+          "kind": "observe_work"
+        },
+        {
+          "at": 40,
+          "op": "source_lost",
+          "actor": "A"
+        },
+        {
+          "at": 50,
+          "op": "store_restart",
+          "clock_and_source_continuity": true
+        },
+        {
+          "at": 70,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "3",
+          "kind": "work"
+        },
+        {
+          "at": 100,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "4",
+          "kind": "finish"
+        }
+      ],
+      "expected": {
+        "confirmed_segments": [
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              0,
+              30
+            ]
+          },
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              70,
+              100
+            ]
+          }
+        ],
+        "finalized_union": [],
+        "total_finalized_seconds": 0,
+        "unresolved": [
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              30,
+              70
+            ],
+            "reason": "source_lost"
+          }
+        ],
+        "blocked_closed_union": [
+          [
+            0,
+            30
+          ],
+          [
+            70,
+            100
+          ]
+        ]
+      }
+    },
+    {
+      "id": "new_generation_does_not_resolve_old_tail",
+      "steps": [
+        {
+          "at": 0,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "1",
+          "kind": "work"
+        },
+        {
+          "at": 30,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "2",
+          "kind": "observe_work"
+        },
+        {
+          "at": 40,
+          "op": "source_lost",
+          "actor": "A"
+        },
+        {
+          "at": 70,
+          "op": "event",
+          "actor": "A",
+          "generation": "2",
+          "sequence": "1",
+          "kind": "work"
+        },
+        {
+          "at": 80,
+          "op": "replay",
+          "event_index": 0,
+          "expect": "duplicate"
+        },
+        {
+          "at": 100,
+          "op": "event",
+          "actor": "A",
+          "generation": "2",
+          "sequence": "2",
+          "kind": "finish"
+        },
+        {
+          "at": 110,
+          "op": "store_restart",
+          "clock_and_source_continuity": true
+        }
+      ],
+      "expected": {
+        "confirmed_segments": [
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              0,
+              30
+            ]
+          },
+          {
+            "actor": "A",
+            "generation": "2",
+            "range": [
+              70,
+              100
+            ]
+          }
+        ],
+        "finalized_union": [],
+        "total_finalized_seconds": 0,
+        "unresolved": [
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              30,
+              70
+            ],
+            "reason": "source_lost"
+          }
+        ],
+        "blocked_closed_union": [
+          [
+            0,
+            30
+          ],
+          [
+            70,
+            100
+          ]
+        ]
+      }
+    },
+    {
+      "id": "normal_stop_does_not_resolve_old_tail",
+      "steps": [
+        {
+          "at": 0,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "1",
+          "kind": "work"
+        },
+        {
+          "at": 30,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "2",
+          "kind": "observe_work"
+        },
+        {
+          "at": 40,
+          "op": "source_lost",
+          "actor": "A"
+        },
+        {
+          "at": 70,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "3",
+          "kind": "finish"
+        }
+      ],
+      "expected": {
+        "confirmed_segments": [
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              0,
+              30
+            ]
+          }
+        ],
+        "finalized_union": [],
+        "total_finalized_seconds": 0,
+        "unresolved": [
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              30,
+              70
+            ],
+            "reason": "source_lost"
+          }
+        ],
+        "actor_states": {
+          "A": "finished"
+        },
+        "blocked_closed_union": [
+          [
+            0,
+            30
+          ]
+        ]
+      }
+    },
+    {
+      "id": "recovery_bounds_and_newer_segment",
+      "steps": [
+        {
+          "at": 0,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "1",
+          "kind": "work"
+        },
+        {
+          "at": 30,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "2",
+          "kind": "observe_work"
+        },
+        {
+          "at": 40,
+          "op": "source_lost",
+          "actor": "A"
+        },
+        {
+          "at": 70,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "3",
+          "kind": "work"
+        },
+        {
+          "at": 80,
+          "op": "activity.resolve",
+          "actor": "A",
+          "generation": "1",
+          "end": 29,
+          "if_revision": "current",
+          "confirmed": true,
+          "expect_error": "recovery_bounds"
+        },
+        {
+          "at": 81,
+          "op": "activity.resolve",
+          "actor": "A",
+          "generation": "1",
+          "end": 71,
+          "if_revision": "current",
+          "confirmed": true,
+          "expect_error": "recovery_bounds"
+        },
+        {
+          "at": 82,
+          "op": "activity.resolve",
+          "actor": "A",
+          "generation": "1",
+          "end": 50,
+          "if_revision": "old",
+          "confirmed": true,
+          "expect_error": "revision_conflict"
+        },
+        {
+          "at": 83,
+          "op": "activity.resolve",
+          "actor": "A",
+          "generation": "1",
+          "end": 50,
+          "if_revision": "current",
+          "confirmed": true
+        },
+        {
+          "at": 100,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "4",
+          "kind": "finish"
+        }
+      ],
+      "expected": {
+        "confirmed_segments": [
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              0,
+              50
+            ]
+          },
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              70,
+              100
+            ]
+          }
+        ],
+        "finalized_union": [
+          [
+            0,
+            50
+          ],
+          [
+            70,
+            100
+          ]
+        ],
+        "total_finalized_seconds": 80,
+        "unresolved": [],
+        "explicit_unbilled_gaps": [
+          [
+            50,
+            70
+          ]
+        ]
+      }
+    },
+    {
+      "id": "discard_tail_keeps_confirmed_prefix",
+      "steps": [
+        {
+          "at": 0,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "1",
+          "kind": "work"
+        },
+        {
+          "at": 30,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "2",
+          "kind": "observe_work"
+        },
+        {
+          "at": 40,
+          "op": "source_lost",
+          "actor": "A"
+        },
+        {
+          "at": 60,
+          "op": "activity.resolve",
+          "actor": "A",
+          "generation": "1",
+          "discard_tail": true,
+          "if_revision": "current",
+          "confirmed": true
+        },
+        {
+          "at": 70,
+          "op": "store_restart",
+          "clock_and_source_continuity": true
+        },
+        {
+          "at": 80,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "3",
+          "kind": "work",
+          "expect": "stale"
+        }
+      ],
+      "expected": {
+        "confirmed_segments": [
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              0,
+              30
+            ]
+          }
+        ],
+        "finalized_union": [
+          [
+            0,
+            30
+          ]
+        ],
+        "total_finalized_seconds": 30,
+        "unresolved": [],
+        "actor_states": {
+          "A": "interrupted"
+        }
+      }
+    },
+    {
+      "id": "waiting_actor_can_be_detached",
+      "steps": [
+        {
+          "at": 0,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "1",
+          "kind": "work"
+        },
+        {
+          "at": 20,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "2",
+          "kind": "wait_permission"
+        },
+        {
+          "at": 30,
+          "op": "bindings.unlink",
+          "binding": "default",
+          "if_revision": "current",
+          "confirmed": true,
+          "expect_error": "binding_in_use"
+        },
+        {
+          "at": 40,
+          "op": "activity.interrupt",
+          "actor": "A",
+          "generation": "1",
+          "if_revision": "current",
+          "confirmed": true
+        },
+        {
+          "at": 50,
+          "op": "bindings.unlink",
+          "binding": "default",
+          "if_revision": "current",
+          "confirmed": true
+        },
+        {
+          "at": 60,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "3",
+          "kind": "work",
+          "expect": "stale"
+        }
+      ],
+      "expected": {
+        "confirmed_segments": [
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              0,
+              20
+            ]
+          }
+        ],
+        "finalized_union": [
+          [
+            0,
+            20
+          ]
+        ],
+        "total_finalized_seconds": 20,
+        "unresolved": [],
+        "actor_states": {
+          "A": "interrupted"
+        }
+      }
+    },
+    {
+      "id": "working_interrupt_preserves_unknown_tail",
+      "steps": [
+        {
+          "at": 0,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "1",
+          "kind": "work"
+        },
+        {
+          "at": 20,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "2",
+          "kind": "observe_work"
+        },
+        {
+          "at": 50,
+          "op": "activity.interrupt",
+          "actor": "A",
+          "generation": "1",
+          "if_revision": "current",
+          "confirmed": true
+        }
+      ],
+      "expected": {
+        "confirmed_segments": [
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              0,
+              20
+            ]
+          }
+        ],
+        "finalized_union": [],
+        "total_finalized_seconds": 0,
+        "unresolved": [
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              20,
+              50
+            ],
+            "reason": "source_lost"
+          }
+        ],
+        "actor_states": {
+          "A": "interrupted"
+        }
+      }
+    },
+    {
+      "id": "sleep_is_not_billed",
+      "steps": [
+        {
+          "at": 0,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "1",
+          "kind": "work"
+        },
+        {
+          "at": 20,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "2",
+          "kind": "observe_work"
+        },
+        {
+          "at": 60,
+          "op": "clock_sample",
+          "epoch": "boot-1",
+          "elapsed_seconds": 60,
+          "awake_seconds": 20,
+          "expect_uncertainty": "suspend"
+        },
+        {
+          "at": 80,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "3",
+          "kind": "finish",
+          "clock": {
+            "epoch": "boot-1",
+            "elapsed_seconds": 80,
+            "awake_seconds": 40
+          }
+        }
+      ],
+      "expected": {
+        "confirmed_segments": [
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              0,
+              20
+            ]
+          }
+        ],
+        "finalized_union": [],
+        "total_finalized_seconds": 0,
+        "unresolved": [
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              20,
+              80
+            ],
+            "reason": "suspend"
+          }
+        ]
+      }
+    },
+    {
+      "id": "missing_terminal_never_queues",
+      "steps": [
+        {
+          "at": 0,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "1",
+          "kind": "work"
+        },
+        {
+          "at": 86400,
+          "op": "status",
+          "expect_active": [
+            "A"
+          ],
+          "expect_queued": 0
+        }
+      ],
+      "expected": {
+        "confirmed_segments": [],
+        "finalized_union": [],
+        "total_finalized_seconds": 0,
+        "unresolved": [],
+        "open_actors": [
+          "A"
+        ]
+      }
+    },
+    {
+      "id": "utc_rollback_cannot_overlap_finalized_time",
+      "steps": [
+        {
+          "at": 0,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "1",
+          "kind": "work"
+        },
+        {
+          "at": 20,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "2",
+          "kind": "finish"
+        },
+        {
+          "at": 40,
+          "op": "clock_sample",
+          "epoch": "boot-1",
+          "elapsed_seconds": 40,
+          "awake_seconds": 40,
+          "wall_utc_seconds": -10,
+          "expect_discontinuity": "clock_changed"
+        },
+        {
+          "at": 45,
+          "op": "event",
+          "actor": "B",
+          "generation": "1",
+          "sequence": "1",
+          "kind": "work",
+          "clock": {
+            "epoch": "clock-2",
+            "elapsed_seconds": 45,
+            "awake_seconds": 45,
+            "wall_utc_seconds": -5
+          },
+          "expect_error": "clock_conflict"
+        }
+      ],
+      "expected": {
+        "confirmed_segments": [
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              0,
+              20
+            ]
+          }
+        ],
+        "finalized_union": [
+          [
+            0,
+            20
+          ]
+        ],
+        "total_finalized_seconds": 20,
+        "unresolved": [],
+        "expected_no_new_actor": "B"
+      }
+    },
+    {
+      "id": "restart_without_continuity_keeps_unknown_tail",
+      "steps": [
+        {
+          "at": 0,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "1",
+          "kind": "work"
+        },
+        {
+          "at": 20,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "2",
+          "kind": "observe_work"
+        },
+        {
+          "at": 40,
+          "op": "store_restart",
+          "clock_and_source_continuity": false,
+          "new_epoch": "boot-2",
+          "clock": {
+            "epoch": "boot-2",
+            "elapsed_seconds": 0,
+            "awake_seconds": 0,
+            "wall_utc_seconds": 40
+          }
+        },
+        {
+          "at": 60,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "3",
+          "kind": "finish",
+          "clock": {
+            "epoch": "boot-2",
+            "elapsed_seconds": 20,
+            "awake_seconds": 20,
+            "wall_utc_seconds": 60
+          }
+        }
+      ],
+      "expected": {
+        "confirmed_segments": [
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              0,
+              20
+            ]
+          }
+        ],
+        "finalized_union": [],
+        "total_finalized_seconds": 0,
+        "unresolved": [
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              20,
+              60
+            ],
+            "reason": "restart_unknown"
+          }
+        ],
+        "blocked_closed_union": [
+          [
+            0,
+            20
+          ]
+        ]
+      }
+    },
+    {
+      "id": "disconnected_safe_component_can_finalize",
+      "steps": [
+        {
+          "at": 0,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "1",
+          "kind": "work"
+        },
+        {
+          "at": 20,
+          "op": "event",
+          "actor": "A",
+          "generation": "1",
+          "sequence": "2",
+          "kind": "observe_work"
+        },
+        {
+          "at": 30,
+          "op": "source_lost",
+          "actor": "A"
+        },
+        {
+          "at": 40,
+          "op": "event",
+          "actor": "A",
+          "generation": "2",
+          "sequence": "1",
+          "kind": "work"
+        },
+        {
+          "at": 60,
+          "op": "event",
+          "actor": "A",
+          "generation": "2",
+          "sequence": "2",
+          "kind": "finish"
+        },
+        {
+          "at": 80,
+          "op": "event",
+          "actor": "B",
+          "generation": "1",
+          "sequence": "1",
+          "kind": "work"
+        },
+        {
+          "at": 100,
+          "op": "event",
+          "actor": "B",
+          "generation": "1",
+          "sequence": "2",
+          "kind": "finish"
+        }
+      ],
+      "expected": {
+        "confirmed_segments": [
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              0,
+              20
+            ]
+          },
+          {
+            "actor": "A",
+            "generation": "2",
+            "range": [
+              40,
+              60
+            ]
+          },
+          {
+            "actor": "B",
+            "generation": "1",
+            "range": [
+              80,
+              100
+            ]
+          }
+        ],
+        "finalized_union": [
+          [
+            80,
+            100
+          ]
+        ],
+        "total_finalized_seconds": 20,
+        "unresolved": [
+          {
+            "actor": "A",
+            "generation": "1",
+            "range": [
+              20,
+              40
+            ],
+            "reason": "source_lost"
+          }
+        ],
+        "blocked_closed_union": [
+          [
+            0,
+            20
+          ],
+          [
+            40,
+            60
+          ]
+        ]
+      }
+    }
+  ],
+  "scope_cases": [
+    {
+      "id": "independent_projects_and_computers",
+      "segments": [
+        {
+          "key": [
+            "computer-a",
+            "1",
+            "3"
+          ],
+          "range": [
+            0,
+            60
+          ]
+        },
+        {
+          "key": [
+            "computer-a",
+            "1",
+            "5"
+          ],
+          "range": [
+            0,
+            60
+          ]
+        },
+        {
+          "key": [
+            "computer-b",
+            "1",
+            "3"
+          ],
+          "range": [
+            0,
+            60
+          ]
+        }
+      ],
+      "expected_totals_seconds": {
+        "computer-a/1/3": 60,
+        "computer-a/1/5": 60,
+        "computer-b/1/3": 60
+      }
+    },
+    {
+      "id": "full_attribution_compatibility",
+      "existing": {
+        "account_id": "1",
+        "user_id": "2",
+        "project_id": "3",
+        "task_id": "4",
+        "timezone": "UTC"
+      },
+      "conflicting_variants": [
+        {
+          "user_id": "9"
+        },
+        {
+          "task_id": "9"
+        },
+        {
+          "timezone": "America/New_York"
+        }
+      ],
+      "expect_error": "attribution_conflict",
+      "expect_existing_unchanged": true
+    },
+    {
+      "id": "waiting_cannot_rebind",
+      "states": [
+        "working",
+        "wait_user",
+        "wait_permission",
+        "wait_children",
+        "stale"
+      ],
+      "actions": [
+        "bindings.link",
+        "bindings.unlink",
+        "bindings.repair"
+      ],
+      "expect_error": "binding_in_use"
+    },
+    {
+      "id": "stop_uses_persisted_context",
+      "actor_binding": "original",
+      "event_cwd": "/unlinked/elsewhere",
+      "event_account_flag": "9",
+      "expect_attribution": "original",
+      "expect_no_new_binding": true
+    },
+    {
+      "id": "worktree_inheritance",
+      "git_common_dirs": [
+        "/repo/.git",
+        "/repo/.git"
+      ],
+      "checkout_roots": [
+        "/repo",
+        "/worktrees/feature"
+      ],
+      "expected_same_binding": true
+    },
+    {
+      "id": "clone_and_nested_repository_do_not_inherit",
+      "locators": [
+        "/clone/.git",
+        "/repo/nested/.git"
+      ],
+      "linked_locator": "/repo/.git",
+      "expected_untracked": true
+    },
+    {
+      "id": "relink_after_detach_retains_history",
+      "old_tuple": {
+        "account_id": "1",
+        "user_id": "2",
+        "project_id": "3",
+        "task_id": "4",
+        "timezone": "UTC"
+      },
+      "new_tuple": {
+        "account_id": "1",
+        "user_id": "2",
+        "project_id": "3",
+        "task_id": "5",
+        "timezone": "America/New_York"
+      },
+      "precondition": "all old actors detached; old uncertainty range ends before new start; no other incompatible live binding",
+      "expect_old_interval_and_outbox_unchanged": true
+    },
+    {
+      "id": "request_identity_and_revision",
+      "action": "activity.resolve",
+      "replay_same_id_same_input": "original result",
+      "replay_same_id_changed_input": "request_conflict",
+      "different_id_old_revision": "revision_conflict",
+      "unknown_durability_exit": 8,
+      "retry_same_id_only": true
+    },
+    {
+      "id": "concurrent_distinct_actor_events",
+      "actions": [
+        "activity.ingest A work",
+        "activity.ingest B work"
+      ],
+      "concurrent_writers": 2,
+      "expected": "both persisted actors and segments; one project key; no lost revision/event"
+    },
+    {
+      "id": "concurrent_duplicate_ingress",
+      "action": "activity.ingest same event identity and payload",
+      "concurrent_writers": 2,
+      "expected_effects": 1,
+      "expected_dispositions": [
+        "applied",
+        "duplicate"
+      ]
+    },
+    {
+      "id": "hook_lock_timeout_no_ack",
+      "action": "activity.ingest",
+      "lock_held_ms": 300,
+      "budget_ms": 250,
+      "expected_error": "state_busy",
+      "expected_success_acknowledgements": 0,
+      "expected_actor_mutations": 0
+    },
+    {
+      "id": "uninitialized_status_no_write",
+      "action": "activity.status",
+      "expected_computer_id": null,
+      "expected_snapshot_revision": "0",
+      "expected_store_writes": 0,
+      "expected_collections": "empty"
+    },
+    {
+      "id": "clock_unavailable_capture",
+      "action": "activity.ingest work",
+      "clock_capability": "unavailable",
+      "expected_error": "clock_unavailable",
+      "expected_new_segments": 0,
+      "read_only_status": "available"
+    },
+    {
+      "id": "recovery_preview_after_resume",
+      "input_timeline": "stale_resume_does_not_resolve_old_tail",
+      "action": "activity.preview",
+      "requested_end": 50,
+      "expected_segment_start": 0,
+      "expected_confirmed_prefix": [
+        0,
+        30
+      ],
+      "expected_discarded_suffix": [
+        50,
+        70
+      ],
+      "expected_union_before": [
+        [
+          0,
+          30
+        ],
+        [
+          70,
+          100
+        ]
+      ],
+      "expected_union_after": [
+        [
+          0,
+          50
+        ],
+        [
+          70,
+          100
+        ]
+      ],
+      "expected_store_writes": 0,
+      "resolve_uses": "returned uncertainty revision"
+    },
+    {
+      "id": "hook_preview_survives_process_exit",
+      "actions": [
+        "hooks.preview install",
+        "process exit",
+        "hooks.install same intent and fingerprint"
+      ],
+      "expected": "preview has no writes; same explicit intent/fingerprint recomputes after process exit; changed configuration or operation rejects revision_conflict; no tracking identity initialization"
+    },
+    {
+      "id": "theme_revision_read_path",
+      "actions": [
+        "themes.show",
+        "themes.set with returned preference_revision",
+        "themes.set with old revision"
+      ],
+      "expected": [
+        "revision available on initial read",
+        "first apply succeeds",
+        "revision_conflict on stale apply"
+      ]
+    }
+  ],
+  "bridge_cases": [
+    {
+      "id": "codex_stable_turn_bridge",
+      "source": {
+        "session_id": "s",
+        "turn_id": "t",
+        "hook_event_name": "UserPromptSubmit",
+        "cwd": "/repo"
+      },
+      "capability": "verified synchronous actor barriers",
+      "expected_first": "one generation work seq1",
+      "repeat": "duplicate same generation",
+      "then": [
+        {
+          "hook_event_name": "Stop",
+          "turn_id": "t"
+        }
+      ],
+      "expected_end": "wait_user, closed union eligible if clock continuous; no unconditional finish"
+    },
+    {
+      "id": "claude_stable_prompt_bridge",
+      "source": {
+        "session_id": "s",
+        "prompt_id": "p",
+        "hook_event_name": "UserPromptSubmit",
+        "cwd": "/repo"
+      },
+      "runtime_minimum_for_prompt_id": "2.1.196",
+      "capability": "verified synchronous actor barriers",
+      "expected": "one persisted prompt-to-generation mapping; no prompt body retained"
+    },
+    {
+      "id": "terminal_before_unseen_start",
+      "source_turn": "old-t",
+      "events": [
+        "authoritative_terminal",
+        "UserPromptSubmit"
+      ],
+      "expected": "source tombstone; later start creates no actor activity"
+    },
+    {
+      "id": "delayed_tool_permission_after_post",
+      "source_turn": "t",
+      "tool_use_id": "tool-1",
+      "events": [
+        "PreToolUse",
+        "PostToolUse",
+        "PermissionRequest"
+      ],
+      "expected": "completed tool phase cannot become waiting; duplicate pre/post no actor effect"
+    },
+    {
+      "id": "unidentified_stop_continuation",
+      "events": [
+        "Stop",
+        "unverified same-prompt continuation",
+        "Stop without cycle identity"
+      ],
+      "expected": "ordering_unavailable uncertainty; no guessed finish or automatic queue"
+    },
+    {
+      "id": "unordered_host_without_turn_boundary",
+      "source": {
+        "session_id": "s",
+        "hook_event_name": "UserPromptSubmit"
+      },
+      "capability": "no reliable generation barrier",
+      "expected": "bounded diagnostics only; no actor segment, no sync item"
+    },
+    {
+      "id": "bridge_timeout_invalidates_source_epoch",
+      "events": [
+        "registered work",
+        "source-observed hook timeout",
+        "normal Stop"
+      ],
+      "expected": "durable source_lost uncertainty; later Stop cannot resolve it"
+    }
+  ],
+  "terminal_cases": [
+    {
+      "id": "default_dashboard",
+      "argv": [],
+      "stdin_tty": true,
+      "stdout_tty": true,
+      "mode": "interactive",
+      "overall_deadline_seconds": null
+    },
+    {
+      "id": "stdin_redirected",
+      "argv": [],
+      "stdin_tty": false,
+      "stdout_tty": true,
+      "mode": "snapshot_json",
+      "overall_deadline_seconds": 120
+    },
+    {
+      "id": "stdout_redirected",
+      "argv": [
+        "ui"
+      ],
+      "stdin_tty": true,
+      "stdout_tty": false,
+      "mode": "snapshot_json",
+      "overall_deadline_seconds": 120
+    },
+    {
+      "id": "json_forces_snapshot",
+      "argv": [
+        "activity",
+        "status",
+        "--watch",
+        "--json"
+      ],
+      "stdin_tty": true,
+      "stdout_tty": true,
+      "mode": "snapshot_json",
+      "overall_deadline_seconds": 120
+    },
+    {
+      "id": "noninteractive_forces_snapshot",
+      "argv": [
+        "ui",
+        "--non-interactive"
+      ],
+      "stdin_tty": true,
+      "stdout_tty": true,
+      "mode": "snapshot_json",
+      "overall_deadline_seconds": 120
+    },
+    {
+      "id": "link_missing_project_no_prompt",
+      "argv": [
+        "link",
+        "--json",
+        "--non-interactive"
+      ],
+      "stdin_tty": true,
+      "stdout_tty": true,
+      "missing": [
+        "project_id"
+      ],
+      "error": "input_required",
+      "exit": 2,
+      "stdout": "",
+      "stderr_envelopes": 1
+    },
+    {
+      "id": "bare_status_not_alias",
+      "argv": [
+        "status",
+        "--json"
+      ],
+      "stdin_tty": false,
+      "stdout_tty": false,
+      "error": "usage",
+      "exit": 2
+    },
+    {
+      "id": "link_explicit_project",
+      "argv": [
+        "link",
+        "3"
+      ],
+      "stdin_tty": true,
+      "stdout_tty": true,
+      "project_picker": false,
+      "task_picker": "only if no explicit/saved/sole active task"
+    },
+    {
+      "id": "link_picker_cancel",
+      "argv": [
+        "link"
+      ],
+      "stdin_tty": true,
+      "stdout_tty": true,
+      "keys": [
+        "type search",
+        "ArrowDown",
+        "Escape"
+      ],
+      "exit": 0,
+      "mutations": 0
+    },
+    {
+      "id": "link_picker_commit",
+      "argv": [
+        "link"
+      ],
+      "stdin_tty": true,
+      "stdout_tty": true,
+      "keys": [
+        "type search",
+        "ArrowDown",
+        "Enter"
+      ],
+      "expected": "selected active assigned project; same bindings.link action as explicit CLI"
+    },
+    {
+      "id": "interactive_shutdown",
+      "triggers": {
+        "q": 0,
+        "Escape standalone picker": 0,
+        "EOF": 0,
+        "raw Ctrl-C byte": 130,
+        "SIGINT": 130,
+        "SIGTERM": 143,
+        "read error": 1,
+        "render/write error": 1
+      },
+      "assertions": [
+        "workers cancelled before return",
+        "locks released",
+        "original termios restored",
+        "alternate screen exited",
+        "cursor restored",
+        "colors reset",
+        "cleanup completed before os.Exit",
+        "no actor stop or sync pause"
+      ]
+    },
+    {
+      "id": "refresh_contention",
+      "lock_timeout_ms": 250,
+      "expected": "last snapshot labeled stale; no frozen UI, reset timer or fabricated zero"
+    },
+    {
+      "id": "local_snapshot_privacy",
+      "argv": [
+        "activity",
+        "status",
+        "--json"
+      ],
+      "credential_reads": 0,
+      "network_requests": 0,
+      "ansi_bytes": 0
+    },
+    {
+      "id": "safe_rendering",
+      "project_label": "project\u001b[2J",
+      "path_label": "/tmp/\u001b]52;clipboard",
+      "expected": "literal sanitized labels; no terminal control execution"
+    }
+  ],
+  "sync_cases": [
+    {
+      "id": "unknown_is_not_replayed",
+      "durable_before_restart": "submitting",
+      "after_restart": "unknown",
+      "automatic_post_count_after_restart": 0,
+      "zero_read_matches": "remain blocked",
+      "multiple_read_matches": "remain blocked",
+      "one_conclusive_owned_match": "synced"
+    },
+    {
+      "id": "unresolved_not_queued",
+      "input_timeline": "stale_resume_does_not_resolve_old_tail",
+      "expected_outbox_count": 0
+    },
+    {
+      "id": "one_union_one_outbox",
+      "input_timeline": "overlapping_actors_one_union",
+      "concurrent_finalizers": 2,
+      "expected_interval_count": 1,
+      "expected_outbox_count": 1
+    },
+    {
+      "id": "two_workers_one_attempt",
+      "initial_state": "queued",
+      "concurrent_workers": 2,
+      "expected_claim_count": 1,
+      "expected_post_count": 1
+    },
+    {
+      "id": "pause_is_independent",
+      "action": "sync.pause",
+      "expected": "no new outbox claims; existing actor states/segments unchanged"
+    },
+    {
+      "id": "snapshot_and_ownership",
+      "action": "sync.resolve",
+      "mismatched_account_or_user_or_interval": "reject with no attachment",
+      "attribution_after_relink": "original immutable tuple"
+    }
+  ]
+}
