@@ -14,7 +14,7 @@ func (s *Service) Status(ctx context.Context) (ActivitySnapshot, error) {
 		return ActivitySnapshot{}, err
 	}
 	sample, _ := s.sample()
-	result := ActivitySnapshot{ContractVersion: 1, SnapshotRevision: st.Revision, ObservedAt: sample.WallUTC, Projects: []ProjectActivity{}, Actors: []Actor{}, Uncertainties: []Uncertainty{}, CaptureReviews: []HostReceipt{}, ClosedIntervals: []Interval{}, Worker: WorkerStatus{State: "not_installed"}}
+	result := ActivitySnapshot{ContractVersion: 1, SnapshotRevision: st.Revision, ObservedAt: sample.WallUTC, Projects: []ProjectActivity{}, ProjectTimers: []ProjectTimer{}, Actors: []Actor{}, Uncertainties: []Uncertainty{}, CaptureReviews: []HostReceipt{}, ClosedIntervals: []Interval{}, Worker: WorkerStatus{State: "not_installed"}}
 	if !exists {
 		result.Worker = s.observedWorker(ctx, result.Worker)
 		return result, nil
@@ -60,6 +60,7 @@ func (s *Service) Status(ctx context.Context) (ActivitySnapshot, error) {
 		}
 	}
 	ranges := map[string][]timeRange{}
+	projectRanges := map[string][]timeRange{}
 	for _, seg := range st.Segments {
 		if seg.Finalized {
 			continue
@@ -74,14 +75,13 @@ func (s *Service) Status(ctx context.Context) (ActivitySnapshot, error) {
 		}
 		k := attributionKey(seg.Actor.Key.ComputerID, seg.Binding.Attribution)
 		get(seg.Actor.Key.ComputerID, seg.Binding.Attribution)
-		ranges[k] = append(ranges[k], timeRange{start: seg.Start, end: end})
+		r := timeRange{start: seg.Start, end: end}
+		ranges[k] = append(ranges[k], r)
+		tk := timerKey(seg.Actor.Key.ComputerID, seg.Binding.Attribution)
+		projectRanges[tk] = append(projectRanges[tk], r)
 	}
 	for k, rs := range ranges {
-		var sum time.Duration
-		for _, r := range mergeRanges(rs) {
-			sum += r.end.Sub(r.start)
-		}
-		projects[k].ProvisionalUnionNS = durationString(sum)
+		projects[k].ProvisionalUnionNS = statusUnionDuration(rs)
 	}
 	for _, in := range st.Intervals {
 		result.ClosedIntervals = append(result.ClosedIntervals, in)
@@ -122,6 +122,7 @@ func (s *Service) Status(ctx context.Context) (ActivitySnapshot, error) {
 	sort.Slice(result.Actors, func(i, j int) bool { return result.Actors[i].ID < result.Actors[j].ID })
 	sort.Slice(result.Uncertainties, func(i, j int) bool { return result.Uncertainties[i].ID < result.Uncertainties[j].ID })
 	sort.Slice(result.ClosedIntervals, func(i, j int) bool { return result.ClosedIntervals[i].Start.Before(result.ClosedIntervals[j].Start) })
+	result.ProjectTimers = projectTimers(result.Projects, projectRanges, result.ClosedIntervals)
 	result.Worker = s.observedWorker(ctx, result.Worker)
 	return result, nil
 }

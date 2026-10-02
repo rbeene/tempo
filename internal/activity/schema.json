@@ -79,6 +79,19 @@
       "synced_count": "integer",
       "needs_attention_count": "integer"
     },
+    "ProjectTimer": {
+      "computer_id": "uuid",
+      "account_id": "harvest_id",
+      "project_id": "harvest_id",
+      "active_actor_refs": "ActorRef[]",
+      "waiting_actor_refs": "ActorRef[]",
+      "provisional_union_ns": "counter",
+      "confirmed_closed_ns": "counter",
+      "unresolved_ids": "uuid[]",
+      "queued_count": "integer",
+      "synced_count": "integer",
+      "needs_attention_count": "integer"
+    },
     "HostReceipt": {
       "contract_version": "integer=1",
       "snapshot_revision": "counter",
@@ -106,6 +119,7 @@
       "observed_at": "utc",
       "computer_id": "uuid|null",
       "projects": "ProjectActivity[]",
+      "project_timers": "ProjectTimer[]",
       "actors": "Actor[]",
       "uncertainties": "Uncertainty[]",
       "capture_reviews": "HostReceipt[]",
@@ -496,7 +510,8 @@
         "duration-policy": "exact|nearest-hundredth-hour",
         "clock": "12h|24h",
         "if-revision": "counter",
-        "request-id": "uuid"
+        "request-id": "uuid",
+        "user": "harvest_id"
       },
       "input": {
         "account_id": "harvest_id",
@@ -505,7 +520,8 @@
         "clock": "12h|24h",
         "if_revision": "counter",
         "request_id": "uuid",
-        "confirmed": "bool"
+        "confirmed": "bool",
+        "user_id": "harvest_id"
       },
       "required": [
         "account_id",
@@ -516,7 +532,7 @@
       ],
       "result": "SyncConfigurationResult",
       "effect": "remote_read_local_mutation",
-      "notes": "--yes; initialized binding state required. Revision0 creates consent for verified account/current-user; later revisions use CAS. Timestamp requires exact and clock; duration forbids clock. Only Company403 permits explicit declared-mode fallback. Does not enable sync or change defaults."
+      "notes": "--yes; initialized binding state required. Revision0 creates consent for verified account/current-user; later revisions use CAS. Timestamp requires exact and clock; duration forbids clock. Only Company403 permits explicit declared-mode fallback. Does not enable sync or change defaults. Optional expected user guard must match freshly verified current user before writes; omission preserves historical fingerprints and exact saved replay precedes discovery."
     },
     {
       "id": "sync.status",

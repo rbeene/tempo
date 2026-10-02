@@ -18,17 +18,24 @@ func authService(d Dependencies) *auth.Service {
 	}
 	return auth.NewService(auth.Options{ConfigPath: d.ConfigPath, Getenv: d.Getenv, NewProvider: d.NewProvider})
 }
-func executeGuided(ctx context.Context, p parsed, in io.Reader, out io.Writer, d Dependencies, interactive bool) (result any, err error) {
+func setupService(d Dependencies) (*setup.Service, error) {
 	a := activityService(d)
 	options := setup.Options{Auth: authService(d), Activity: a, Hooks: d.Hooks, Worker: d.Worker}
 	if d.Activity == nil {
 		options.Hooks = hooksService(d)
+		var err error
 		options.Worker, err = workerService(d)
 		if err != nil {
 			return nil, err
 		}
 	}
-	service := setup.New(options)
+	return setup.New(options), nil
+}
+func executeGuided(ctx context.Context, p parsed, in io.Reader, out io.Writer, d Dependencies, interactive bool) (result any, err error) {
+	service, err := setupService(d)
+	if err != nil {
+		return nil, err
+	}
 	if p.command.Name == "doctor" {
 		return service.Doctor(ctx, p.flags["check"] == "true")
 	}
@@ -170,5 +177,5 @@ func authCompatibilityError(e error) error {
 // deadline. Parsing still rejects invalid commands before opening a terminal.
 func InteractiveInvocation(args []string, in io.Reader, out io.Writer) bool {
 	p, e := parse(args)
-	return e == nil && (p.command.Name == "setup" || p.command.Name == "link") && p.flags["json"] != "true" && p.flags["non-interactive"] != "true" && terminal.Eligible(in, out)
+	return e == nil && (p.command.Name == "setup" || p.command.Name == "link" || p.command.Name == "ui" || p.command.Name == "activity status" && p.flags["watch"] == "true") && p.flags["json"] != "true" && p.flags["non-interactive"] != "true" && terminal.Eligible(in, out)
 }

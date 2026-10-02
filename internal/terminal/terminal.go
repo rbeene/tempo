@@ -38,6 +38,11 @@ type Session struct {
 	once                        sync.Once
 	closeErr                    error
 	lines                       int
+	screen                      bool
+	paste                       bool
+	resize                      <-chan os.Signal
+	stopSignals                 func()
+	pending                     *byte
 }
 
 func Eligible(in io.Reader, out io.Writer) bool {
@@ -52,12 +57,19 @@ func Open(ctx context.Context, in io.Reader, out io.Writer) (*Session, error) {
 	if ctx.Err() != nil {
 		return nil, context.Cause(ctx)
 	}
+	resize, stopSignals := terminalSignals()
+	opened := false
+	defer func() {
+		if !opened {
+			stopSignals()
+		}
+	}()
 	original := in.(*os.File)
 	state, e := term.MakeRaw(int(original.Fd()))
 	if e != nil {
 		return nil, &ExitError{1}
 	}
-	s := &Session{ctx: ctx, original: original, state: state}
+	s := &Session{ctx: ctx, original: original, state: state, resize: resize, stopSignals: stopSignals}
 	s.in, s.restoreInput, e = duplicateTerminal(original)
 	if e != nil {
 		term.Restore(int(original.Fd()), state)
@@ -73,6 +85,7 @@ func Open(ctx context.Context, in io.Reader, out io.Writer) (*Session, error) {
 	s.keys = make(chan string, 32768)
 	s.stopped = make(chan struct{})
 	go s.pump()
+	opened = true
 	return s, nil
 }
 func (s *Session) Close() error {
@@ -81,6 +94,16 @@ func (s *Session) Close() error {
 			s.cancel(&ExitError{Code: 0})
 			<-s.stopped
 		}
+		if s.screen || s.paste {
+			// Restoration must remain possible after input or action cancellation.
+			ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+			restore := "\x1b[?2004l"
+			if s.screen {
+				restore = "\x1b[0m" + restore + "\x1b[?25h\x1b[?1049l"
+			}
+			s.closeErr = s.writeOutput(ctx, restore)
+			cancel()
+		}
 		if s.restoreOutput != nil {
 			s.restoreOutput()
 		}
@@ -88,7 +111,10 @@ func (s *Session) Close() error {
 			s.restoreInput()
 		}
 		if s.state != nil {
-			s.closeErr = term.Restore(int(s.original.Fd()), s.state)
+			s.closeErr = errors.Join(s.closeErr, term.Restore(int(s.original.Fd()), s.state))
+		}
+		if s.stopSignals != nil {
+			s.stopSignals()
 		}
 	})
 	return s.closeErr
@@ -108,13 +134,38 @@ func (s *Session) write(ctx context.Context, text string) error {
 	if s.ctx.Err() != nil {
 		return context.Cause(s.ctx)
 	}
-	s.out.SetWriteDeadline(time.Now().Add(250 * time.Millisecond))
+	return s.writeOutput(ctx, text)
+}
+
+func (s *Session) writeOutput(ctx context.Context, text string) error {
+	return s.writeOutputAcquiring(ctx, text, nil)
+}
+
+func (s *Session) writeOutputAcquiring(ctx context.Context, text string, acquired *bool) error {
+	if ctx.Err() != nil {
+		return context.Cause(ctx)
+	}
+	deadline := time.Now().Add(250 * time.Millisecond)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	if err := s.out.SetWriteDeadline(deadline); err != nil {
+		return &ExitError{1}
+	}
+	if acquired != nil {
+		*acquired = true
+	}
 	if _, e := io.WriteString(s.out, text); e != nil {
 		return &ExitError{1}
 	}
 	return nil
 }
 func (s *Session) byte(ctx context.Context, until time.Time) (byte, error) {
+	if s.pending != nil {
+		b := *s.pending
+		s.pending = nil
+		return b, nil
+	}
 	for {
 		if ctx.Err() != nil {
 			return 0, context.Cause(ctx)
@@ -161,7 +212,8 @@ func (s *Session) readKey(ctx context.Context) (string, error) {
 	case 127, 8:
 		return "backspace", nil
 	case 27:
-		b, e = s.byte(ctx, time.Now().Add(40*time.Millisecond))
+		deadline := time.Now().Add(40 * time.Millisecond)
+		b, e = s.byte(ctx, deadline)
 		if errors.Is(e, os.ErrDeadlineExceeded) {
 			return "escape", nil
 		}
@@ -169,28 +221,48 @@ func (s *Session) readKey(ctx context.Context) (string, error) {
 			return "", e
 		}
 		if b != '[' {
-			return "", &ExitError{0}
+			s.pending = &b
+			return "escape", nil
 		}
-		b, e = s.byte(ctx, time.Now().Add(40*time.Millisecond))
-		if e != nil {
-			return "", &ExitError{0}
+		var sequence strings.Builder
+		for sequence.Len() < 64 {
+			b, e = s.byte(ctx, deadline)
+			if errors.Is(e, os.ErrDeadlineExceeded) {
+				return "", nil
+			}
+			if e != nil {
+				return "", e
+			}
+			sequence.WriteByte(b)
+			if b >= 0x40 && b <= 0x7e {
+				switch sequence.String() {
+				case "A":
+					return "up", nil
+				case "B":
+					return "down", nil
+				case "200~":
+					return s.readPaste(ctx)
+				}
+				return "", nil
+			}
 		}
-		if b == 'A' {
-			return "up", nil
-		}
-		if b == 'B' {
-			return "down", nil
-		}
-		return "", nil
+		return "", &ExitError{1}
 	}
 	if b < 32 {
 		return "", nil
 	}
 	data := []byte{b}
 	for !utf8.FullRune(data) && len(data) < 4 {
-		b, e = s.byte(ctx, time.Time{})
+		b, e = s.byte(ctx, time.Now().Add(40*time.Millisecond))
+		if errors.Is(e, os.ErrDeadlineExceeded) {
+			return "", nil
+		}
 		if e != nil {
 			return "", e
+		}
+		if b&0xc0 != 0x80 {
+			s.pending = &b
+			return "", nil
 		}
 		data = append(data, b)
 	}
@@ -213,6 +285,9 @@ func (s *Session) render(ctx context.Context, title string, lines []string) erro
 	return s.write(ctx, b.String())
 }
 func (s *Session) Choose(ctx context.Context, title string, choices []Choice) (string, error) {
+	if err := s.ensurePaste(ctx); err != nil {
+		return "", err
+	}
 	query := ""
 	selected := 0
 	defer func() { s.lines = 0 }()
@@ -272,14 +347,21 @@ func (s *Session) Choose(ctx context.Context, title string, choices []Choice) (s
 				selected = 0
 			}
 		default:
-			if strings.HasPrefix(k, "text:") && len(query) < 256 {
-				query += strings.TrimPrefix(k, "text:")
+			if strings.HasPrefix(k, "text:") {
+				v := strings.TrimPrefix(k, "text:")
+				if len(query)+len(v) > 256 {
+					return "", &ExitError{1}
+				}
+				query += v
 				selected = 0
 			}
 		}
 	}
 }
 func (s *Session) input(ctx context.Context, title, defaultValue string, secret bool) ([]byte, error) {
+	if err := s.ensurePaste(ctx); err != nil {
+		return nil, err
+	}
 	defer func() { s.lines = 0 }()
 	data := []byte{}
 	defer func() { clear(data) }()
@@ -362,19 +444,49 @@ func (s *Session) pump() {
 		}
 	}
 }
+
+// key preserves the finite Prompter Escape contract. Pasted controls are data,
+// never action keys; finite single-line prompts retain only printable text.
 func (s *Session) key(ctx context.Context) (string, error) {
-	if s.ctx.Err() != nil {
-		return "", context.Cause(s.ctx)
+	event, err := s.Next(ctx)
+	if err != nil {
+		return "", err
 	}
-	select {
-	case <-ctx.Done():
-		return "", context.Cause(ctx)
-	case <-s.ctx.Done():
-		return "", context.Cause(s.ctx)
-	case k := <-s.keys:
-		if k == "escape" {
-			return "", &ExitError{Code: 0}
+	switch event.Kind {
+	case "escape":
+		return "", &ExitError{0}
+	case "text", "paste":
+		return "text:" + Sanitize(event.Text), nil
+	default:
+		return event.Kind, nil
+	}
+}
+
+func (s *Session) readPaste(ctx context.Context) (string, error) {
+	const end = "\x1b[201~"
+	data := make([]byte, 0, 256)
+	defer func() { clear(data) }()
+	for {
+		b, err := s.byte(ctx, time.Time{})
+		if err != nil {
+			return "", err
 		}
-		return k, nil
+		data = append(data, b)
+		if strings.HasSuffix(string(data), end) {
+			if len(data)-len(end) > 16384 {
+				return "", &ExitError{1}
+			}
+			return "paste:" + string(data[:len(data)-len(end)]), nil
+		}
+		// Allow only bytes that could still become the closing delimiter.
+		pending := 0
+		for n := 1; n < len(end) && n <= len(data); n++ {
+			if string(data[len(data)-n:]) == end[:n] {
+				pending = n
+			}
+		}
+		if len(data)-pending > 16384 {
+			return "", &ExitError{1}
+		}
 	}
 }

@@ -90,6 +90,7 @@ type ActivitySnapshot struct {
 	ObservedAt       time.Time         `json:"observed_at"`
 	ComputerID       *string           `json:"computer_id"`
 	Projects         []ProjectActivity `json:"projects"`
+	ProjectTimers    []ProjectTimer    `json:"project_timers"`
 	Actors           []Actor           `json:"actors"`
 	Uncertainties    []Uncertainty     `json:"uncertainties"`
 	ClosedIntervals  []Interval        `json:"closed_intervals"`
@@ -145,6 +146,23 @@ type ProjectActivity struct {
 	SyncedCount         int         `json:"synced_count"`
 	NeedsAttentionCount int         `json:"needs_attention_count"`
 }
+
+// ProjectTimer projects one local computer/account/project elapsed-time union.
+// Attribution epochs remain available in ActivitySnapshot.Projects.
+type ProjectTimer struct {
+	ComputerID          string     `json:"computer_id"`
+	AccountID           string     `json:"account_id"`
+	ProjectID           string     `json:"project_id"`
+	ProvisionalUnionNS  string     `json:"provisional_union_ns"`
+	ConfirmedClosedNS   string     `json:"confirmed_closed_ns"`
+	ActiveActorRefs     []ActorRef `json:"active_actor_refs"`
+	WaitingActorRefs    []ActorRef `json:"waiting_actor_refs"`
+	UnresolvedIDs       []string   `json:"unresolved_ids"`
+	QueuedCount         int        `json:"queued_count"`
+	SyncedCount         int        `json:"synced_count"`
+	NeedsAttentionCount int        `json:"needs_attention_count"`
+}
+
 type WorkerStatus struct {
 	Installed       *bool      `json:"installed"`
 	InstanceMode    *string    `json:"instance_mode"`
