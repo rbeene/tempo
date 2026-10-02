@@ -11,6 +11,7 @@ import (
 	"github.com/rbeene/tempo/internal/cli"
 	"github.com/rbeene/tempo/internal/harvest"
 	"github.com/rbeene/tempo/internal/terminal"
+	"github.com/rbeene/tempo/internal/themes"
 	"io"
 	"net"
 	"net/http"
@@ -221,13 +222,23 @@ func TestQASyncCLIActualTerminalChild(t *testing.T) {
 		case <-ctx.Done():
 		}
 	}()
-	code := cli.Run(ctx, []string{"ui"}, os.Stdin, os.Stdout, os.Stderr, cli.Dependencies{Activity: local, Auth: credentials, ConfigPath: config, Getenv: func(key string) string {
+	preferences := filepath.Join(root, "appearance-private", "preferences.json")
+	code := cli.Run(ctx, []string{"ui"}, os.Stdin, os.Stdout, os.Stderr, cli.Dependencies{Activity: local, Auth: credentials, ConfigPath: config, Themes: themes.New(themes.Options{Path: preferences}), Getenv: func(key string) string {
+		switch key {
+		case "TERM":
+			return "dumb"
+		case "COLORTERM", "NO_COLOR":
+			return ""
+		}
 		if key == "TEMPO_STATE" {
 			return hintPath
 		}
 		t.Error("UI resolved unrelated defaults")
 		return ""
 	}})
+	if _, err := os.Stat(filepath.Dir(preferences)); !errors.Is(err, os.ErrNotExist) {
+		t.Error("Sync without Appearance selection initialized private preferences")
+	}
 	cancel(nil)
 	signal.Stop(signals)
 	<-joined

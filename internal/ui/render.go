@@ -43,8 +43,18 @@ func (m *Model) Render(styler terminal.Styler) []string {
 		add(terminal.RoleKey, "q Quit")
 		return lines
 	}
+	const primaryHints = "A Appearance  ? Help  q Quit  a Auth  l Links  h Hooks  s Sync  w Worker"
+	splitHints := width >= 60 && width < len(primaryHints)
+	footerRows := 2
+	if splitHints {
+		footerRows++
+	}
 	add(terminal.RoleAccent, "TEMPO  /  LOCAL ACTIVITY")
-	add(terminal.RoleBorder, strings.Repeat("─", width))
+	// At the minimum height, the extra hint row takes the decorative border
+	// so scope and both authoritative durations keep their existing rows.
+	if !splitHints || m.rows > 8 || len(m.snapshot.ProjectTimers) == 0 {
+		add(terminal.RoleBorder, strings.Repeat("─", width))
+	}
 	if m.appearanceWarning != "" {
 		add(terminal.RoleWarning, m.appearanceWarning)
 	}
@@ -57,9 +67,9 @@ func (m *Model) Render(styler terminal.Styler) []string {
 		}
 		add(terminal.RoleMuted, scope)
 	}
-	// Reserve two footer lines; each timer retains its two distinct duration
+	// Reserve the status and hint rows; each timer retains its two distinct duration
 	// labels even when the optional state/count suffixes must be clipped.
-	available := m.rows - len(lines) - 2
+	available := m.rows - len(lines) - footerRows
 	if !m.observed {
 		message := "Loading local activity…"
 		if m.stale {
@@ -84,7 +94,7 @@ func (m *Model) Render(styler terminal.Styler) []string {
 			add(terminal.RoleMuted, fmt.Sprintf("  Confirmed closed   %s   %d queued / %d need attention", duration(timer.ConfirmedClosedNS), timer.QueuedCount, timer.NeedsAttentionCount))
 		}
 	}
-	for len(lines) < m.rows-2 {
+	for len(lines) < m.rows-footerRows {
 		add(terminal.RoleText, "")
 	}
 	syncState := "unavailable"
@@ -101,8 +111,11 @@ func (m *Model) Render(styler terminal.Styler) []string {
 	add(terminal.RoleInfo, "Sync "+syncState+"  ·  Worker "+worker)
 	if width < 60 {
 		add(terminal.RoleKey, "A Appearance  ? Help  ↑/↓  q Quit")
+	} else if splitHints {
+		add(terminal.RoleKey, "A Appearance  ? Help  q Quit")
+		add(terminal.RoleKey, "a Auth  l Links  h Hooks  s Sync  w Worker")
 	} else {
-		add(terminal.RoleKey, "A Appearance  ? Help  q Quit  a Auth  l Links  h Hooks  s Sync  w Worker")
+		add(terminal.RoleKey, primaryHints)
 	}
 	return lines
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/rbeene/tempo/internal/harvest"
 	"github.com/rbeene/tempo/internal/hookstate"
 	"github.com/rbeene/tempo/internal/setup"
+	"github.com/rbeene/tempo/internal/themes"
 	"github.com/rbeene/tempo/internal/worker"
 )
 
@@ -84,10 +85,20 @@ func TestQAUIServiceCLIReadPTYChild(t *testing.T) {
 		t.Fatalf("invalid real Doctor fixture: %v", e)
 	}
 	report("fixture-valid", project)
-	code := cli.Run(context.Background(), []string{"ui"}, os.Stdin, os.Stdout, os.Stderr, cli.Dependencies{Activity: local, Hooks: hooks, Worker: service, Auth: credentials, ConfigPath: config, Getenv: func(string) string {
+	preferences := filepath.Join(root, "appearance-private", "preferences.json")
+	code := cli.Run(context.Background(), []string{"ui"}, os.Stdin, os.Stdout, os.Stderr, cli.Dependencies{Activity: local, Hooks: hooks, Worker: service, Auth: credentials, ConfigPath: config, Themes: themes.New(themes.Options{Path: preferences}), Getenv: func(key string) string {
+		switch key {
+		case "TERM":
+			return "dumb"
+		case "COLORTERM", "NO_COLOR":
+			return ""
+		}
 		t.Error("injected dashboard inspected default service/environment paths")
 		return ""
 	}})
+	if _, err := os.Stat(filepath.Dir(preferences)); !errors.Is(err, os.ErrNotExist) {
+		t.Error("read-only service view initialized private preferences")
+	}
 	if code != 0 {
 		t.Errorf("CLI service view exit%d", code)
 	}
