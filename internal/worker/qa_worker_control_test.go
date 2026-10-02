@@ -898,3 +898,63 @@ func TestQAWorkerUninstallRejectsSymlinkAndHardlinkOwnership(t *testing.T) {
 		})
 	}
 }
+
+func TestQAWorkerAppliedManagerFailureIsUncertainAndReplaysSameIntent(t *testing.T) {
+	for _, mode := range []string{"timeout", "nonzero"} {
+		t.Run(mode, func(t *testing.T) {
+			o, _ := qaWorkerOptions(t)
+			m := &qaWorkerManager{t: t, o: o, requestID: qaWorkerID(950)}
+			failed := false
+			o.Runner = qaWorkerRunnerFunc(func(ctx context.Context, c Command) (CommandResult, error) {
+				result, err := m.Run(ctx, c)
+				if c.Args[0] == "disable" && !failed {
+					failed = true
+					if mode == "timeout" {
+						return result, context.DeadlineExceeded
+					}
+					return CommandResult{ExitCode: 1}, nil
+				}
+				return result, err
+			})
+			s := qaWorkerNew(t, o)
+			req := ControlRequest{RequestID: qaWorkerID(950), Confirmed: true}
+			_, err := s.Install(context.Background(), req)
+			var typed *Error
+			if !failed || !m.disabled || !errors.As(err, &typed) || !typed.Uncertain || typed.Code != "local_write_unknown" {
+				t.Fatalf("applied manager failure misclassified applied%v err%#v", m.disabled, err)
+			}
+			qaWorkerNoPublished(t, o.ServiceDir)
+			pending := qaWorkerReadControl(t, o)
+			if pending.Pending == nil || pending.Pending.Request != req || pending.Receipts[req.RequestID].Result != nil {
+				t.Fatalf("uncertain effect lost replay identity%+v", pending)
+			}
+			result, err := qaWorkerNew(t, o).Install(context.Background(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			final := qaWorkerReadControl(t, o)
+			if final.Pending != nil || final.Receipts[req.RequestID].Result == nil || !reflect.DeepEqual(*final.Receipts[req.RequestID].Result, result) {
+				t.Fatalf("same-ID recovery not terminal%+v", final)
+			}
+		})
+	}
+}
+func TestQAWorkerReadOnlyManagerTimeoutRemainsCertain(t *testing.T) {
+	o, _ := qaWorkerOptions(t)
+	m := &qaWorkerManager{t: t, o: o, requestID: qaWorkerID(951)}
+	reached := 0
+	o.Runner = qaWorkerRunnerFunc(func(ctx context.Context, c Command) (CommandResult, error) {
+		result, err := m.Run(ctx, c)
+		if c.Args[0] == "manageruid" {
+			reached++
+			return result, context.DeadlineExceeded
+		}
+		return result, err
+	})
+	_, err := qaWorkerNew(t, o).Install(context.Background(), ControlRequest{RequestID: qaWorkerID(951), Confirmed: true})
+	var typed *Error
+	if reached != 1 || m.disabled || !errors.As(err, &typed) || typed.Uncertain || typed.Code != "manager" {
+		t.Fatalf("probe timeout classification reached%d disabled%v err%#v", reached, m.disabled, err)
+	}
+	qaWorkerNoPublished(t, o.ServiceDir)
+}

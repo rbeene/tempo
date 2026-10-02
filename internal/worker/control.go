@@ -257,6 +257,13 @@ func (s *Service) manager(ctx context.Context, args ...string) (CommandResult, e
 	}
 	bounded, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
+	mutation := false
+	if len(args) > 0 {
+		switch args[0] {
+		case "enable", "disable", "bootstrap", "bootout", "kickstart", "daemon-reload", "start", "stop":
+			mutation = true
+		}
+	}
 	executable := "/bin/launchctl"
 	if s.options.Platform == "linux" {
 		executable = "/usr/bin/systemctl"
@@ -264,6 +271,11 @@ func (s *Service) manager(ctx context.Context, args ...string) (CommandResult, e
 	}
 	r, e := s.options.Runner.Run(bounded, Command{Executable: executable, Args: args})
 	if e != nil || len(r.Stdout)+len(r.Stderr) > 65536 || r.ExitCode != 0 {
+		// A failed command may already have applied its local manager effect.
+		// Keep the durable intent pending and require exact-request recovery.
+		if mutation {
+			return CommandResult{}, issue("local_write_unknown")
+		}
 		return CommandResult{}, issue("manager")
 	}
 	return r, nil

@@ -270,8 +270,11 @@ activity, pending sync identity and control receipts remain. No root service,
 are `~/Library/LaunchAgents` or the user's config directory `systemd/user`.
 
 Finite controls accept `--request-id UUID`, generated when omitted. Retain that ID
-and repeat the same input after `local_write_unknown`; completed replay causes no
-new manager effects. Installation and removal require `--yes`. Foreign or edited
+and repeat the same input after `local_write_unknown` (exit 8, uncertain): a failed
+manager mutation may already have applied, just as a failed save may be visible.
+The original pending intent is retained for recovery. Read-only manager probe
+failures remain ordinary `manager` errors. Completed replay causes no new manager
+effects. Installation and removal require `--yes`. Foreign or edited
 service definitions are preserved with `revision_conflict`. Binaries and selected
 state/config paths are pinned in the definition; moving them requires deliberate
 service repair. Lifecycle commands never grant account or rounding consent.
