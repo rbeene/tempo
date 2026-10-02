@@ -125,7 +125,7 @@ def claude_argv(runtime, project):
     agents = {'tempo-fixture-child': {'description': 'Synthetic lifecycle child',
               'prompt': 'Complete the supplied synthetic lifecycle case.',
               'tools': ['Read'], 'model': MODEL, 'background': True}}
-    return [str(runtime), '--print', '--setting-sources', 'project,local', '--tools', 'Read,Agent',
+    return [str(runtime), '--print', '--permission-mode', 'default', '--setting-sources', 'project,local', '--tools', 'Read,Agent',
             '--allowedTools', f'Read(/{project / "fixture.txt"}),Agent',
             '--strict-mcp-config', '--mcp-config', str(project / 'mcp.json'), '--no-session-persistence',
             '--model', MODEL, '--max-turns', '4', '--agents', json.dumps(agents), PARENT_PROMPT]

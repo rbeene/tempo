@@ -112,7 +112,9 @@ class IsolationTests(unittest.TestCase):
         self.assertEqual(argv[argv.index('--tools')+1], 'Read,Agent')
         self.assertEqual(argv[argv.index('--allowedTools')+1], 'Read(//tmp/project/fixture.txt),Agent')
         self.assertIn('--strict-mcp-config', argv)
-        for forbidden in ('--bare', '--safe-mode', '--permission-mode', '--dangerously-skip-permissions'):
+        self.assertEqual(argv.count('--permission-mode'), 1)
+        self.assertEqual(argv[argv.index('--permission-mode')+1], 'default')
+        for forbidden in ('--bare', '--safe-mode', '--dangerously-skip-permissions', '--permissionMode'):
             self.assertNotIn(forbidden, argv)
 
 
@@ -669,7 +671,7 @@ class NativeApprovalDiagnosticTests(unittest.TestCase):
         agents = {'tempo-fixture-child': {'description': 'Synthetic lifecycle child',
                   'prompt': 'Complete the supplied synthetic lifecycle case.', 'tools': ['Read'],
                   'model': smoke.MODEL, 'background': True}}
-        self.assertEqual(argv, ['/tmp/runtime', '--print', '--setting-sources', 'project,local',
+        self.assertEqual(argv, ['/tmp/runtime', '--print', '--permission-mode', 'default', '--setting-sources', 'project,local',
             '--tools', 'Read,Agent', '--allowedTools', 'Read(//tmp/tempo-fixture/project/fixture.txt),Agent',
             '--strict-mcp-config', '--mcp-config', str(project / 'mcp.json'), '--no-session-persistence',
             '--model', smoke.MODEL, '--max-turns', '4', '--agents', json.dumps(agents), smoke.PARENT_PROMPT])
@@ -1895,6 +1897,121 @@ class MessagesStructureTests(unittest.TestCase):
                 report = self.run_structural_report(old, self.annotation())
                 self.assertNotIn('provider_first_messages_structure', report); self.assertNotIn(self.CANARY, json.dumps(report))
                 if i in (4, 5, 7, 8, 9): self.assertEqual(report['provider_first_rejections'], old)
+
+
+class PermissionModeContractTests(unittest.TestCase):
+    """Explicit ordinary mode must reach the real inert run launch boundary."""
+    def expected_argv(self, runtime, project):
+        child = {'tempo-fixture-child': {'description': 'Synthetic lifecycle child',
+            'prompt': 'Complete the supplied synthetic lifecycle case.', 'tools': ['Read'],
+            'model': 'claude-sonnet-4-6', 'background': True}}
+        return [str(runtime), '--print', '--permission-mode', 'default', '--setting-sources', 'project,local',
+            '--tools', 'Read,Agent', '--allowedTools', 'Read(/'+str(project/'fixture.txt')+'),Agent',
+            '--strict-mcp-config', '--mcp-config', str(project/'mcp.json'), '--no-session-persistence',
+            '--model', 'claude-sonnet-4-6', '--max-turns', '4', '--agents', json.dumps(child), 'tempo-native-parent-case']
+
+    def assert_launch_contract(self, argv, runtime, project):
+        self.assertEqual(argv.count('--permission-mode'), 1, 'exact default permission-mode pair missing or duplicated')
+        position = argv.index('--permission-mode')
+        self.assertEqual(argv[position+1:position+2], ['default'], 'permission-mode value must be literal default')
+        self.assertEqual(argv, self.expected_argv(runtime, project))
+
+    def test_exact_default_mode_pair_and_complete_surrounding_native_argv(self):
+        runtime, project = Path('/tmp/runtime'), Path('/tmp/tempo-fixture/project')
+        self.assert_launch_contract(smoke.claude_argv(runtime, project), runtime, project)
+
+    def mutation_baseline(self, observed):
+        argv = list(observed)
+        if '--permission-mode' not in argv:
+            # Only normalize the missing approved pair on the genuine RED vector.
+            # All surrounding bytes/options remain observed production output.
+            argv[2:2] = ['--permission-mode', 'default']
+        return argv
+
+    def observe_inert_print(self, transform=None):
+        # Every process call is a mock. Stop at print with a real fixture failure;
+        # no receipt or child-success oracle is fabricated or patched away.
+        original_argv = smoke.claude_argv  # Capture the real function before any mutation patch.
+        with tempfile.TemporaryDirectory(prefix='tempo-mode-qa-') as tmp:
+            fixture = Path(tmp).resolve(); root, home = fixture/'owned', fixture/'home'; home.mkdir()
+            runtime, tempo, helper = (fixture/name for name in ('runtime', 'tempo', 'helper'))
+            for path in (runtime, tempo, helper): path.write_text('inert file')
+            provider = smoke.Provider.__new__(smoke.Provider)
+            provider.budget, provider.error, provider.shutdown = smoke.ProviderBudget(), None, threading.Event()
+            provider.server, provider.thread = mock.Mock(server_port=43210), mock.Mock()
+            observed, versions = [], []
+            def bounded(argv, env, project, timeout):
+                if argv[0] == str(runtime):
+                    if argv[1:] == ['--version']:
+                        versions.append((list(argv), dict(env), project, timeout))
+                        return b'2.1.286 (Claude Code)\n'
+                    observed.append((list(argv), dict(env), project, timeout))
+                    raise smoke.FixtureFailure('fixture_cancelled')
+                self.assertEqual(argv[0], str(helper)); self.assertEqual(timeout, 8)
+                if argv[2] == 'confirm': return json.dumps({'basis': 'operator_declared', 'fingerprint': 'a'*64}).encode()
+                if argv[2] == 'read': return b'{"receipts":[]}'
+                self.assertEqual(argv[2], 'link'); return b''
+            def owned_root(**_kwargs): root.mkdir(); return str(root)
+            def boundary_path(value): return home if str(value) == '/home/runner' else Path(value)
+            report = {}
+            with mock.patch.dict(os.environ, {'HOME': '/home/runner', 'RUNNER_TEMP': str(fixture),
+                     'GITHUB_SHA': 'd'*40, 'PRIVATE_PARENT_CANARY': 'PRIVATE_MODE_CANARY'}, clear=True), \
+                 mock.patch.object(smoke, 'Path', side_effect=boundary_path), \
+                 mock.patch.object(smoke, 'hosted_precondition'), mock.patch.object(smoke, 'require_absent'), \
+                 mock.patch.object(smoke.tempfile, 'mkdtemp', side_effect=owned_root), \
+                 mock.patch.object(smoke, 'download_runtime', return_value=runtime), \
+                 mock.patch.object(smoke, 'bounded_run', side_effect=bounded), \
+                 mock.patch.object(smoke, 'Provider', return_value=provider), \
+                 mock.patch.object(smoke, 'require_final', wraps=smoke.require_final) as final_gate:
+                def invoke():
+                    with self.assertRaises(smoke.FixtureFailure) as caught:
+                        smoke.run(types.SimpleNamespace(tempo=str(tempo), helper=str(helper)), report)
+                    self.assertEqual(str(caught.exception), 'fixture_cancelled')
+                if transform is None:
+                    invoke()  # claude_argv and child_environment remain unmocked.
+                else:
+                    # Mutation proof only; production tests above/below use real argv.
+                    with mock.patch.object(smoke, 'claude_argv', side_effect=lambda r, p: transform(self.mutation_baseline(original_argv(r, p)))):
+                        invoke()
+                final_gate.assert_not_called()
+            self.assertFalse(root.exists()); self.assertTrue(provider.shutdown.is_set())
+            provider.server.shutdown.assert_called_once(); provider.server.server_close.assert_called_once()
+            provider.thread.join.assert_called_once()
+            self.assertEqual(len(versions), 1); self.assertEqual(versions[0][0], [str(runtime), '--version'])
+            self.assertEqual(versions[0][3], 8); self.assertEqual(len(observed), 1)
+            argv, env, project, timeout = observed[0]
+            # Check the surrounding real run contract before the expected RED.
+            self.assertEqual(project, root/'project'); self.assertEqual(timeout, 110)
+            self.assertEqual(argv[-1], 'tempo-native-parent-case')
+            self.assertEqual(env, {'HOME': '/home/runner', 'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8', 'LC_ALL': 'C.UTF-8',
+                'TMPDIR': str(root/'tmp'), 'TEMPO_STATE': str(root/'activity.json'), 'TEMPO_HOOK_STATE': str(root/'hooks-state.json'),
+                'ANTHROPIC_API_KEY': 'tempo-ci-invalid-synthetic-key', 'ANTHROPIC_BASE_URL': 'http://127.0.0.1:43210/claude',
+                'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC': '1', 'CLAUDE_CODE_DISABLE_OFFICIAL_MARKETPLACE_AUTOINSTALL': '1',
+                'CLAUDE_CODE_DISABLE_AUTO_MEMORY': '1', 'CLAUDE_CODE_DISABLE_CLAUDE_MDS': '1',
+                'CLAUDE_CODE_SKIP_PROMPT_HISTORY': '1', 'DISABLE_TELEMETRY': '1', 'DISABLE_ERROR_REPORTING': '1',
+                'DISABLE_AUTOUPDATER': '1'})
+            self.assertEqual(report['stage'], 'native_print_turn'); self.assertNotEqual(report.get('status'), 'passed')
+            self.assertEqual(report['provider_entry_count'], 0); self.assertEqual(report['request_counts'], {})
+            self.assertEqual(report['receipts'], []); self.assertNotIn('PRIVATE_MODE_CANARY', json.dumps(report))
+            return argv, runtime, project
+
+    def test_actual_inert_run_print_boundary_has_one_literal_default_pair(self):
+        argv, runtime, project = self.observe_inert_print()
+        self.assert_launch_contract(argv, runtime, project)
+
+    def test_removed_wrong_duplicate_and_bypass_mode_mutations_fail_both_contracts(self):
+        def remove(argv):
+            position = argv.index('--permission-mode'); del argv[position:position+2]; return argv
+        def wrong(argv): argv[argv.index('--permission-mode')+1] = 'auto'; return argv
+        def duplicate(argv): argv[2:2] = ['--permission-mode', 'default']; return argv
+        def bypass(argv): argv.insert(2, '--dangerously-skip-permissions'); return argv
+        for name, transform in (('removed', remove), ('wrong', wrong), ('duplicate', duplicate), ('bypass', bypass)):
+            with self.subTest(mutation=name):
+                runtime, project = Path('/tmp/runtime'), Path('/tmp/project')
+                with self.assertRaises(AssertionError):
+                    self.assert_launch_contract(transform(self.mutation_baseline(smoke.claude_argv(runtime, project))), runtime, project)
+                argv, runtime, project = self.observe_inert_print(transform)
+                with self.assertRaises(AssertionError): self.assert_launch_contract(argv, runtime, project)
 
 
 if __name__=='__main__':unittest.main()
