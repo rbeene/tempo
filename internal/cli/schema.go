@@ -16,6 +16,8 @@ var commands = []Command{
 	{"activity preview", "Preview a recovery end or discarded tail without changes", "UUID", map[string]string{"end": "utc", "discard-tail": "bool"}, false},
 	{"activity resolve", "Resolve uncertainty; requires revision, end/discard-tail and --yes", "UUID", map[string]string{"end": "utc", "discard-tail": "bool", "if-revision": "counter", "reason": "string", "request-id": "uuid"}, true},
 	{"activity interrupt", "Detach one generation; preserve working tails for recovery", "UUID", map[string]string{"generation": "counter", "if-revision": "counter", "request-id": "uuid"}, true},
+	{"setup", "Guide secure authentication and directory/project setup", "", map[string]string{"host": "string", "scope": "string", "path": "string"}, false},
+	{"doctor", "Inspect local readiness; --check verifies credentials", "", map[string]string{"check": "bool"}, false},
 	{"link", "Link a directory or entire Git repository and all its worktrees to a project", "[ID]", map[string]string{"task": "id", "path": "string", "timezone": "string", "if-revision": "counter", "request-id": "uuid"}, true},
 	{"links list", "List local directory and repository bindings", "", nil, false},
 	{"links show", "Inspect one local binding by ID or path", "[UUID]", map[string]string{"path": "string"}, false},

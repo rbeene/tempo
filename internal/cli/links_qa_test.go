@@ -26,7 +26,7 @@ func TestQABindingCLINoninteractiveMissingProjectNeverTouchesDependencies(t *tes
 	path := filepath.Join(root, "absent", "state.json")
 	var out, stderr bytes.Buffer
 	d := cli.Dependencies{Activity: activity.New(activity.Options{Path: path}), Store: &fakeStore{}, Getenv: func(string) string { t.Fatal("missing project read environment/config"); return "" }, NewProvider: func(string, string) harvest.Provider { t.Fatal("missing project built provider"); return nil }}
-	code := cli.Run(context.Background(), []string{"link", "--non-interactive"}, qaNeverRead{t}, &out, &stderr, d)
+	code := qaLegacyRun(t, context.Background(), []string{"link", "--non-interactive"}, qaNeverRead{t}, &out, &stderr, d)
 	envelope(t, result{code: code, out: out.String(), err: stderr.String()}, 2, "input_required")
 	if _, err := os.Stat(filepath.Dir(path)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing project initialized state: %v", err)
@@ -38,7 +38,7 @@ func TestQABindingCLILocalListOfflineFiniteEnvelope(t *testing.T) {
 	var out, stderr bytes.Buffer
 	store := &fakeStore{}
 	d := cli.Dependencies{Activity: activity.New(activity.Options{Path: path}), Store: store, ConfigPath: filepath.Join(root, "missing"), Getenv: func(string) string { t.Fatal("local list read account environment"); return "" }, NewProvider: func(string, string) harvest.Provider { t.Fatal("local list constructed provider"); return nil }}
-	code := cli.Run(context.Background(), []string{"links", "list", "--non-interactive"}, qaNeverRead{t}, &out, &stderr, d)
+	code := qaLegacyRun(t, context.Background(), []string{"links", "list", "--non-interactive"}, qaNeverRead{t}, &out, &stderr, d)
 	envelope(t, result{code: code, out: out.String(), err: stderr.String()}, 0, "")
 	if store.gets+store.sets+store.deletes != 0 {
 		t.Fatal("local list accessed credentials")
@@ -79,7 +79,7 @@ func TestQABindingCLIReplaySkipsChangedConfigAccountAndCredentials(t *testing.T)
 	}}
 	args := []string{"link", "100", "--task", "200", "--timezone", "UTC", "--path", location, "--request-id", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "--non-interactive"}
 	var out, stderr bytes.Buffer
-	code := cli.Run(context.Background(), args, qaNeverRead{t}, &out, &stderr, d)
+	code := qaLegacyRun(t, context.Background(), args, qaNeverRead{t}, &out, &stderr, d)
 	envelope(t, result{code: code, out: out.String(), err: stderr.String()}, 0, "")
 	first := out.String()
 	if err := os.Remove(location); err != nil {
@@ -94,7 +94,7 @@ func TestQABindingCLIReplaySkipsChangedConfigAccountAndCredentials(t *testing.T)
 	d.NewProvider = func(string, string) harvest.Provider { t.Fatal("replay built authenticated provider"); return nil }
 	out.Reset()
 	stderr.Reset()
-	code = cli.Run(context.Background(), args, qaNeverRead{t}, &out, &stderr, d)
+	code = qaLegacyRun(t, context.Background(), args, qaNeverRead{t}, &out, &stderr, d)
 	envelope(t, result{code: code, out: out.String(), err: stderr.String()}, 0, "")
 	if first != out.String() || store.gets != gets {
 		t.Fatalf("replay changed result or accessed credentials: first=%s next=%s gets=%d/%d", first, out.String(), gets, store.gets)
@@ -102,7 +102,7 @@ func TestQABindingCLIReplaySkipsChangedConfigAccountAndCredentials(t *testing.T)
 	out.Reset()
 	stderr.Reset()
 	args = append(args, "--account", "9")
-	code = cli.Run(context.Background(), args, qaNeverRead{t}, &out, &stderr, d)
+	code = qaLegacyRun(t, context.Background(), args, qaNeverRead{t}, &out, &stderr, d)
 	envelope(t, result{code: code, out: out.String(), err: stderr.String()}, 6, "request_conflict")
 }
 
@@ -124,7 +124,7 @@ func TestQABindingCLILocalInspectionRepairUnlinkStayOffline(t *testing.T) {
 		t.Helper()
 		var out, stderr bytes.Buffer
 		args = append(args, "--non-interactive")
-		code := cli.Run(context.Background(), args, qaNeverRead{t}, &out, &stderr, d)
+		code := qaLegacyRun(t, context.Background(), args, qaNeverRead{t}, &out, &stderr, d)
 		envelope(t, result{code: code, out: out.String(), err: stderr.String()}, 0, "")
 		return out.String()
 	}

@@ -77,7 +77,7 @@ func parse(args []string) (parsed, error) {
 	}
 	name := words[0]
 	n := 1
-	if name != "help" && name != "schema" && name != "version" && name != "link" {
+	if name != "help" && name != "schema" && name != "version" && name != "link" && name != "setup" && name != "doctor" {
 		if len(words) < 2 {
 			return p, problem("usage", "subcommand required; use tempo help")
 		}

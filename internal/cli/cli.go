@@ -15,18 +15,22 @@ import (
 	"github.com/rbeene/tempo/internal/activity"
 	"github.com/rbeene/tempo/internal/auth"
 	"github.com/rbeene/tempo/internal/harvest"
+	"github.com/rbeene/tempo/internal/terminal"
 )
 
 var Version = "dev"
 
 type Dependencies struct {
-	Activity    *activity.Service
-	Store       auth.Store
-	ConfigPath  string
-	Getenv      func(string) string
-	NewProvider func(token, account string) harvest.Provider
-	Now         func() time.Time
-	SaveConfig  func(string, auth.Config) error
+	Auth             *auth.Service
+	Prompter         terminal.Prompter
+	TerminalEligible func(io.Reader, io.Writer) bool
+	Activity         *activity.Service
+	Store            auth.Store
+	ConfigPath       string
+	Getenv           func(string) string
+	NewProvider      func(token, account string) harvest.Provider
+	Now              func() time.Time
+	SaveConfig       func(string, auth.Config) error
 }
 type cliError struct {
 	Code      string         `json:"code"`
@@ -46,6 +50,17 @@ func safeError(err error) *cliError {
 	var ae *activity.Error
 	if errors.As(err, &ae) {
 		return &cliError{Code: ae.Code, Message: ae.Message, Retryable: ae.Retryable, Uncertain: ae.Uncertain, Details: ae.Details}
+	}
+	var authErr *auth.Error
+	if errors.As(err, &authErr) {
+		details := map[string]any{"effects": authErr.Effects}
+		if len(authErr.RequiredFields) > 0 {
+			details["required_fields"] = authErr.RequiredFields
+		}
+		return &cliError{Code: authErr.Code, Message: authErr.Message, Retryable: authErr.Retryable, Uncertain: authErr.Uncertain, Details: details}
+	}
+	if errors.Is(err, auth.ErrNotFound) {
+		return &cliError{Code: "auth", Message: "no token configured; connect securely or use HARVEST_TOKEN"}
 	}
 	var he *harvest.Error
 	if errors.As(err, &he) {
@@ -67,7 +82,7 @@ func exitCode(code string) int {
 		return 6
 	case "network", "api", "rate_limit", "response":
 		return 7
-	case "uncertain_write", "local_write_unknown":
+	case "uncertain_write", "local_write_unknown", "credential_write_unknown":
 		return 8
 	default:
 		return 1
@@ -92,11 +107,35 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		}
 		err = validate(&p, d.Now())
 		if err == nil {
-			data, err = execute(ctx, p, in, d)
+			if guidedCommand(p.command.Name) {
+				eligible := terminal.Eligible
+				if d.TerminalEligible != nil {
+					eligible = d.TerminalEligible
+				}
+				interactive := eligible(in, out) && p.flags["json"] != "true" && p.flags["non-interactive"] != "true"
+				if !interactive {
+					jsonMode = true
+				}
+				data, err = executeGuided(ctx, p, in, out, d, interactive)
+			} else if sharedAuthCommand(p.command.Name) {
+				data, err = executeAuth(ctx, p, in, d)
+			} else {
+				data, err = execute(ctx, p, in, d)
+			}
 		}
 	}
 	if err != nil {
+		var ended *terminal.ExitError
+		if errors.As(err, &ended) {
+			return ended.Code
+		}
 		e := safeError(err)
+		if errors.Is(err, context.Canceled) || e.Code == "network" {
+			var cause *terminal.ExitError
+			if errors.As(context.Cause(ctx), &cause) {
+				return cause.Code
+			}
+		}
 		if jsonMode {
 			_ = json.NewEncoder(errOut).Encode(map[string]any{"schema_version": 1, "error": e})
 		} else {
@@ -536,7 +575,7 @@ func apiMessage(code string) string {
 		return "Harvest request failed or was canceled"
 	case "response":
 		return "Harvest returned an invalid or incomplete response"
-	case "uncertain_write", "local_write_unknown":
+	case "uncertain_write", "local_write_unknown", "credential_write_unknown":
 		return "write outcome is uncertain; inspect time list/show or timer status before retrying manually"
 	default:
 		return "Harvest could not complete the request"
