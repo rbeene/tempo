@@ -7,6 +7,12 @@ type SyncDependencies struct{ NewProvider AccountProvider }
 type SyncConfigureInput struct {
 	AccountID, Mode, DurationPolicy, Clock, IfRevision, RequestID string
 	Confirmed                                                     bool
+	UserID                                                        string `json:"UserID,omitempty"`
+}
+
+type SyncAccountIdentity struct {
+	AccountID string `json:"account_id"`
+	UserID    string `json:"user_id"`
 }
 type SyncRunInput struct {
 	RequestID string `json:"request_id"`
