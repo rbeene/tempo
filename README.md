@@ -1,8 +1,12 @@
 # Tempo
 
-Fast, personal Harvest time tracking from a single Go binary. Built for Robert and for predictable agent use: explicit commands, complete pagination, stable JSON, and no interactive surprises.
+Fast, personal Harvest time tracking from a single Go binary. Built for personal tracking and predictable agent use: explicit commands, complete pagination, stable JSON, and no interactive surprises.
 
 Tempo supports secure authentication and account selection, assigned projects/tasks/clients, time entry CRUD, and running timers. It intentionally scopes time operations to the authenticated user. Harvest's invoicing, expense and account-administration APIs are outside this time-tracking CLI.
+
+## Install and update
+
+Release archives and a checksum-verifying installer are configured with GoReleaser. No first release has been published yet. See [distribution and installation](docs/distribution.md) for the pinned-version installer, platform support, and release process.
 
 ## Build
 
@@ -66,6 +70,6 @@ make check
 make build
 ```
 
-Tests use mock HTTP and injected credential stores, never a real Harvest account or Keychain. See [AGENTS.md](AGENTS.md). CI is one Linux job on the dedicated `titan-tempo-1` runner, with no matrix. Native macOS and Keychain bridge compilation are verified locally. No merge, release, public publication or installation has been performed.
+Tests use mock HTTP and injected credential stores, never a real Harvest account or Keychain. See [AGENTS.md](AGENTS.md). PR CI is one GitHub-hosted Linux job with no matrix. Merges to `main` automatically build native Mac archives on a hosted Mac, then Linux archives on hosted Ubuntu, and publish a versioned GitHub Release. The Titan runner stays parked pending a separately approved isolation setup. The repository is public; no release or installation has been performed.
 
 Primary API references: [authentication](https://help.getharvest.com/api-v2/authentication-api/authentication/authentication/), [time entries](https://help.getharvest.com/api-v2/timesheets-api/timesheets/time-entries/), [pagination](https://help.getharvest.com/api-v2/introduction/overview/pagination/), and [user project assignments](https://help.getharvest.com/api-v2/users-api/users/project-assignments/).
