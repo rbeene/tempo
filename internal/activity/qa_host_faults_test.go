@@ -2,6 +2,7 @@ package activity
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"github.com/rbeene/tempo/internal/hookstate"
 	"os"
@@ -214,6 +215,190 @@ func TestQAHostLivePolicyLossCannotFinalizeUnprovenTail(t *testing.T) {
 			qaIntervals(t, s, nil)
 			if len(s.Uncertainties) != 1 || s.Uncertainties[0].State != "unresolved" || !s.Uncertainties[0].LowerBound.Equal(qaEpochStart) {
 				t.Fatalf("known policy loss left live tail without durable uncertainty: %+v", s)
+			}
+		})
+	}
+}
+
+func TestQAHostCorruptRootPointerRejectsReadsAndCallbacks(t *testing.T) {
+	for _, variant := range []string{"child", "foreign_session"} {
+		t.Run(variant, func(t *testing.T) {
+			h := qaNewHost(t)
+			h.startSession()
+			h.send(0, h.event("UserPromptSubmit", "root-turn", ""))
+			h.send(5, h.event("SubagentStart", "child-turn", "child"))
+			if variant == "foreign_session" {
+				e := h.event("SessionStart", "", "")
+				e.SessionID = "foreign-session"
+				e.SessionSource = "startup"
+				h.send(6, e)
+				e.Kind = "UserPromptSubmit"
+				e.SessionSource = ""
+				e.TurnID = "foreign-root"
+				h.send(7, e)
+			}
+			raw, err := os.ReadFile(h.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var st state
+			if err := json.Unmarshal(raw, &st); err != nil {
+				t.Fatal(err)
+			}
+			target := ""
+			for key, turn := range st.HostTurns {
+				if variant == "child" && turn.AgentID == "child" || variant == "foreign_session" && turn.SessionID == "foreign-session" && turn.AgentID == "" {
+					target = key
+				}
+			}
+			if target == "" {
+				t.Fatal("fixture target missing")
+			}
+			st.HostSessions[hostSessionKey(HostEvent{Source: "codex", SessionID: "host-session"})].RootTurn = target
+			corrupt, err := json.Marshal(st)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(h.path, corrupt, 0600); err != nil {
+				t.Fatal(err)
+			}
+			h.restartHost()
+			_, err = h.service.Status(context.Background())
+			qaCode(t, err, "state_corrupt")
+			_, err = h.service.HostReceipts(context.Background(), HostReceiptFilter{})
+			qaCode(t, err, "state_corrupt")
+			_, err = h.service.IngestHost(context.Background(), h.event("SessionEnd", "", ""))
+			qaCode(t, err, "state_corrupt")
+			preserved, err := os.ReadFile(h.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(corrupt) != string(preserved) {
+				t.Fatal("invalid root pointer was overwritten or applied")
+			}
+		})
+	}
+}
+
+func TestQAHostUnavailableClockAtResumeCommitsQuarantineWithoutCap(t *testing.T) {
+	for _, source := range []string{"resume", "clear"} {
+		t.Run(source, func(t *testing.T) {
+			h := qaNewHost(t)
+			h.startSession()
+			root := h.send(0, h.event("UserPromptSubmit", "root-turn", ""))
+			child := h.send(5, h.event("SubagentStart", "child-turn", "child"))
+			h.at(10)
+			h.clockErr = errors.New("synthetic unavailable clock at boundary")
+			boundary := h.event("SessionStart", "", "")
+			boundary.SessionSource = source
+			r, err := h.service.IngestHost(context.Background(), boundary)
+			qaCode(t, err, "clock_unavailable")
+			if r.Durability != "committed" {
+				t.Fatalf("observed global loss not committed: %+v", r)
+			}
+			h.at(15)
+			s := h.snapshot()
+			qaIntervals(t, s, nil)
+			if len(s.Uncertainties) != 2 {
+				t.Fatalf("boundary lost global clock quarantine: %+v", s.Uncertainties)
+			}
+			for _, u := range s.Uncertainties {
+				if u.UpperBound != nil {
+					t.Fatalf("unavailable boundary invented trusted end: %+v", u)
+				}
+			}
+			h.send(20, h.event("Stop", "root-turn", ""))
+			h.send(25, h.event("SubagentStop", "child-turn", "child"))
+			s = h.snapshot()
+			qaIntervals(t, s, nil)
+			if root.Actor == nil || child.Actor == nil || len(s.Uncertainties) != 2 {
+				t.Fatalf("later good callbacks lost original uncertainties: %+v", s)
+			}
+			for _, u := range s.Uncertainties {
+				if u.Actor != *root.Actor && u.Actor != *child.Actor || u.State != "unresolved" {
+					t.Fatalf("boundary remapped or resolved old uncertainty: %+v", u)
+				}
+			}
+		})
+	}
+}
+
+func TestQAHostFailedPromptCannotAliasLaterGeneration(t *testing.T) {
+	h := qaNewHost(t)
+	h.startSession()
+	h.send(0, h.event("UserPromptSubmit", "turn-A", ""))
+	h.at(10)
+	h.clockErr = errors.New("synthetic unavailable clock during prompt admission")
+	_, err := h.service.IngestHost(context.Background(), h.event("UserPromptSubmit", "turn-B", ""))
+	qaCode(t, err, "clock_unavailable")
+	admitted := h.send(20, h.event("UserPromptSubmit", "turn-C", ""))
+	if admitted.Actor == nil {
+		t.Fatal("later valid prompt missing actor")
+	}
+	h.send(30, h.event("Stop", "turn-B", ""))
+	s := h.snapshot()
+	found := false
+	for _, a := range s.Actors {
+		if a.Ref == *admitted.Actor {
+			found = true
+			if a.State != "working" {
+				t.Fatalf("stop of failed B admission closed C generation: %+v", a)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("C generation lost after failed B terminal: %+v", s.Actors)
+	}
+	for _, interval := range s.ClosedIntervals {
+		if interval.Start.Equal(qaEpochStart.Add(20 * time.Second)) {
+			t.Fatalf("failed B alias automatically billed C: %+v", interval)
+		}
+	}
+}
+
+func TestQAHostHistoricalTerminalReplayReconcilesOriginalReceipt(t *testing.T) {
+	for _, kind := range []string{"Stop", "SubagentStop"} {
+		t.Run(kind, func(t *testing.T) {
+			h := qaNewHost(t)
+			h.startSession()
+			h.send(0, h.event("UserPromptSubmit", "old-root", ""))
+			h.send(5, h.event("SubagentStart", "old-child", "child"))
+			terminal := h.event(kind, "old-root", "")
+			if kind == "SubagentStop" {
+				terminal.TurnID = "old-child"
+				terminal.AgentID = "child"
+			}
+			original := h.send(10, terminal)
+			boundary := h.event("SessionStart", "", "")
+			boundary.SessionSource = "resume"
+			h.send(20, boundary)
+			h.send(30, h.event("UserPromptSubmit", "new-root", ""))
+			p, err := h.policies.Eligibility(context.Background(), "codex", h.cwd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.policies.Revoke(context.Background(), hookstate.RevokeInput{Host: "codex", Scope: "project", Path: p.Context.Path, IfRevision: p.Revision, RequestID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", Confirmed: true}); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(h.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.at(40)
+			h.clockErr = errors.New("historical replay must not sample clock")
+			replay, err := h.service.IngestHost(context.Background(), terminal)
+			if err != nil {
+				t.Fatalf("historical replay consulted current clock/policy: %#v", err)
+			}
+			if replay.Disposition != "duplicate" || replay.ID != original.ID || replay.Actor == nil || original.Actor == nil || *replay.Actor != *original.Actor {
+				t.Fatalf("historical replay allocated new identity: original=%+v replay=%+v", original, replay)
+			}
+			after, err := os.ReadFile(h.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(before) != string(after) {
+				t.Fatal("historical terminal replay created a receipt or changed actor state")
 			}
 		})
 	}

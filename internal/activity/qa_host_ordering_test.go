@@ -2,25 +2,30 @@ package activity
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 	"time"
 )
 
 func TestQAHostTerminalBeforeStartDoesNotResurrectTurn(t *testing.T) {
-	h := qaNewHost(t)
-	h.startSession()
-	h.send(10, h.event("Stop", "late-start", ""))
-	r := h.send(20, h.event("UserPromptSubmit", "late-start", ""))
-	if r.Disposition != "stale" {
-		t.Fatalf("terminal tombstone allowed late start: %+v", r)
-	}
-	s := h.snapshot()
-	qaIntervals(t, s, nil)
-	for _, a := range s.Actors {
-		if a.State == "working" {
-			t.Fatalf("late start resurrected work: %+v", s)
-		}
+	for _, kind := range []string{"Stop", "Interrupt"} {
+		t.Run(kind, func(t *testing.T) {
+			h := qaNewHost(t)
+			h.startSession()
+			h.send(10, h.event(kind, "late-start", ""))
+			r := h.send(20, h.event("UserPromptSubmit", "late-start", ""))
+			if r.Disposition != "stale" {
+				t.Fatalf("terminal tombstone allowed late start: %+v", r)
+			}
+			s := h.snapshot()
+			qaIntervals(t, s, nil)
+			for _, a := range s.Actors {
+				if a.State == "working" {
+					t.Fatalf("late start resurrected work: %+v", s)
+				}
+			}
+		})
 	}
 }
 
@@ -273,5 +278,98 @@ func TestQAHostResumeDoesNotFinishHistoricalChild(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("resume omitted independent child uncertainty: %+v", s.Uncertainties)
+	}
+}
+
+func TestQAHostAmbiguousToolTurnNeverGuessesRoot(t *testing.T) {
+	h := qaNewHost(t)
+	h.startSession()
+	root := h.send(0, h.event("UserPromptSubmit", "shared-turn", ""))
+	child := h.send(5, h.event("SubagentStart", "shared-turn", "child"))
+	other := h.send(6, h.event("SubagentStart", "other-turn", "other-child"))
+	e := h.event("PreToolUse", "shared-turn", "")
+	e.ToolID = "tool"
+	e.ToolName = "Bash"
+	r := h.send(10, e)
+	if r.Disposition != "review_required" || r.Actor != nil {
+		t.Fatalf("ambiguous actorless tool guessed a recipient: %+v", r)
+	}
+	s := h.snapshot()
+	qaIntervals(t, s, nil)
+	uncertain := map[ActorRef]bool{}
+	for _, u := range s.Uncertainties {
+		uncertain[u.Actor] = true
+	}
+	if root.Actor == nil || child.Actor == nil || other.Actor == nil || len(uncertain) != 2 || !uncertain[*root.Actor] || !uncertain[*child.Actor] || uncertain[*other.Actor] {
+		t.Fatalf("ambiguous registered generations not isolated: %+v", s.Uncertainties)
+	}
+}
+
+func TestQAHostConflictingSemanticToolIdentityQuarantines(t *testing.T) {
+	h := qaNewHost(t)
+	h.startSession()
+	h.send(0, h.event("UserPromptSubmit", "turn", ""))
+	e := h.event("PreToolUse", "turn", "")
+	e.ToolID = "tool"
+	e.ToolName = "Bash"
+	original := e
+	accepted := h.send(5, e)
+	h.at(10)
+	e.ToolName = "different-tool"
+	r, err := h.service.IngestHost(context.Background(), e)
+	qaCode(t, err, "event_conflict")
+	if r.Durability != "committed" {
+		t.Fatalf("conflict quarantine not durable: %+v", r)
+	}
+	s := h.snapshot()
+	if len(s.Uncertainties) != 1 {
+		t.Fatalf("same semantic identity conflicting payload lost uncertainty: %+v", s)
+	}
+	replay := h.send(15, original)
+	if replay.Disposition != "duplicate" || replay.Actor == nil || accepted.Actor == nil || *replay.Actor != *accepted.Actor {
+		t.Fatalf("conflicting delivery overwrote original accepted receipt: %+v %+v", accepted, replay)
+	}
+	after := h.snapshot()
+	if len(after.Uncertainties) != 1 || after.Uncertainties[0].ID != s.Uncertainties[0].ID {
+		t.Fatalf("original replay healed or duplicated conflict uncertainty: %+v", after.Uncertainties)
+	}
+	h.send(20, h.event("Stop", "turn", ""))
+	qaIntervals(t, h.snapshot(), nil)
+}
+
+func TestQAHostAmbiguousStopAcrossIncarnationsCannotBillNewActor(t *testing.T) {
+	h := qaNewHost(t)
+	h.startSession()
+	first := h.send(0, h.event("UserPromptSubmit", "reused-turn", ""))
+	resume := h.event("SessionStart", "", "")
+	resume.SessionSource = "resume"
+	h.send(20, resume)
+	next := h.send(30, h.event("UserPromptSubmit", "reused-turn", ""))
+	if first.Actor == nil || next.Actor == nil || *first.Actor == *next.Actor {
+		t.Fatalf("fixture lacks reused tuple across incarnations: %+v %+v", first, next)
+	}
+	h.at(40)
+	r, err := h.service.IngestHost(context.Background(), h.event("Stop", "reused-turn", ""))
+	if err != nil {
+		var ae *Error
+		if !errors.As(err, &ae) || ae.Code != "event_conflict" && ae.Code != "invalid_transition" {
+			t.Fatalf("ambiguous stop failed unexpectedly: %#v", err)
+		}
+	}
+	s := h.snapshot()
+	qaIntervals(t, s, nil)
+	if r.Disposition != "review_required" {
+		t.Fatalf("ambiguous stop chose current incarnation: %+v", r)
+	}
+	uncertain := map[ActorRef]Uncertainty{}
+	for _, u := range s.Uncertainties {
+		uncertain[u.Actor] = u
+	}
+	old, ok := uncertain[*first.Actor]
+	if !ok || old.UpperBound == nil || !old.UpperBound.Equal(qaEpochStart.Add(20*time.Second)) {
+		t.Fatalf("ambiguous stop changed trusted old cap: %+v", old)
+	}
+	if u, ok := uncertain[*next.Actor]; !ok || u.State != "unresolved" || !u.LowerBound.Equal(qaEpochStart.Add(30*time.Second)) {
+		t.Fatalf("new generation lost ambiguous tail: %+v", s.Uncertainties)
 	}
 }

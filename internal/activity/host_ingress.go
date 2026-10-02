@@ -63,19 +63,53 @@ func hostTarget(st *state, e HostEvent) *hostTurn {
 	if e.Kind == "SessionEnd" {
 		return st.HostTurns[session.RootTurn]
 	}
-	if e.Kind == "PreToolUse" || e.Kind == "PostToolUse" || e.Kind == "PermissionRequest" || e.Kind == "PreCompact" || e.Kind == "PostCompact" {
-		var target *hostTurn
-		for _, t := range st.HostTurns {
-			if t.Session == session.ID && t.TurnID == e.TurnID {
-				if target != nil {
-					return nil
-				}
-				target = t
-			}
+	if e.Kind == "Stop" || e.Kind == "SubagentStop" || e.Kind == "Interrupt" {
+		candidates := historicalActors(st, e)
+		if len(candidates) == 1 {
+			return candidates[0]
 		}
-		return target
+		return nil
+	}
+	if e.Kind == "PreToolUse" || e.Kind == "PostToolUse" || e.Kind == "PermissionRequest" || e.Kind == "PreCompact" || e.Kind == "PostCompact" {
+		candidates := toolCandidates(st, e)
+		if len(candidates) == 1 {
+			return candidates[0]
+		}
+		return nil
 	}
 	return st.HostTurns[hostTurnKey(session.ID, e)]
+}
+
+func toolCandidates(st *state, e HostEvent) []*hostTurn {
+	var targets []*hostTurn
+	for _, t := range st.HostTurns {
+		if t.Source == e.Source && t.SessionID == e.SessionID && t.TurnID == e.TurnID {
+			targets = append(targets, t)
+		}
+	}
+	return targets
+}
+func hostConflictKey(key, fingerprint string) string {
+	return hostHash([]string{key, fingerprint, "conflict"})
+}
+
+func hostReceiptKey(st *state, session *hostSession, e HostEvent) string {
+	incarnation := session.ID
+	if e.Kind != "SessionStart" && e.Kind != "UserPromptSubmit" && e.Kind != "SubagentStart" {
+		if target := hostTarget(st, e); target != nil {
+			incarnation = target.Session
+		}
+	}
+	return hostEventKey(incarnation, e)
+}
+func historicalActors(st *state, e HostEvent) []*hostTurn {
+	var candidates []*hostTurn
+	for _, t := range st.HostTurns {
+		if t.Source == e.Source && t.SessionID == e.SessionID && t.TurnID == e.TurnID && t.AgentID == e.AgentID {
+			candidates = append(candidates, t)
+		}
+	}
+	return candidates
 }
 func hostContext(st *state, e HostEvent) string {
 	if turn := hostTarget(st, e); turn != nil {
@@ -98,8 +132,11 @@ func (s *Service) IngestHost(ctx context.Context, e HostEvent) (HostReceipt, err
 	result.SnapshotRevision = st.Revision
 	// Exact committed replays reconcile durability before clocks or live policy.
 	if session := st.HostSessions[hostSessionKey(e)]; session != nil {
-		key := hostEventKey(session.ID, e)
-		if old, ok := st.HostReceipts[key]; ok && old.Fingerprint == hostFingerprint(e) && !freshHostBoundary(st, session, e) {
+		key := hostReceiptKey(st, session, e)
+		if old, ok := st.HostReceipts[key]; ok && old.Fingerprint != hostFingerprint(e) {
+			key = hostConflictKey(key, hostFingerprint(e))
+		}
+		if old, ok := st.HostReceipts[key]; ok && old.Fingerprint == hostFingerprint(e) && (old.ErrorCode != "" || !freshHostBoundary(st, session, e)) {
 			err = s.store.update(ctx, func(current *state) (bool, error) {
 				r, ok := current.HostReceipts[key]
 				if !ok || r.Fingerprint != old.Fingerprint {
@@ -170,12 +207,24 @@ func (s *Service) reduceHost(ctx context.Context, st *state, e HostEvent, p hook
 		st.HostSessions[hostSessionKey(e)] = session
 	}
 	if freshHostBoundary(st, session, e) {
-		sample, _ := s.sample()
+		sample, clockErr := s.sample()
 		quarantineClock(st, sample)
+		if clockErr != nil {
+			result = committedHostReceipt(e, st.Revision, p)
+			result.Disposition = "review_required"
+			result.Ordering = "review_required"
+			result.DiagnosticCode = "clock_unavailable"
+			if root := st.HostTurns[session.RootTurn]; root != nil {
+				result.Actor = root.Actor
+			}
+			st.HostReceipts[hostEventKey(session.ID, e)] = hostReceiptRecord{Fingerprint: hostFingerprint(e), Result: result, ErrorCode: "clock_unavailable"}
+			return result, true, "clock_unavailable", nil
+		}
 		for _, a := range st.Actors {
 			if a.Ref.Key.SessionID != session.ID || terminal(a) {
 				continue
 			}
+			retainHostWaitLoss(st, a, "SessionStart", sample.WallUTC)
 			quarantine(st, a, "restart_unknown", sample)
 			// A root resume is not a child termination signal. Unknown child tails stay
 			// open for their individually identified terminal/recovery observation.
@@ -190,31 +239,78 @@ func (s *Service) reduceHost(ctx context.Context, st *state, e HostEvent, p hook
 		st.HostSessions[hostSessionKey(e)] = session
 	}
 
-	key := hostEventKey(session.ID, e)
+	key := hostReceiptKey(st, session, e)
 	if old, ok := st.HostReceipts[key]; ok {
 		if old.Fingerprint != hostFingerprint(e) {
-			return result, false, "", failure("event_conflict")
+			conflictKey := hostConflictKey(key, hostFingerprint(e))
+			if prior, ok := st.HostReceipts[conflictKey]; ok {
+				result = prior.Result
+				result.Disposition = "duplicate"
+				return result, false, prior.ErrorCode, nil
+			}
+			result = committedHostReceipt(e, st.Revision, p)
+			// The original receipt identifies the affected generation; conflicting new
+			// payload cannot redirect the safety observation to another actor.
+			if old.Result.Actor != nil {
+				if a := st.Actors[actorKey(old.Result.Actor.Key)]; a != nil && a.Ref == *old.Result.Actor {
+					retainHostWaitLoss(st, a, e.Kind, result.ObservedAt)
+				}
+				s.reviewHost(st, &hostTurn{Actor: old.Result.Actor}, &result, "ordering_unavailable")
+			} else {
+				result.Disposition = "review_required"
+				result.Ordering = "review_required"
+			}
+			result.DiagnosticCode = "event_conflict"
+			st.HostReceipts[conflictKey] = hostReceiptRecord{Fingerprint: hostFingerprint(e), Result: result, ErrorCode: "event_conflict"}
+			return result, true, "event_conflict", nil
 		}
 		result = old.Result
 		result.Disposition = "duplicate"
 		return result, false, old.ErrorCode, nil
 	}
-	result.ID = newID()
-	result.SnapshotRevision = bump(st.Revision)
-	result.Disposition = "applied"
-	result.Ordering = "supported"
-	result.Durability = "committed"
-	result.ProfileBasis = p.Basis
-	result.ProfileRevision = p.Revision
-	result.Fingerprint = p.Fingerprint
-	result.ObservedAt = time.Now().UTC()
+	result = committedHostReceipt(e, st.Revision, p)
 	turnKey := hostTurnKey(session.ID, e)
 	turn := hostTarget(st, e)
 	safetyChanged := false
 	if !p.CaptureEligible && turn != nil && turn.Actor != nil {
-		safetyChanged = s.reviewHost(st, turn, &result, "ordering_unavailable")
+		if a := st.Actors[actorKey(turn.Actor.Key)]; a != nil && a.Ref == *turn.Actor {
+			safetyChanged = retainHostWaitLoss(st, a, e.Kind, result.ObservedAt)
+		}
+		safetyChanged = s.reviewHost(st, turn, &result, "ordering_unavailable") || safetyChanged
 		result.DiagnosticCode = p.DiagnosticCode
 	}
+	if e.Kind == "PreToolUse" || e.Kind == "PostToolUse" || e.Kind == "PermissionRequest" {
+		candidates := toolCandidates(st, e)
+		if len(candidates) > 1 {
+			for _, candidate := range candidates {
+				if candidate.Actor != nil {
+					if a := st.Actors[actorKey(candidate.Actor.Key)]; a != nil && a.Ref == *candidate.Actor {
+						safetyChanged = retainHostWaitLoss(st, a, e.Kind, result.ObservedAt) || safetyChanged
+					}
+				}
+				safetyChanged = s.reviewHost(st, candidate, &result, "ordering_unavailable") || safetyChanged
+			}
+			result.Actor = nil
+		}
+	}
+
+	if e.Kind == "Stop" || e.Kind == "SubagentStop" || e.Kind == "Interrupt" {
+		candidates := historicalActors(st, e)
+		if len(candidates) > 1 {
+			for _, candidate := range candidates {
+				if candidate.Actor != nil {
+					if a := st.Actors[actorKey(candidate.Actor.Key)]; a != nil && a.Ref == *candidate.Actor {
+						retainHostWaitLoss(st, a, e.Kind, result.ObservedAt)
+					}
+				}
+				s.reviewHost(st, candidate, &result, "ordering_unavailable")
+			}
+			result.Actor = nil
+			st.HostReceipts[key] = hostReceiptRecord{Fingerprint: hostFingerprint(e), Result: result}
+			return result, true, "", nil
+		}
+	}
+
 	var normalized *Event
 	switch e.Kind {
 	case "SessionStart":
@@ -229,6 +325,17 @@ func (s *Service) reduceHost(ctx context.Context, st *state, e HostEvent, p hook
 		generation := "1"
 		if old := st.Actors[actorKey(actor)]; old != nil {
 			generation = bump(old.Ref.Generation)
+		}
+		// A safely rejected admission may still reserve its native generation in a
+		// committed receipt. Never let a later distinct turn reuse that generation.
+		for _, prior := range st.HostTurns {
+			if prior.Actor != nil && prior.Actor.Key == actor {
+				n, _ := counter(prior.Actor.Generation)
+				next, _ := counter(generation)
+				if n >= next {
+					generation = bump(prior.Actor.Generation)
+				}
+			}
 		}
 		turn = &hostTurn{Source: e.Source, SessionID: e.SessionID, Session: session.ID, TurnID: e.TurnID, AgentID: e.AgentID, CWD: cwd, Actor: &ActorRef{Key: actor, Generation: generation}}
 		st.HostTurns[turnKey] = turn
@@ -255,6 +362,9 @@ func (s *Service) reduceHost(ctx context.Context, st *state, e HostEvent, p hook
 			result.Disposition = "stale"
 			break
 		}
+		if a.State == "wait_children" && hostWaiting(turn) {
+			safetyChanged = fenceHostWait(a, &result, "incomplete_wait") || safetyChanged
+		}
 		normalized = &Event{ContractVersion: 1, Actor: a.Ref.Key, Generation: a.Ref.Generation, Sequence: bump(a.Sequence), EventID: result.ID, Kind: "wait_user"}
 		turn.Stopped = true
 	case "PreToolUse", "PostToolUse":
@@ -266,7 +376,7 @@ func (s *Service) reduceHost(ctx context.Context, st *state, e HostEvent, p hook
 		}
 		result.Actor = turn.Actor
 		a := st.Actors[actorKey(turn.Actor.Key)]
-		if a == nil || a.Ref != *turn.Actor || turn.Stopped || terminal(a) || a.State != "working" {
+		if a == nil || a.Ref != *turn.Actor || turn.Stopped || terminal(a) || a.State != "working" && a.State != "wait_children" {
 			result.Disposition = "stale"
 			break
 		}
@@ -291,7 +401,13 @@ func (s *Service) reduceHost(ctx context.Context, st *state, e HostEvent, p hook
 		}
 		turn.Tools[e.ToolID] = hostTool{Name: e.ToolName, Phase: next}
 		if a.Health == "continuous" {
-			normalized = &Event{ContractVersion: 1, Actor: a.Ref.Key, Generation: a.Ref.Generation, Sequence: bump(a.Sequence), EventID: result.ID, Kind: "observe_work"}
+			kind := "observe_work"
+			if hostWaiting(turn) {
+				kind = "wait_children"
+			} else if a.State == "wait_children" {
+				kind = "work"
+			}
+			normalized = &Event{ContractVersion: 1, Actor: a.Ref.Key, Generation: a.Ref.Generation, Sequence: bump(a.Sequence), EventID: result.ID, Kind: kind}
 		}
 	case "PermissionRequest":
 		if turn == nil || turn.Actor == nil {
@@ -302,6 +418,10 @@ func (s *Service) reduceHost(ctx context.Context, st *state, e HostEvent, p hook
 		}
 		safetyChanged = s.reviewHost(st, turn, &result, "ordering_unavailable") || safetyChanged
 	case "Interrupt", "SessionEnd":
+		if e.Kind == "Interrupt" && turn == nil {
+			turn = &hostTurn{Source: e.Source, SessionID: e.SessionID, Session: session.ID, TurnID: e.TurnID, AgentID: e.AgentID, CWD: cwd, Stopped: true}
+			st.HostTurns[turnKey] = turn
+		}
 		if turn == nil || turn.Actor == nil {
 			result.Disposition = "stale"
 			break
@@ -315,7 +435,7 @@ func (s *Service) reduceHost(ctx context.Context, st *state, e HostEvent, p hook
 		safetyChanged = s.reviewHost(st, turn, &result, "source_lost") || safetyChanged
 		// Interrupt is a native terminal boundary, but its unconfirmed tail remains
 		// uncertain. SessionEnd alone provides only loss, never a reliable finish.
-		if e.Kind == "Interrupt" {
+		if e.Kind == "Interrupt" && !captureReview(result) {
 			result.Disposition = "applied"
 			result.Ordering = "supported"
 		}
@@ -329,13 +449,18 @@ func (s *Service) reduceHost(ctx context.Context, st *state, e HostEvent, p hook
 	if normalized != nil {
 		r, changed, err := s.reduce(ctx, st, *normalized)
 		if err != nil {
+			if a := st.Actors[actorKey(normalized.Actor)]; a != nil && a.Ref == *turn.Actor && a.State == "wait_children" {
+				safetyChanged = fenceHostWait(a, &result, "source_loss_while_waiting") || safetyChanged
+			}
 			if !changed && !safetyChanged {
 				return result, false, "", err
 			}
 			operationError = err.(*Error).Code
 			result.Disposition = "review_required"
 			result.Ordering = "review_required"
-			result.DiagnosticCode = operationError
+			if !captureReview(result) {
+				result.DiagnosticCode = operationError
+			}
 		} else if result.Disposition != "review_required" {
 			result.Disposition = r.Disposition
 		}
@@ -362,6 +487,9 @@ func (s *Service) reviewHost(st *state, turn *hostTurn, result *HostReceipt, rea
 	if a == nil || a.Ref != *turn.Actor || terminal(a) {
 		return false
 	}
+	if a.State == "wait_children" {
+		return fenceHostWait(a, result, "source_loss_while_waiting")
+	}
 	sample, _ := s.sample()
 	changed := quarantine(st, a, reason, sample)
 	changed = quarantineClock(st, sample) || changed
@@ -379,4 +507,17 @@ func freshHostBoundary(st *state, session *hostSession, e HostEvent) bool {
 		}
 	}
 	return false
+}
+
+func committedHostReceipt(e HostEvent, revision string, p hookstate.Profile) HostReceipt {
+	result := hostBase(e, bump(revision))
+	result.ID = newID()
+	result.Disposition = "applied"
+	result.Ordering = "supported"
+	result.Durability = "committed"
+	result.ProfileBasis = p.Basis
+	result.ProfileRevision = p.Revision
+	result.Fingerprint = p.Fingerprint
+	result.ObservedAt = time.Now().UTC()
+	return result
 }

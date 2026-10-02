@@ -82,6 +82,9 @@ type Error struct {
 func (e *Error) Error() string { return e.Message }
 
 type ActivitySnapshot struct {
+	// CaptureReviews retain non-reconstructable host capture warnings. They are
+	// not timing uncertainties and cannot be resolved with an interval end.
+	CaptureReviews   []HostReceipt     `json:"capture_reviews"`
 	ContractVersion  int               `json:"contract_version"`
 	SnapshotRevision string            `json:"snapshot_revision"`
 	ObservedAt       time.Time         `json:"observed_at"`

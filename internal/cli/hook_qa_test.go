@@ -200,3 +200,72 @@ func TestQAHostCLICommittedClockFailureReportsDurableQuarantine(t *testing.T) {
 		t.Fatalf("durable safety mutation mislabeled: %q", stderr.String())
 	}
 }
+
+func TestQAHostCLIWaitReviewUsesFiniteDiagnostic(t *testing.T) {
+	for _, tc := range []struct{ kind, diagnostic string }{{"Stop", "incomplete_wait"}, {"PermissionRequest", "source_loss_while_waiting"}} {
+		t.Run(tc.kind, func(t *testing.T) {
+			root := t.TempDir()
+			cwd := filepath.Join(root, "project")
+			if err := os.Mkdir(cwd, 0700); err != nil {
+				t.Fatal(err)
+			}
+			policies := hookstate.New(hookstate.Options{Path: filepath.Join(root, "policy", "state.json")})
+			c := hookstate.Context{Host: "codex", Scope: "project", Path: cwd, RuntimeVersion: "0.159.3", Surface: "local", Conflicts: []string{}}
+			for _, role := range []string{"runtime", "executable", "definitions"} {
+				p := filepath.Join(cwd, role)
+				if err := os.WriteFile(p, []byte("synthetic "+role), 0600); err != nil {
+					t.Fatal(err)
+				}
+				c.Artifacts = append(c.Artifacts, hookstate.Artifact{Role: role, Path: p})
+			}
+			p, err := policies.Preview(context.Background(), c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := policies.Confirm(context.Background(), hookstate.ConfirmInput{Context: p.Context, Fingerprint: p.Fingerprint, DeclarationVersion: hookstate.DeclarationVersion, RequestID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", Confirmed: true}); err != nil {
+				t.Fatal(err)
+			}
+			seconds := int64(0)
+			clockFailed := false
+			base := time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC)
+			s := activity.New(activity.Options{Path: filepath.Join(root, "activity", "state.json"), HookPolicies: policies, Clock: activity.ClockFunc(func() (activity.ClockSample, error) {
+				epoch, n := "test-boot", strconv.FormatInt(seconds*int64(time.Second), 10)
+				sample := activity.ClockSample{Capability: "available", WallUTC: base.Add(time.Duration(seconds) * time.Second), Epoch: &epoch, ElapsedNS: &n, AwakeNS: &n}
+				if clockFailed {
+					return sample, errors.New("synthetic clock unavailable")
+				}
+				return sample, nil
+			})})
+			if _, err := s.Link(context.Background(), activity.LinkInput{Path: cwd, AccountID: "11", ProjectID: "100", TaskID: "200", Timezone: "UTC", RequestID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}, activity.LinkDependencies{NewProvider: func(context.Context, string) (harvest.Provider, error) { return &qaCLILinkAPI{}, nil }}); err != nil {
+				t.Fatal(err)
+			}
+			for _, e := range []activity.HostEvent{{Source: "codex", Kind: "SessionStart", SessionID: "s", CWD: cwd, SessionSource: "startup"}, {Source: "codex", Kind: "UserPromptSubmit", SessionID: "s", TurnID: "t", CWD: cwd}} {
+				if _, err := s.IngestHost(context.Background(), e); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			seconds = 10
+			if _, err := s.IngestHost(context.Background(), activity.HostEvent{Source: "codex", Kind: "PreToolUse", SessionID: "s", TurnID: "t", CWD: cwd, ToolID: "wait-1", ToolName: "wait_agent"}); err != nil {
+				t.Fatal(err)
+			}
+			seconds = 20
+			payload, err := json.Marshal(map[string]any{"hook_event_name": tc.kind, "session_id": "s", "turn_id": "t", "cwd": cwd, "stop_hook_active": false, "tool_name": "Bash"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out, stderr bytes.Buffer
+			code := cli.Run(context.Background(), []string{"hook", "codex", "--input-stdin"}, strings.NewReader(string(payload)), &out, &stderr, cli.Dependencies{Activity: s, Store: &fakeStore{}, Getenv: func(string) string { return "" }, NewProvider: func(string, string) harvest.Provider { t.Fatal("hook accessed provider"); return nil }})
+			snapshot, err := s.Status(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(snapshot.CaptureReviews) != 1 || snapshot.CaptureReviews[0].DiagnosticCode != tc.diagnostic {
+				t.Fatalf("missing actual committed wait review: %+v", snapshot.CaptureReviews)
+			}
+			if code != 0 || strings.TrimSpace(out.String()) != "{}" || !strings.Contains(stderr.String(), tc.diagnostic) || !strings.Contains(stderr.String(), "durability=committed") || strings.Contains(stderr.String(), "internal") {
+				t.Fatalf("wrong finite wait diagnostic: exit=%d stdout=%q stderr=%q", code, out.String(), stderr.String())
+			}
+		})
+	}
+}

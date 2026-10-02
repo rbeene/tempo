@@ -302,3 +302,7 @@ controls rather than silently pruning them.
 Native launchd/systemd behavior requires isolated manual acceptance. Automated
 coverage uses synthetic service directories, fake managers, parsed definitions,
 owned child processes and local mock HTTP; it does not install personal services.
+
+## Native Codex callbacks
+
+`hook codex --input-stdin` consumes one bounded native callback and returns exactly `{}` for the host. It runs locally without credentials or prompts; capture diagnostics and durability appear only on stderr. `--json` and `--non-interactive` preserve that host protocol. Account overrides and confirmation flags are inapplicable. Capture requires an existing link and retained eligible hook policy. This command does not install or trust hooks. See [Codex lifecycle capture](codex-hooks.md) for the supported runtime, identity rules and delivery limits.

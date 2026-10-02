@@ -96,7 +96,7 @@ func hookFailure(err error) (string, string) {
 
 func safeHookCode(code string) string {
 	switch code {
-	case "validation", "unsupported_contract", "state_corrupt", "state_busy", "local_write_unknown", "clock_unavailable", "clock_conflict", "binding_unavailable", "event_conflict", "event_gap", "ordering_unavailable", "profile_required", "profile_invalidated", "profile_revoked", "untracked", "review_required", "source_lost", "restart_unknown":
+	case "validation", "unsupported_contract", "state_corrupt", "state_busy", "local_write_unknown", "clock_unavailable", "clock_conflict", "binding_unavailable", "event_conflict", "event_gap", "ordering_unavailable", "profile_required", "profile_invalidated", "profile_revoked", "untracked", "review_required", "source_lost", "restart_unknown", "incomplete_wait", "source_loss_while_waiting":
 		return code
 	default:
 		return "internal"

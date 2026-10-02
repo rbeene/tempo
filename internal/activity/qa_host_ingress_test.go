@@ -2,7 +2,9 @@ package activity
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"github.com/rbeene/tempo/internal/harvest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -374,5 +376,57 @@ func TestQAHostDetachedUnlinkedActorRetainsTerminalIdentity(t *testing.T) {
 	qaIntervals(t, s, [][2]int64{{0, 10}})
 	if len(s.Actors) != 1 || s.Actors[0].Attribution != a.Attribution || s.Actors[0].BindingID != a.BindingID {
 		t.Fatalf("terminal rebounded immutable attribution: %+v", s.Actors)
+	}
+}
+
+func TestQAHostIndependentProjectChildHasSeparateUnionAndPolicy(t *testing.T) {
+	h := qaNewHost(t)
+	other := t.TempDir()
+	c := hookstate.Context{Host: "codex", Scope: "project", Path: other, RuntimeVersion: "0.159.3", Surface: "local", Conflicts: []string{}}
+	for _, role := range []string{"runtime", "executable", "definitions"} {
+		path := filepath.Join(other, role)
+		if err := os.WriteFile(path, []byte("synthetic other "+role), 0600); err != nil {
+			t.Fatal(err)
+		}
+		c.Artifacts = append(c.Artifacts, hookstate.Artifact{Role: role, Path: path})
+	}
+	p, err := h.policies.Preview(context.Background(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.policies.Confirm(context.Background(), hookstate.ConfirmInput{Context: p.Context, Fingerprint: p.Fingerprint, DeclarationVersion: hookstate.DeclarationVersion, RequestID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", Confirmed: true}); err != nil {
+		t.Fatal(err)
+	}
+	provider := qaNewLinkProvider(t)
+	provider.assignments[0]["project"].(harvest.Object)["id"] = json.Number("9")
+	in := qaLinkInput(t)
+	in.Path = other
+	in.ProjectID = "9"
+	in.RequestID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	if _, err := h.service.Link(context.Background(), in, qaLinkDeps(t, provider)); err != nil {
+		t.Fatal(err)
+	}
+	h.startSession()
+	h.send(0, h.event("UserPromptSubmit", "root-turn", ""))
+	child := h.event("SubagentStart", "other-project-turn", "child")
+	child.CWD = other
+	h.send(5, child)
+	h.send(10, h.event("Stop", "root-turn", ""))
+	s := h.snapshot()
+	qaIntervals(t, s, [][2]int64{{0, 10}})
+	if s.ClosedIntervals[0].Attribution.ProjectID != "3" {
+		t.Fatalf("child context rebound root: %+v", s.ClosedIntervals)
+	}
+	// Followup deliberately carries the parent's cwd; the child's registered
+	// project/policy must remain authoritative.
+	h.send(15, h.event("SubagentStop", "other-project-turn", "child"))
+	s = h.snapshot()
+	qaIntervals(t, s, [][2]int64{{0, 10}, {5, 15}})
+	byProject := map[string]Interval{}
+	for _, i := range s.ClosedIntervals {
+		byProject[i.Attribution.ProjectID] = i
+	}
+	if len(byProject) != 2 || byProject["3"].DurationNS != "10000000000" || byProject["9"].DurationNS != "10000000000" {
+		t.Fatalf("independent project unions merged or rebound: %+v", s.ClosedIntervals)
 	}
 }

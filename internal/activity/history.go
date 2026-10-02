@@ -122,6 +122,9 @@ func boundTime(st *state, a *Actor, s ClockSample) time.Time {
 }
 func terminal(a *Actor) bool { return a.State == "finished" || a.State == "interrupted" }
 func quarantine(st *state, a *Actor, reason string, s ClockSample) bool {
+	if a.State == "wait_children" {
+		return retainHostWaitLoss(st, a, "SourceObservation", s.WallUTC)
+	}
 	if a.State != "working" || a.Health != "continuous" || a.SegmentID == nil {
 		return false
 	}
@@ -180,11 +183,15 @@ func actorDiscontinuity(st *state, a *Actor, s ClockSample) string {
 func quarantineClock(st *state, s ClockSample) bool {
 	changed := false
 	for _, a := range st.Actors {
-		if a.State != "working" || a.Health != "continuous" {
+		if a.Health != "continuous" {
 			continue
 		}
 		if why := actorDiscontinuity(st, a, s); why != "" {
-			changed = quarantine(st, a, why, s) || changed
+			if a.State == "wait_children" {
+				changed = retainHostWaitLoss(st, a, "ClockObservation", s.WallUTC) || changed
+			} else {
+				changed = quarantine(st, a, why, s) || changed
+			}
 		}
 	}
 	return changed

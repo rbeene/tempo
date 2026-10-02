@@ -71,6 +71,12 @@ func validHostState(st *state) bool {
 		if s == nil || !validUUID(s.ID) || s.Source != "codex" || !safeIdentifier(s.NativeID, 256) || key != hostSessionKey(HostEvent{Source: s.Source, SessionID: s.NativeID}) || !filepath.IsAbs(s.CWD) {
 			return false
 		}
+		if s.RootTurn != "" {
+			t := st.HostTurns[s.RootTurn]
+			if t == nil || t.AgentID != "" || t.Session != s.ID || t.Source != s.Source || t.SessionID != s.NativeID || t.Actor == nil {
+				return false
+			}
+		}
 	}
 	for key, t := range st.HostTurns {
 		if t == nil || t.Source != "codex" || !safeIdentifier(t.SessionID, 256) || !validUUID(t.Session) || !safeIdentifier(t.TurnID, 256) || t.AgentID != "" && !safeIdentifier(t.AgentID, 128) || !filepath.IsAbs(t.CWD) || key != hostTurnKey(t.Session, HostEvent{TurnID: t.TurnID, AgentID: t.AgentID}) {

@@ -3,6 +3,7 @@ package activity
 import (
 	"context"
 	"sort"
+	"time"
 )
 
 // A callback may return a committed safety error only when it has quarantined
@@ -135,6 +136,7 @@ func (s *Service) Interrupt(ctx context.Context, in InterruptInput) (MutationRes
 				}
 			}
 		}
+		retainHostWaitLoss(st, a, "Interrupt", time.Now().UTC())
 		detach(a)
 		return MutationResult{Changed: true, AffectedIDs: affected, EntityRevision: &a.Revision}, false, nil
 	})
