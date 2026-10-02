@@ -34,6 +34,7 @@ class HarnessTests(unittest.TestCase):
     def test_fixture_config_disables_persisted_startup_tooltips_without_trust_seeding(self):
         config = tomllib.loads(smoke.config_text(43210))
         self.assertEqual(config.get("tui"), {"show_tooltips": False})
+        self.assertEqual(config.get("tools"), {"update_plan": {"enabled": True}})
         self.assertNotIn("projects", config)
         self.assertNotIn("hooks", config)
         self.assertEqual(config["model"], "tempo-ci-fixture")

@@ -746,6 +746,8 @@ sandbox_mode = "read-only"
 approval_policy = "on-request"
 [tui]
 show_tooltips = false
+[tools.update_plan]
+enabled = true
 [analytics]
 enabled = false
 [otel]
