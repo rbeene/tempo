@@ -208,7 +208,7 @@ func chooseAccount(ctx context.Context, p terminal.Prompter, as []harvest.Object
 	return p.Choose(ctx, "Choose a Harvest account", choices)
 }
 func readiness() Status {
-	return Status{ContractVersion: 1, Steps: []Step{{"auth.status", "input_required", []string{}, "Verify credentials with auth status --check or connect securely in interactive setup."}, {"bindings.link", "input_required", []string{"project_id", "task_id", "timezone"}, "Link a project and task to this directory or repository."}, {"hooks.status", "unsupported", []string{}, "Hook installation is not available in this version; no delivered events verified."}, {"sync.status", "input_required", []string{}, "Automatic upload is not configured or verified; authentication alone does not enable sync."}}, Complete: false}
+	return Status{ContractVersion: 1, Steps: []Step{{"auth.status", "input_required", []string{}, "Verify credentials with auth status --check or connect securely in interactive setup."}, {"bindings.link", "input_required", []string{"project_id", "task_id", "timezone"}, "Link a project and task to this directory or repository."}, {"hooks.status", "unsupported", []string{}, "Hook installation is not available in this version; no delivered events verified."}, {"sync.status", "input_required", []string{}, "Capture mapping and upload consent are separate. Use sync configure to declare mode and exact or nearest-hundredth-hour policy, then sync resume and sync now; short parts and timestamp precision limits may need review. Background worker installation is not available in this version."}}, Complete: false}
 }
 func (s *Service) Run(ctx context.Context, in Input, p terminal.Prompter) (Status, error) {
 	result := readiness()
@@ -300,7 +300,7 @@ func (s *Service) Run(ctx context.Context, in Input, p terminal.Prompter) (Statu
 }
 func (s *Service) Doctor(ctx context.Context, check bool) (Diagnostics, error) {
 	action := "auth.status"
-	result := Diagnostics{ContractVersion: 1, Items: []Diagnostic{{"credential_unverified", "info", "Credential validity has not been checked; use doctor --check.", &action}, {"hooks_unverified", "warning", "No installed hook or delivered event has been verified.", nil}, {"sync_unconfigured", "warning", "Upload configuration and background delivery are not verified.", nil}}}
+	result := Diagnostics{ContractVersion: 1, Items: []Diagnostic{{"credential_unverified", "info", "Credential validity has not been checked; use doctor --check.", &action}, {"hooks_unverified", "warning", "No installed hook or delivered event has been verified.", nil}, {"sync_unconfigured", "warning", "Use sync status to inspect saved representation consent and sync configure to choose it. Capture readiness does not imply upload readiness; background delivery is not installed.", nil}}}
 	account, e := s.options.Auth.EffectiveAccount("")
 	if e != nil {
 		result.Items = append(result.Items, Diagnostic{"config_invalid", "error", "Local account configuration is invalid or unreadable.", nil})

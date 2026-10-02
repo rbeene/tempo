@@ -147,11 +147,14 @@ type WorkerStatus struct {
 	SyncEnabled     bool       `json:"sync_enabled"`
 }
 type OutboxItem struct {
-	ID              string   `json:"id"`
-	Revision        string   `json:"revision"`
-	Interval        Interval `json:"interval"`
-	State           string   `json:"state"`
-	Correlation     string   `json:"correlation"`
-	EntryID         *string  `json:"entry_id"`
-	FailureCategory *string  `json:"failure_category"`
+	RetryRequestID  *string   `json:"retry_request_id,omitempty"`
+	Plan            *SyncPlan `json:"plan,omitempty"`
+	RunRequestID    *string   `json:"run_request_id,omitempty"`
+	ID              string    `json:"id"`
+	Revision        string    `json:"revision"`
+	Interval        Interval  `json:"interval"`
+	State           string    `json:"state"`
+	Correlation     string    `json:"correlation"`
+	EntryID         *string   `json:"entry_id"`
+	FailureCategory *string   `json:"failure_category"`
 }

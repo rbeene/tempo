@@ -243,5 +243,5 @@ func validState(st *state) bool {
 			return false
 		}
 	}
-	return validRecoveryState(st)
+	return validRecoveryState(st) && validSyncState(st)
 }

@@ -101,11 +101,11 @@ Example: A begins 09:00 and loses evidence; B begins 11:00 and remains working. 
 
 ## 4. Synchronization boundaries
 
-Only finalizable closed intervals become `queued` outbox items; open or unresolved components cannot. Each item fixes interval ID, computer/account/user/project/task/timezone, UTC bounds, exact duration, safe notes and a unique correlation marker. Capture retains nanoseconds: day splitting/DST/account timestamp-vs-duration representation and Harvest rounding must preserve and expose residuals, never silently drop subminute time. These conversion details and mock-server evidence belong to #11; any unrepresentable range is `needs_attention` and not posted.
+Only finalizable closed intervals become `queued` outbox items; open or unresolved components cannot. Each item fixes interval ID, computer/account/user/project/task/timezone, UTC bounds, exact duration, safe notes and a unique correlation marker. Capture retains nanoseconds: day splitting/DST/account timestamp-vs-duration representation and Harvest rounding must preserve and expose residuals, never silently drop subminute time. The shipped foreground sync service implements these conversion details with isolated provider/server evidence; any unrepresentable range is `needs_attention` and not posted.
 
 | Sync state | Meaning / allowed next action |
 |---|---|
-| `queued` | Durable, never attempted; eligible for one worker claim if sync is enabled. |
+| `queued` | Durable, never attempted, or explicitly authorized conclusive rejected retry with a frozen plan; eligible for one run-lock-owned claim if sync is enabled. |
 | `submitting` | Exclusive durable claim and submission intent saved **before** HTTP; no second worker can claim it. |
 | `synced` | Confirmed current-user Harvest entry ID saved; immutable local interval remains. |
 | `rejected` | A conclusive response establishes no entry was created; preserve item, surface auth/validation category. Retry only after explicit review/correction through `sync resolve --retry-rejected`. |
@@ -113,6 +113,15 @@ Only finalizable closed intervals become `queued` outbox items; open or unresolv
 | `needs_attention` | Invalid attribution/representation or ambiguous correlation; read-only reconciliation or explicit review needed. |
 
 Startup converts orphaned `submitting` to `unknown`, never back to `queued`. Reconciliation reads only, verifies exact current user/account and immutable interval/correlation fields, and accepts exactly one conclusive matching entry. Zero or multiple matches remain visible and blocked. A manual `sync resolve --entry ID` re-reads/verifies the selected owned entry before attachment; merely supplying an ID does not bypass matching. No “retry unknown” command in v1: lack of a read match does not prove the original write failed. Existing manual Harvest commands remain available with their own explicit uncertainty contract; they do not silently repair the outbox. Do not claim upstream exactly-once delivery without an idempotency guarantee. Stopping/pausing synchronization is independent of capture.
+
+Explicit account/current-user mode and representation consent is saved through
+`sync.configure`; no migration silently grants rounding consent. Only Company403
+permits declared-mode fallback. Duration policy is exact or explicitly nearest
+hundredth hour; timestamp mode is exact with declared clock and verified timezone.
+All daily parts preflight before any write. Missing confirmed amounts are null;
+planned and total residuals remain signed. See [commands](commands.md#safe-activity-synchronization)
+for precision limits and finite controls. Terminal UI placement remains planned
+for #16; background worker installation remains #12.
 
 ## 5. Shared CLI/UI operations
 
