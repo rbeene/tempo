@@ -210,6 +210,9 @@ func printHelp(w io.Writer) {
 func validate(p *parsed, now time.Time) error {
 	f := p.flags
 	n := p.command.Name
+	if syncCommand(n) {
+		return validateSyncCLI(p)
+	}
 	if recoveryCommand(n) {
 		return validateRecoveryCLI(p)
 	}
@@ -330,6 +333,9 @@ type session struct {
 }
 
 func execute(ctx context.Context, p parsed, in io.Reader, d Dependencies) (any, error) {
+	if syncCommand(p.command.Name) {
+		return executeSync(ctx, p, d)
+	}
 	switch p.command.Name {
 	case "help":
 		return schema(), nil

@@ -220,6 +220,9 @@ func TestSuccessfulWrites(t *testing.T) {
 				if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body["notes"] != "work" || r.Header.Get("Content-Type") != "application/json" {
 					t.Error("incorrect JSON body")
 				}
+				if method == "POST" {
+					w.WriteHeader(http.StatusCreated)
+				}
 				fmt.Fprint(w, `{"id":9007199254740993}`)
 			})
 			var obj Object

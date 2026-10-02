@@ -2239,6 +2239,113 @@
       "action": "sync.resolve",
       "mismatched_account_or_user_or_interval": "reject with no attachment",
       "attribution_after_relink": "original immutable tuple"
+    },
+    {
+      "id": "explicit_declared_mode_realistic_duration",
+      "capture_ns": "137482000000",
+      "configuration": {
+        "mode": "duration",
+        "duration_policy": "nearest-hundredth-hour",
+        "company_status": 403
+      },
+      "planned_hours": "0.04",
+      "returned_hours": "0.040",
+      "expected_posts": 1,
+      "expected_state": "synced",
+      "planned_residual_ns": "-6518000000",
+      "total_residual_ns": "-6518000000"
+    },
+    {
+      "id": "representation_not_implicit",
+      "capture_ns": "137482000000",
+      "configuration": null,
+      "expected_posts": 0,
+      "expected_state": "needs_attention",
+      "remediation": "explicit configure then a fresh request can plan the never-attempted root"
+    },
+    {
+      "id": "returned_exact_rational_mismatch",
+      "planned_hours": "0.04",
+      "returned_hours": "0.04000000000000001",
+      "expected_provider_delta_ns": "0",
+      "expected_state": "needs_attention",
+      "expected_posts": 1,
+      "retry_posts": 0
+    },
+    {
+      "id": "durable_claim_process_death",
+      "barrier": "sync_after_claim",
+      "expected_posts": 0,
+      "restart_paused": true,
+      "expected_state": "unknown",
+      "same_request_replay": "interrupted saved result without provider",
+      "new_startup_pass": "recovers orphan before paused/empty checks"
+    },
+    {
+      "id": "remote_success_local_outcome_save_failure",
+      "expected_posts": 1,
+      "expected_error": "local_write_unknown",
+      "expected_uncertain": true,
+      "restart_state": "unknown",
+      "replay_posts": 0
+    },
+    {
+      "id": "calendar_partition_precision",
+      "cases": [
+        "America/New_York 23h/25h",
+        "Australia/Lord_Howe 23.5h",
+        "Pacific/Apia skipped date"
+      ],
+      "quantization": "per part after local date splitting",
+      "zero_quantized_part": "entire root needs_attention; zero POST",
+      "max_parts": 100
+    },
+    {
+      "id": "strict_timestamp_representation",
+      "safe": "whole-minute same-date9:00\u20139:02 UTC; exact and declared clock; both endpoints and no hours in POST",
+      "blocked": [
+        "fractional endpoints",
+        "timezone mismatch",
+        "fold even equal-offset endpoints",
+        "transition crossing",
+        "midnight ending"
+      ]
+    },
+    {
+      "id": "reviewed_definite_rejection_retry",
+      "first_parts": [
+        "synced",
+        "rejected422"
+      ],
+      "authorization_posts": 0,
+      "fresh_run_posts": 1,
+      "preserved": [
+        "first successful part",
+        "saved configuration and exact payload",
+        "prior rejected attempt"
+      ],
+      "unknown_retry_allowed": false
+    },
+    {
+      "id": "reconciliation_collision_visibility",
+      "query_filters": [
+        "user_id",
+        "external_reference_id"
+      ],
+      "multiple_or_mismatched": "needs_attention without attachment or POST",
+      "absent": "remains blocked; never proves failure"
+    },
+    {
+      "id": "manual_marker_attachment",
+      "scan_filters": [
+        "user_id"
+      ],
+      "candidate_markers": [
+        "exact notes",
+        "same external_reference.id"
+      ],
+      "extra_collision": "blocked",
+      "never_attempted_remainder": "explicit existing-entry attachment with separate audit; no fabricated POST attempt"
     }
   ]
 }

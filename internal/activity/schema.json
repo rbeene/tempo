@@ -175,7 +175,114 @@
       "affected_union_after": "TimeRange[]",
       "still_blocked_ids": "uuid[]"
     },
-    "reason": "optional user-written recovery rationale; max 512 bytes, no control characters"
+    "reason": "optional user-written recovery rationale; max 512 bytes, no control characters",
+    "OutboxItem": {
+      "id": "uuid",
+      "revision": "counter",
+      "interval": "Interval",
+      "state": "queued|submitting|synced|rejected|unknown|needs_attention",
+      "correlation": "string",
+      "entry_id": "harvest_id|null",
+      "failure_category": "string|null",
+      "plan?": "SyncPlan",
+      "run_request_id?": "uuid",
+      "retry_request_id?": "uuid"
+    },
+    "SyncConfiguration": {
+      "account_id": "harvest_id",
+      "user_id": "harvest_id",
+      "revision": "counter",
+      "mode": "duration|timestamp",
+      "duration_policy": "exact|nearest-hundredth-hour",
+      "policy_version": "exact-v1|nearest-hundredth-hour-v1",
+      "clock": "12h|24h|null",
+      "declared": "bool=true",
+      "declared_at": "utc",
+      "source": "user_declared"
+    },
+    "SyncConfigurationResult": {
+      "contract_version": "integer=1",
+      "snapshot_revision": "counter",
+      "request_id": "uuid",
+      "changed": "bool",
+      "configuration": "SyncConfiguration"
+    },
+    "SyncTotals": {
+      "exact_duration_ns": "counter",
+      "planned_duration_ns": "counter|null",
+      "confirmed_duration_ns": "counter|null",
+      "planned_residual_ns": "signed_decimal|null",
+      "total_residual_ns": "signed_decimal|null"
+    },
+    "SyncAccounting": {
+      "scope": "project|day",
+      "attribution": "Attribution",
+      "date": "date|null",
+      "totals": "SyncTotals"
+    },
+    "SyncAttempt": {
+      "id": "uuid",
+      "number": "counter",
+      "state": "submitting|synced|rejected|unknown|needs_attention",
+      "entry_id": "harvest_id|null",
+      "failure_category": "string|null",
+      "request_id": "uuid"
+    },
+    "SyncPart": {
+      "id": "uuid",
+      "spent_date": "date",
+      "duration_ns": "counter",
+      "start": "utc",
+      "end": "utc",
+      "planned_hours": "decimal",
+      "planned_duration_ns": "counter",
+      "planned_residual_ns": "signed_decimal",
+      "started_time": "string|null",
+      "ended_time": "string|null",
+      "correlation": "string",
+      "notes": "string",
+      "state": "queued|submitting|synced|rejected|unknown|needs_attention",
+      "entry_id": "harvest_id|null",
+      "failure_category": "string|null",
+      "returned_hours": "decimal|null",
+      "rounded_hours": "decimal|null",
+      "confirmed_duration_ns": "counter|null",
+      "provider_delta_ns": "signed_decimal|null",
+      "total_residual_ns": "signed_decimal|null",
+      "attempts": "SyncAttempt[]",
+      "attachment?": "SyncAttachment"
+    },
+    "SyncPlan": {
+      "configuration": "SyncConfiguration",
+      "company_source": "company_verified|user_declared_fallback",
+      "parts": "SyncPart[]"
+    },
+    "SyncStatus": {
+      "contract_version": "integer=1",
+      "snapshot_revision": "counter",
+      "enabled": "bool",
+      "configurations": "SyncConfiguration[]",
+      "items": "OutboxItem[]",
+      "worker": "WorkerStatus",
+      "totals": "SyncTotals",
+      "accounting": "SyncAccounting[]"
+    },
+    "SyncRun": {
+      "contract_version": "integer=1",
+      "snapshot_revision": "counter",
+      "request_id": "uuid",
+      "state": "complete|interrupted",
+      "attempted_ids": "uuid[]",
+      "resolved_ids": "uuid[]",
+      "blocked_ids": "uuid[]",
+      "remaining_count": "integer"
+    },
+    "signed_decimal": "canonical signed integer decimal string; nanosecond residuals may be negative",
+    "decimal": "bounded nonnegative decimal string; exact rational comparison",
+    "SyncAttachment": {
+      "request_id": "uuid",
+      "entry_id": "harvest_id"
+    }
   },
   "input_limit_bytes": 16384,
   "status_read_only": true,
@@ -354,8 +461,136 @@
       "result": "MutationResult",
       "effect": "local_mutation",
       "notes": "Exactly one of end/discard_tail; --yes. Bounds validated under lock. May finalize safe unions; no Harvest write."
+    },
+    {
+      "id": "sync.configure",
+      "cli": "sync configure",
+      "flags": {
+        "account": "harvest_id",
+        "mode": "duration|timestamp",
+        "duration-policy": "exact|nearest-hundredth-hour",
+        "clock": "12h|24h",
+        "if-revision": "counter",
+        "request-id": "uuid"
+      },
+      "input": {
+        "account_id": "harvest_id",
+        "mode": "duration|timestamp",
+        "duration_policy": "exact|nearest-hundredth-hour",
+        "clock": "12h|24h",
+        "if_revision": "counter",
+        "request_id": "uuid",
+        "confirmed": "bool"
+      },
+      "required": [
+        "account_id",
+        "mode",
+        "duration_policy",
+        "if_revision",
+        "confirmed"
+      ],
+      "result": "SyncConfigurationResult",
+      "effect": "remote_read_local_mutation",
+      "notes": "--yes; initialized binding state required. Revision0 creates consent for verified account/current-user; later revisions use CAS. Timestamp requires exact and clock; duration forbids clock. Only Company403 permits explicit declared-mode fallback. Does not enable sync or change defaults."
+    },
+    {
+      "id": "sync.status",
+      "cli": "sync status",
+      "flags": {},
+      "input": {},
+      "required": [],
+      "result": "SyncStatus",
+      "effect": "local_read"
+    },
+    {
+      "id": "sync.now",
+      "cli": "sync now",
+      "flags": {
+        "limit": "limit",
+        "request-id": "uuid"
+      },
+      "input": {
+        "limit": "limit",
+        "request_id": "uuid"
+      },
+      "required": [],
+      "result": "SyncRun",
+      "effect": "remote_mutation",
+      "notes": "Bounded1..100 roots, default20. Durable fixed-target request reservation and POST intent; no automatic unknown/rejected retry. Startup recovery precedes paused/empty returns. Exact completed replay stays offline. Explicit missing-config/representation remediation may replan only never-attempted roots."
+    },
+    {
+      "id": "sync.reconcile",
+      "cli": "sync reconcile [OUTBOX_ID]",
+      "flags": {
+        "limit": "limit",
+        "request-id": "uuid"
+      },
+      "input": {
+        "outbox_id": "uuid",
+        "limit": "limit",
+        "request_id": "uuid"
+      },
+      "required": [],
+      "result": "SyncRun",
+      "effect": "remote_read_local_mutation",
+      "notes": "Read-only Harvest matching; no POST/PATCH/DELETE."
+    },
+    {
+      "id": "sync.resolve",
+      "cli": "sync resolve OUTBOX_ID",
+      "flags": {
+        "entry": "harvest_id",
+        "retry-rejected": "bool",
+        "if-revision": "counter",
+        "request-id": "uuid"
+      },
+      "input": {
+        "outbox_id": "uuid",
+        "entry_id": "harvest_id",
+        "retry_rejected": "bool",
+        "if_revision": "counter",
+        "confirmed": "bool",
+        "request_id": "uuid"
+      },
+      "required": [
+        "outbox_id",
+        "if_revision",
+        "confirmed"
+      ],
+      "result": "MutationResult",
+      "effect": "remote_read_local_mutation",
+      "notes": "--yes; exactly one entry_id/retry_rejected. Entry must match immutable owned interval. Retry allowed only from conclusive rejected, queues a new recorded attempt. No retry-unknown escape hatch."
+    },
+    {
+      "id": "sync.pause",
+      "cli": "sync pause",
+      "flags": {
+        "request-id": "uuid"
+      },
+      "input": {
+        "request_id": "uuid"
+      },
+      "required": [],
+      "result": "MutationResult",
+      "effect": "local_mutation",
+      "notes": "Stop future claims; already submitting may finish or become unknown. Capture continues."
+    },
+    {
+      "id": "sync.resume",
+      "cli": "sync resume",
+      "flags": {
+        "request-id": "uuid"
+      },
+      "input": {
+        "request_id": "uuid"
+      },
+      "required": [],
+      "result": "MutationResult",
+      "effect": "local_mutation",
+      "notes": "Wake worker; never authorizes replay of an ambiguous mutation."
     }
   ],
-  "local_mutation_semantics": "request_id is a UUID; CLI generates one if omitted. Exact replay returns original typed result before config, account, credentials, network or path discovery, after a local durability check. Same request ID with changed explicit intent returns request_conflict. Retry local_write_unknown with the same request ID; safe error details include it. No Harvest writes. Recovery observations also keep receipts for no-ops; replay precedes clock sampling. A committed safety quarantine may return a persisted clock error without completing the requested interrupt/resolution; same-ID replay returns the original error. A new request is required for a new reviewed intent.",
-  "recovery_semantics": "Review/status/preview are read-only and never access credentials. Preview union ranges include confirmed/resolved time for the affected attribution; open peers remain provisional. Resolve requires exact entity revision and explicit confirmation, preserves original evidence and records an audited end or discarded tail. Discard-tail can use persisted evidence without a working clock. Unresolved tails survive resume/finish/new generations. Explicit interrupt detaches only its generation, preserving working uncertainty; it is not a reliable source lifecycle stop. No Harvest writes."
+  "local_mutation_semantics": "request_id is a UUID; CLI generates one if omitted. Exact replay returns original typed result before config, account, credentials, network or path discovery, after a local durability check. Same request ID with changed explicit intent returns request_conflict. Retry local_write_unknown with the same request ID; safe error details include it. Local binding/recovery/control actions never write Harvest; sync.now submits only through persisted intent. Recovery observations also keep receipts for no-ops; replay precedes clock sampling. A committed safety quarantine may return a persisted clock error without completing the requested interrupt/resolution; same-ID replay returns the original error. A new request is required for a new reviewed intent.",
+  "recovery_semantics": "Review/status/preview are read-only and never access credentials. Preview union ranges include confirmed/resolved time for the affected attribution; open peers remain provisional. Resolve requires exact entity revision and explicit confirmation, preserves original evidence and records an audited end or discarded tail. Discard-tail can use persisted evidence without a working clock. Unresolved tails survive resume/finish/new generations. Explicit interrupt detaches only its generation, preserving working uncertainty; it is not a reliable source lifecycle stop. No Harvest writes.",
+  "sync_semantics": "Immutable capture is split on local calendar dates before explicit representation. Planned versus confirmed amounts and signed residuals remain distinct. Never retry writes automatically; orphan claims become unknown under the run lock. Complete uniquely correlated immutable matching is required to reconcile. Zero/partial/multiple matches stay blocked. Worker installation and terminal UI are separate features. Explicit existing-entry attachment has separate receipt-backed audit and never fabricates a POST attempt. A no-effect interrupted reconcile/resolve recovers a terminal local_write_unknown Error; reconciliation with durably saved evidence recovers an interrupted run result. Attempted IDs count only persisted intents whose attempt request_id matches this run, not historical attempts."
 }

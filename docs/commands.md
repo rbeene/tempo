@@ -165,3 +165,81 @@ Supply and retain `--request-id` for reliable automated replay. Repeating the sa
 Finite `setup` inspects local account configuration and the target binding without reading credentials or contacting Harvest. `doctor` reports local configuration and binding-state problems plus unverified capabilities; `doctor --check` additionally checks credentials and account access. Neither command installs hooks or enables uploads.
 
 Native credential operations disable OS prompts and run with a five-second helper budget. Login, logout and account selection share a per-user lock even across different config paths. If a dispatched credential/config write has no conclusive reply, `credential_write_unknown` exits 8 with safe `details.effects`; inspect `auth status` and `config show` before an explicit replacement. Do not automatically replay the operation. A killed helper cannot guarantee an already accepted OS operation will not complete later. Unsupported secure storage is reported before interactive secret collection; use a securely supplied `HARVEST_TOKEN` instead.
+
+## Safe activity synchronization
+
+`sync status` is offline and shows the saved account/current-user consent, outbox
+plans, exact local capture, planned upload amounts, confirmed returned amounts,
+and signed residuals. Missing confirmed time is `null`, not zero. Capture can be
+ready while uploads still need a tracking-mode and representation choice.
+
+First link a directory/project, then explicitly declare the account's setting
+(check Harvest Settings if `/company` is unavailable to a non-administrator):
+
+```sh
+tempo sync configure --account 123 --mode duration --duration-policy nearest-hundredth-hour --if-revision 0 --yes --json
+tempo sync resume --json
+tempo sync now --limit 20 --json
+tempo sync status --json
+```
+
+Revision `0` creates consent for the freshly verified account/current-user pair;
+editing uses that pair's current revision from status. Configuration never changes
+the default account, credentials, captured attribution, or the enabled flag.
+Only a specifically classified Company `403` permits the declaration fallback;
+invalid, inactive, conflicting or unavailable identity/mode evidence blocks writes.
+Ordinary sync commands always use saved account identity and reject `--account`.
+
+The nearest-hundredth-hour policy is an explicit Tempo billing representation:
+each local calendar-day part rounds independently to 36-second units, with an
+18-second tie rounded up. A captured `137.482` seconds plans `0.04` hours (`144`
+seconds), leaving `-6.518` seconds of planned residual. This does not alter the
+immutable capture. A positive part below 18 seconds blocks the entire root before
+any POST. Residuals can accumulate across parts. `exact` instead encodes decimal
+hours with an integer-nanosecond round trip; it does not promise Harvest arbitrary
+precision. Returned hours must equal the saved planned decimal as an exact
+rational. `rounded_hours` is informational and never proves a match.
+
+Timestamp accounts require `--mode timestamp --duration-policy exact --clock 24h`
+(or `12h`). Endpoints must be whole minutes on the same local date, agree with the
+verified user's timezone, and avoid ambiguous clock folds, transitions and a
+midnight ending. Tempo never rounds timestamp endpoints. Duration day boundaries
+use IANA timezone transitions, including short/long and skipped calendar days.
+A root exceeding 100 daily parts remains for review with zero POST.
+
+`sync pause` stops future claims while capture continues. A pass has a two-minute
+bound and selects at most 100 roots (default 20). It holds a separate process lock;
+status and pause remain available. Background worker installation and the terminal
+Sync UI are separate features; the finite shared service and CLI ship here.
+
+Each attempt records its originating run request ID; `attempted_ids` counts only
+intents committed by that run, including interrupted claims, never historical
+rejections from an earlier run. Every mutation accepts `--request-id UUID` (generated if absent). Preserve the ID
+when retrying an uncertain local save: exact completed replay returns its saved
+result without credential access. A pending request retains its original targets;
+restart never turns it into a fresh batch. Recovery under the run lock runs before
+paused/empty checks. An interrupted submitting claim becomes unknown. A saved
+successful part can finalize locally. Partial interrupted roots never resume
+unposted parts automatically.
+
+Use `sync reconcile [OUTBOX_ID] --json` to search the complete saved correlation
+scope. It never creates or edits Harvest entries. Zero, partial, mismatched or
+multiple matches remain blocked; absence cannot authorize another write. Review
+an existing stopped entry and use `sync resolve OUTBOX_ID --entry ENTRY_ID
+--if-revision REV --yes --json` for explicit attachment. Notes-only manual entries
+require a full current-user collision scan. Complete only a known never-attempted
+remainder manually; never create a replacement for an unknown attempt based merely
+on a failed search.
+
+A conclusive rejection can be explicitly authorized with `sync resolve OUTBOX_ID
+--retry-rejected --if-revision REV --yes --json`, followed by a fresh `sync now`.
+Authorization itself performs no POST. It preserves the frozen plan, successful
+parts and prior attempt audit; unknown effects and mismatched acknowledged entries
+cannot use this route. Tempo never automatically retries POST, including `429`.
+Unexpected success statuses, redirects, `408`, server errors, malformed responses
+and transport failures are ambiguous. A confirmed entry with changed duration
+retains its ID and stays visible for review without rebilling.
+
+Provider behavior and mappings follow the official [time-entry API](https://help.getharvest.com/api-v2/timesheets-api/timesheets/time-entries/),
+[company API](https://help.getharvest.com/api-v2/company-api/company/company/), and
+[supported timezone table](https://help.getharvest.com/api-v2/introduction/overview/supported-timezones/).

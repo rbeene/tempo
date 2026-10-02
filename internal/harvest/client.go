@@ -320,12 +320,20 @@ func (c *Client) request(ctx context.Context, method string, u *url.URL, body Ob
 			return nil, networkError()
 		}
 		status := resp.StatusCode
+		completedEntryCreate := method == http.MethodPost && u.Path == c.api.Path+"/time_entries"
+		if completedEntryCreate && status != http.StatusCreated && (status >= 200 && status < 400 || !conclusiveCreateRejection(status)) {
+			resp.Body.Close()
+			return nil, uncertain(status)
+		}
 		if status < 200 || status >= 300 {
 			resp.Body.Close()
 			if !read && status >= 500 {
 				return nil, uncertain(status)
 			}
 			apiErr := statusError(status)
+			if !read {
+				apiErr.Retryable = false
+			}
 			if read && apiErr.Retryable && attempt+1 < attempts {
 				if !wait(ctx, retryDelay(resp.Header.Get("Retry-After"), attempt)) {
 					return nil, networkError()
@@ -359,6 +367,14 @@ func (c *Client) request(ctx context.Context, method string, u *url.URL, body Ob
 		return obj, nil
 	}
 	return nil, networkError()
+}
+
+func conclusiveCreateRejection(status int) bool {
+	switch status {
+	case 400, 401, 403, 404, 422, 429:
+		return true
+	}
+	return false
 }
 func statusError(status int) *Error {
 	e := &Error{Code: "api", Message: "Harvest rejected the request.", Status: status}

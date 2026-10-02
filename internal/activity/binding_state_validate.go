@@ -43,11 +43,26 @@ func validBindingState(st *state) bool {
 	}
 	revision, _ := counter(st.Revision)
 	for id, r := range st.Requests {
+		outcomes := 0
+		for _, present := range []bool{r.Error != nil, r.BindingResult != nil, r.MutationResult != nil, r.SyncConfigurationResult != nil, r.SyncRun != nil, r.PendingSync != nil} {
+			if present {
+				outcomes++
+			}
+		}
+		if outcomes != 1 {
+			return false
+		}
 		if !validUUID(id) || len(r.Fingerprint) != 64 || strings.ToLower(r.Fingerprint) != r.Fingerprint {
 			return false
 		}
 		if _, err := hex.DecodeString(r.Fingerprint); err != nil {
 			return false
+		}
+		if syncOperation(r.Operation) {
+			if !validSyncReceipt(st, id, r, revision) {
+				return false
+			}
+			continue
 		}
 		if recoveryOperation(r.Operation) {
 			if !validRecoveryReceipt(st, id, r, revision) {

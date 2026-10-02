@@ -12,6 +12,13 @@ type Command struct {
 }
 
 var commands = []Command{
+	{"sync status", "Inspect saved sync configuration, outbox and exact/planned/confirmed totals", "", nil, false},
+	{"sync configure", "Declare verified account tracking mode and representation policy; requires revision and --yes", "", map[string]string{"mode": "string", "duration-policy": "string", "clock": "string", "if-revision": "counter", "request-id": "uuid"}, true},
+	{"sync now", "Run a bounded durable sync pass; unknown writes are never retried", "", map[string]string{"limit": "counter", "request-id": "uuid"}, true},
+	{"sync reconcile", "Read Harvest to reconcile unique saved entry markers", "[UUID]", map[string]string{"limit": "counter", "request-id": "uuid"}, true},
+	{"sync pause", "Pause uploads locally without stopping capture", "", map[string]string{"request-id": "uuid"}, true},
+	{"sync resume", "Enable uploads locally; configuration remains explicit", "", map[string]string{"request-id": "uuid"}, true},
+	{"sync resolve", "Attach an existing entry or explicitly retry a definite rejection; requires revision and --yes", "UUID", map[string]string{"entry": "id", "retry-rejected": "bool", "if-revision": "counter", "request-id": "uuid"}, true},
 	{"activity review", "List unresolved local timing uncertainty without credentials", "", map[string]string{"project": "id"}, false},
 	{"activity preview", "Preview a recovery end or discarded tail without changes", "UUID", map[string]string{"end": "utc", "discard-tail": "bool"}, false},
 	{"activity resolve", "Resolve uncertainty; requires revision, end/discard-tail and --yes", "UUID", map[string]string{"end": "utc", "discard-tail": "bool", "if-revision": "counter", "reason": "string", "request-id": "uuid"}, true},

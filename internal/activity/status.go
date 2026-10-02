@@ -17,6 +17,8 @@ func (s *Service) Status(ctx context.Context) (ActivitySnapshot, error) {
 		return result, nil
 	}
 	result.ComputerID = &st.ComputerID
+	result.SyncEnabled = st.SyncEnabled
+	result.Worker.SyncEnabled = st.SyncEnabled
 	projects := map[string]*ProjectActivity{}
 	get := func(computer string, a Attribution) *ProjectActivity {
 		k := attributionKey(computer, a)

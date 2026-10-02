@@ -28,7 +28,7 @@ Public PR verification uses one ephemeral GitHub-hosted Ubuntu job, read-only to
 
 ## Planned local agent activity
 
-The [agent activity contract](agent-contracts.md) specifies the next implementation slices: one local union timer per computer/account/project, durable actor history and uncertainty, immutable attribution, and shared CLI/UI actions. Its [operation catalog](agent-operations.json) and [acceptance vectors](agent-acceptance.json) are design contracts, not shipped features. They preserve the existing Harvest provider and direct time/timer commands. The independent sync worker and dashboard remain planned; guided setup/link interactive lifetimes are implemented.
+The [agent activity contract](agent-contracts.md) specifies the next implementation slices: one local union timer per computer/account/project, durable actor history and uncertainty, immutable attribution, and shared CLI/UI actions. Its [operation catalog](agent-operations.json) and [acceptance vectors](agent-acceptance.json) are design contracts, not shipped features. They preserve the existing Harvest provider and direct time/timer commands. The finite foreground sync service/CLI and guided setup/link lifetimes are implemented; worker installation and the terminal dashboard remain planned.
 
 ## Durable local activity
 
@@ -36,7 +36,7 @@ The [agent activity contract](agent-contracts.md) specifies the next implementat
 
 The v1 store retains actor segments, accepted identity fingerprints, generation high-water state, uncertainty evidence, immutable union intervals and one queued intent per interval. A stable advisory lock serializes processes; default acquisition is bounded to 250ms and lifecycle CLI work has a one-second deadline. Writes use a private same-directory temporary file, file sync, atomic rename and directory sync. A duplicate receipt is re-synchronized before success so a prior `local_write_unknown` does not become a false durability acknowledgment. Callback failure aborts; durable quarantine followed by a lifecycle error is an explicit committed rejection. State decoding/encoding is bounded at 32MiB; reaching capacity fails safely without deleting history. Newer/corrupt state, symlink or replacement hazards, unsafe permissions and invalid references are preserved for review.
 
-Actor ranges use a shared elapsed-coordinate/UTC anchor per project attribution and continuous clock epoch, avoiding overlapping-actor drift from tolerated wall differences. macOS reads `mach_continuous_time`, `mach_absolute_time` and boot identity; Linux reads `CLOCK_BOOTTIME`, `CLOCK_MONOTONIC` and boot ID without cgo. Missing capability never falls back to wall subtraction. Sleep, epoch changes and divergent clocks quarantine unknown tails; normal silence does not. Status does not extend evidence or write health. Unresolved ranges reserve their possible time, including endpoint contact, so only disconnected safe closed union components finalize. Recovery and binding management share this engine; source bridges and Harvest synchronization are separate dependent operations. Queued output does not submit anything.
+Actor ranges use a shared elapsed-coordinate/UTC anchor per project attribution and continuous clock epoch, avoiding overlapping-actor drift from tolerated wall differences. macOS reads `mach_continuous_time`, `mach_absolute_time` and boot identity; Linux reads `CLOCK_BOOTTIME`, `CLOCK_MONOTONIC` and boot ID without cgo. Missing capability never falls back to wall subtraction. Sleep, epoch changes and divergent clocks quarantine unknown tails; normal silence does not. Status does not extend evidence or write health. Unresolved ranges reserve their possible time, including endpoint contact, so only disconnected safe closed union components finalize. Recovery and binding management share this engine; source bridges remain separate dependent operations. Queued output submits only through an explicit sync pass or the future worker, never during capture.
 
 
 ## Local binding operations
@@ -63,3 +63,28 @@ Valid mutating recovery requests may discover a discontinuity before rejecting t
 All authentication/config mutations acquire the same per-user credential-namespace lock, independent of config/state overrides. The inherited lock descriptor remains owned by the helper if its parent dies. The helper validates its secure expected identity and establishes/retains the lock. Login captures its rollback baseline under this lock, saves account configuration, then stores the token. Only a definite token rejection permits restoring the baseline. Logout deletes first, then clears config without parsing malformed old config. Ambiguous post-dispatch failures report `credential_write_unknown`, affected-resource effects, and exit 8. This does not prevent a late effect already accepted by the OS; reconciliation never claims causal certainty.
 
 `internal/setup.Service` orchestrates separate confirmed operations and returns safe completed steps on later failures. `internal/terminal.Session` exclusively owns raw mode, close-on-exec duplicated descriptors and a bounded input pump. Raw Ctrl-C cancels the shared action context even while no prompt is waiting. Close joins the pump, restores original flags/termios and returns before process exit. Selection labels strip terminal controls. Linux/unsupported native backends guide users to environment authentication before collecting secrets. Tests use synthetic helper subprocesses, injected stores/providers and temporary PTYs only.
+
+
+### Durable foreground synchronization
+
+The activity service owns configuration, outbox claims, finite request receipts,
+reconciliation and explicit attachment/rejected-retry controls. A separate private
+process lock covers remote sync passes; ordinary store locks stay short so capture,
+status and pause remain available. Account-bound provider construction uses the
+bounded auth service only after exact replay and offline guards. No remote write
+retries are introduced.
+
+A complete daily plan precedes each POST intent. Exact captured nanoseconds,
+explicitly represented planned time and acknowledged provider time are separate.
+Nearest-hundredth-hour consent rounds each local day part once; exact policy keeps
+an integer-nanosecond decimal round trip. Canonical versioned correlation markers
+include immutable identity/bounds/policy/planned values. Returned hours use exact
+rational comparison, with bounded nanosecond accounting and signed residuals.
+
+The run lock owns pending-request/orphan recovery before pause/empty checks.
+Acknowledgement loss retains unknown effect; a fully saved result can finalize
+locally. Reconciliation follows complete pagination and checks collision candidates
+without hiding them behind project/date/task filters. Manual attachment performs a
+complete current-user marker scan. Definite rejected retry preserves the frozen
+plan, successful parts and attempt audit. Setup distinguishes capture mapping from
+explicit upload consent; no worker or terminal dashboard is installed here.
