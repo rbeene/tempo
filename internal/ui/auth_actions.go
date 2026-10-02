@@ -26,9 +26,16 @@ type AuthActions struct {
 	ConfigShow   func(context.Context, string) (auth.ConfigStatus, error)
 }
 
+type authCompletion struct {
+	operation string
+	result    auth.Result
+	err       error
+}
+
 type authController struct {
 	pending            error
 	operation, account string
+	completed          *authCompletion
 }
 
 func (c *authController) run(ctx context.Context, p *promptBridge, actions *AuthActions) error {
