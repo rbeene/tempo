@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 
+	"github.com/rbeene/tempo/internal/activity"
 	"github.com/rbeene/tempo/internal/auth"
 	"github.com/rbeene/tempo/internal/hookstate"
 	"github.com/rbeene/tempo/internal/setup"
@@ -41,6 +42,41 @@ func uiSetupActions(d Dependencies) *ui.SetupActions {
 		}
 		return service.Run(ctx, input, prompt)
 	}}
+}
+
+func uiSyncActions(d Dependencies, local *activity.Service) *ui.SyncActions {
+	credentials := authService(d)
+	dependencies := activity.SyncDependencies{NewProvider: credentials.Provider}
+	return &ui.SyncActions{
+		Accounts: credentials.Accounts, Status: local.SyncStatus,
+		Identity: func(ctx context.Context, account string) (activity.SyncAccountIdentity, error) {
+			return local.SyncIdentity(ctx, account, dependencies)
+		},
+		Configure: func(ctx context.Context, in activity.SyncConfigureInput) (activity.SyncConfigurationResult, error) {
+			result, err := local.SyncConfigure(ctx, in, dependencies)
+			if err == nil {
+				notifyWorker(ctx, d, worker.Recheck)
+			}
+			return result, err
+		},
+		Now: func(ctx context.Context, in activity.SyncRunInput) (activity.SyncRun, error) {
+			return local.SyncNow(ctx, in, dependencies)
+		},
+		Reconcile: func(ctx context.Context, in activity.SyncReconcileInput) (activity.SyncRun, error) {
+			return local.SyncReconcile(ctx, in, dependencies)
+		},
+		Resolve: func(ctx context.Context, in activity.SyncResolveInput) (activity.MutationResult, error) {
+			return local.SyncResolve(ctx, in, dependencies)
+		},
+		Pause: local.SyncPause,
+		Resume: func(ctx context.Context, id string) (activity.MutationResult, error) {
+			result, err := local.SyncResume(ctx, id)
+			if err == nil {
+				notifyWorker(ctx, d, worker.Recheck)
+			}
+			return result, err
+		},
+	}
 }
 
 func uiHookActions(d Dependencies) *ui.HookActions {

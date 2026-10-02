@@ -59,6 +59,7 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 	credential := &authController{}
 	hooks := &hookController{}
 	service := &workerController{}
+	uploads := &syncController{}
 	type flowResult struct {
 		name  string
 		style terminal.Styler
@@ -148,9 +149,19 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 						if service.pending != nil {
 							id = service.pending.request.RequestID
 						}
+					case "sync":
+						if uploads.pending != nil {
+							id = uploads.pending.id()
+						}
 					}
 				}
 				options.OnRetainedOutcome(name, id, outcome)
+				if name == "sync" && uploads.pending != nil && uploads.pending.recovery != nil {
+					recovery := uploads.pending.recovery
+					if unknownOutcome(recovery.err) {
+						options.OnRetainedOutcome(name, recovery.id(), recovery.err)
+					}
+				}
 			}
 		}
 	}()
@@ -302,7 +313,7 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 			if result.name == "activity" && capture.pending == nil {
 				request()
 			}
-			if result.name == "hooks" && hooks.pending == nil || result.name == "worker" && service.pending == nil {
+			if result.name == "hooks" && hooks.pending == nil || result.name == "worker" && service.pending == nil || result.name == "sync" && uploads.pending == nil {
 				request()
 			}
 			flowBusy = false
@@ -437,6 +448,10 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 				case "d":
 					startFlow("diagnostics", func(flowCtx context.Context) (terminal.Styler, error) {
 						return nil, showDiagnostics(flowCtx, bridge, options.Diagnostics)
+					})
+				case "s":
+					startFlow("sync", func(flowCtx context.Context) (terminal.Styler, error) {
+						return nil, uploads.run(flowCtx, bridge, options.Sync)
 					})
 				}
 				continue
