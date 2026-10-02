@@ -18,6 +18,7 @@ import (
 	"github.com/rbeene/tempo/internal/hookstate"
 	"github.com/rbeene/tempo/internal/setup"
 	"github.com/rbeene/tempo/internal/terminal"
+	"github.com/rbeene/tempo/internal/ui"
 	"github.com/rbeene/tempo/internal/worker"
 )
 
@@ -133,9 +134,21 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 			}
 			if p.command.Name == "ui" || p.command.Name == "activity status" && p.flags["watch"] == "true" {
 				if eligible(in, out) && p.flags["json"] != "true" && p.flags["non-interactive"] != "true" {
-					// The interactive runner belongs to the next independently tested
-					// slice; never silently substitute a finite view for it.
-					err = problem("unsupported_contract", "interactive dashboard is not available in this build; use --json for a local snapshot")
+					session, openErr := terminal.Open(ctx, in, out)
+					if openErr != nil {
+						err = openErr
+					} else {
+						err = ui.Run(session.Context(), session, activityService(d), ui.Options{})
+						if err == nil {
+							return 0
+						}
+						// Presentation failures use the existing fixed terminal error
+						// boundary only after Run has joined and restored its owner.
+						var ended *terminal.ExitError
+						if !errors.As(err, &ended) {
+							err = &terminal.ExitError{Code: 1}
+						}
+					}
 				} else {
 					jsonMode = true
 					data, err = activityService(d).Status(ctx)

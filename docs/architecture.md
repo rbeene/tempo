@@ -2,7 +2,7 @@
 
 Tempo is a small Go executable with golang.org/x/term and x/sys for terminal ownership. macOS builds use cgo for the system Security/CoreFoundation credential bridge and native awake/suspend clock counters. No runtime daemon, Go installation, external library download, external credential utility, or package manager is required to run the built binary. Stripping uses normal Go linker flags, never executable packers.
 
-`cmd/tempo` supplies cancellation and a two-minute finite-command deadline. Eligible interactive setup/link sessions have no command-wide timeout; each API action remains bounded. `internal/cli` owns validation, account/user scope and command behavior. `internal/harvest.Provider` is the small injected provider seam; the Harvest adapter owns HTTP, pagination and safe errors. `internal/auth.Store` owns credential persistence, separate from account configuration. A future tracker can implement the small provider boundary and map its data at the command boundary; no registry, generic plugin system or speculative framework is present.
+`cmd/tempo` supplies cancellation and a two-minute finite-command deadline. Eligible interactive setup/link and activity dashboard/watch sessions have no command-wide timeout; each API action remains bounded. `internal/cli` owns validation, account/user scope and command behavior. `internal/harvest.Provider` is the small injected provider seam; the Harvest adapter owns HTTP, pagination and safe errors. `internal/auth.Store` owns credential persistence, separate from account configuration. A future tracker can implement the small provider boundary and map its data at the command boundary; no registry, generic plugin system or speculative framework is present.
 
 ## Credentials
 
@@ -28,7 +28,7 @@ Public PR verification uses one ephemeral GitHub-hosted Ubuntu job, read-only to
 
 ## Planned local agent activity
 
-The [agent activity contract](agent-contracts.md) specifies the next implementation slices: one local union timer per computer/account/project, durable actor history and uncertainty, immutable attribution, and shared CLI/UI actions. Its [operation catalog](agent-operations.json) and [acceptance vectors](agent-acceptance.json) are design contracts, not shipped features. They preserve the existing Harvest provider and direct time/timer commands. The finite foreground sync service/CLI and guided setup/link lifetimes are implemented; the optional worker is implemented and the terminal dashboard remains planned.
+The [agent activity contract](agent-contracts.md) specifies the next implementation slices: one local union timer per computer/account/project, durable actor history and uncertainty, immutable attribution, and shared CLI/UI actions. Its [operation catalog](agent-operations.json) and [acceptance vectors](agent-acceptance.json) are design contracts, not shipped features. They preserve the existing Harvest provider and direct time/timer commands. The finite foreground sync service/CLI and guided setup/link lifetimes are implemented; the optional worker is implemented and the terminal dashboard presents read-only project timers; its setup and mutation controls remain planned.
 
 ## Durable local activity
 
@@ -123,3 +123,7 @@ restart and session-exit identities cannot allocate arrival-based generations or
 mutate a newer actor. See [Claude lifecycle capture](claude-hooks.md).
 
 `internal/hookstate.Service` owns a separate private 4 MiB hooks metadata file, one lock and a typed request ledger. It initializes retained operator-declared capture policy without initializing computer identity. Preview hashes bounded no-follow regular artifacts without retaining content. Confirmation, revocation and durable invalidation use revision-sensitive fingerprints and atomic commits; identical request replay reconciles uncertain durability without resurrection. This is the single metadata domain for later hook installation manifests and request types. It is not another timing store. See [Codex lifecycle capture](codex-hooks.md) for policy sampling races, supported hosts and residual delivery limits.
+
+## Read-only terminal activity dashboard
+
+`internal/ui` owns pure snapshot selection/rendering and a read-only runner over the existing terminal Session. It renders authoritative `ActivitySnapshot.ProjectTimers` without a clock or elapsed-time arithmetic. One event consumer forwards bounded input to the sole presentation writer. One status worker receives coalesced refresh requests with a 250 ms context, and a one-second ticker supplies scheduled refreshes. Observation sequences and canonical numeric revisions preserve stable selection and stale snapshots, including equal-revision clock-only observations. The runner cancels and joins both workers before the same Session restores its screen, cursor, bracketed-paste mode, descriptors and termios. Forced or redirected invocation preserves one finite offline JSON envelope.

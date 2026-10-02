@@ -170,5 +170,5 @@ func authCompatibilityError(e error) error {
 // deadline. Parsing still rejects invalid commands before opening a terminal.
 func InteractiveInvocation(args []string, in io.Reader, out io.Writer) bool {
 	p, e := parse(args)
-	return e == nil && (p.command.Name == "setup" || p.command.Name == "link") && p.flags["json"] != "true" && p.flags["non-interactive"] != "true" && terminal.Eligible(in, out)
+	return e == nil && (p.command.Name == "setup" || p.command.Name == "link" || p.command.Name == "ui" || p.command.Name == "activity status" && p.flags["watch"] == "true") && p.flags["json"] != "true" && p.flags["non-interactive"] != "true" && terminal.Eligible(in, out)
 }
