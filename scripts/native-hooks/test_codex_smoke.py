@@ -77,6 +77,24 @@ class HarnessTests(unittest.TestCase):
         self.assertNotIn("Trust:", screen.text())
         self.assertNotIn("Command: expected", screen.text())
 
+    def test_pinned_keyboard_negotiation_is_nonprinting_and_fragment_safe(self):
+        # Exact forms emitted by rust-v0.159.3 terminal_probe.rs and
+        # tui/keyboard_modes.rs: query, push flags, pop/reset flags.
+        screen = smoke.Screen(6, 80)
+        screen.feed(b"visible trust evidence")
+        before = screen.text()
+        for control in (b"\x1b[?u", b"\x1b[>5u", b"\x1b[>7u", b"\x1b[<1u", b"\x1b[<u"):
+            for byte in control:
+                screen.feed(bytes([byte]))
+            self.assertEqual(screen.text(), before)
+        screen.feed(b"\x1b[s!\x1b[u?")
+        self.assertIn("visible trust evidence?", screen.text())
+        self.assertNotIn("!", screen.text())
+
+    def test_unrecognized_private_cursor_control_fails_with_safe_category(self):
+        with self.assertRaisesRegex(smoke.FixtureFailure, "unsupported_terminal_parameters"):
+            smoke.Screen().feed(b"\x1b[?1H")
+
     def test_receipt_projection_cannot_export_raw_payload_or_unknown_status(self):
         receipt = self.receipt("SessionStart")
         receipt.update(prompt="SECRET", headers={"Authorization": "SECRET"}, diagnostic_code="SECRET")

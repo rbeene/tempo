@@ -258,6 +258,12 @@ class Screen:
     def csi(self, params, op):
         if op in "mhlncqt":  # attributes, mode switches, terminal queries
             return
+        # Pinned Codex startup queries keyboard capabilities, then pushes/pops
+        # enhancement flags. These CSI-u controls don't alter displayed cells.
+        # Bare CSI-u remains the ordinary saved-cursor restore below.
+        if op == "u" and params in ("?", ">5", ">7", "<1", "<"):
+            return
+        require(re.fullmatch(r"[0-9;]*", params) is not None, "unsupported_terminal_parameters")
         p = [int(v) if v else 0 for v in params.split(";")] if params else [0]
         n = p[0] or 1
         if op in "Hf":
