@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -109,13 +110,98 @@ func run(args []string) error {
 		for _, a := range snapshot.Actors {
 			actors = append(actors, actor{a.Ref, a.State, a.Health})
 		}
+		details, err := projectUncertainties(snapshot.Uncertainties)
+		if err != nil {
+			return err
+		}
 		return json.NewEncoder(os.Stdout).Encode(struct {
-			Receipts      []activity.HostReceipt `json:"receipts"`
-			Actors        []actor                `json:"actors"`
-			Queued        int                    `json:"queued"`
-			Uncertainties int                    `json:"uncertainties"`
-		}{receipts.Receipts, actors, snapshot.Worker.QueuedCount, len(snapshot.Uncertainties)})
+			Receipts           []activity.HostReceipt `json:"receipts"`
+			Actors             []actor                `json:"actors"`
+			Queued             int                    `json:"queued"`
+			Uncertainties      int                    `json:"uncertainties"`
+			UncertaintyDetails []uncertaintyDetail    `json:"uncertainty_details"`
+		}{receipts.Receipts, actors, snapshot.Worker.QueuedCount, len(snapshot.Uncertainties), details})
 	default:
 		return fmt.Errorf("operation")
+	}
+}
+
+type uncertaintyDetail struct {
+	Actor             activity.ActorRef `json:"actor"`
+	Reason            string            `json:"reason"`
+	State             string            `json:"state"`
+	Bounded           bool              `json:"bounded"`
+	ResolutionPresent bool              `json:"resolution_present"`
+	Discarded         bool              `json:"discarded"`
+}
+
+func projectUncertainties(values []activity.Uncertainty) ([]uncertaintyDetail, error) {
+	if len(values) > 8 {
+		return nil, fmt.Errorf("uncertainty_bound")
+	}
+	result := make([]uncertaintyDetail, 0, len(values))
+	for _, u := range values {
+		switch u.Reason {
+		case "source_lost", "ordering_unavailable", "suspend", "clock_changed", "restart_unknown", "event_gap", "superseded":
+		default:
+			return nil, fmt.Errorf("uncertainty_contract")
+		}
+		if u.State != "unresolved" && u.State != "resolved" {
+			return nil, fmt.Errorf("uncertainty_contract")
+		}
+		result = append(result, uncertaintyDetail{u.Actor, u.Reason, u.State, u.UpperBound != nil && !u.UpperBound.Before(u.LowerBound), u.ResolutionEnd != nil, u.Discarded})
+	}
+	return result, nil
+}
+
+func TestUncertaintyProjectionIsBoundedAndAllowlisted(t *testing.T) {
+	lower := time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)
+	upper := lower.Add(time.Second)
+	u := activity.Uncertainty{ID: "PRIVATE_CANARY", SegmentID: "PRIVATE_CANARY", Reason: "source_lost", State: "unresolved", LowerBound: lower, UpperBound: &upper}
+	projected, err := projectUncertainties([]activity.Uncertainty{u})
+	if err != nil || len(projected) != 1 {
+		t.Fatalf("projection: %v", err)
+	}
+	b, err := json.Marshal(projected[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(b, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if len(fields) != 6 || fields["reason"] != "source_lost" || fields["state"] != "unresolved" || fields["bounded"] != true || fields["resolution_present"] != false || fields["discarded"] != false || fields["actor"] == nil || strings.Contains(string(b), "PRIVATE_CANARY") {
+		t.Fatalf("unexpected safe projection: %s", b)
+	}
+	for _, invalid := range []activity.Uncertainty{{Reason: "PRIVATE_CANARY", State: "unresolved"}, {Reason: "source_lost", State: "PRIVATE_CANARY"}} {
+		if _, err := projectUncertainties([]activity.Uncertainty{invalid}); err == nil {
+			t.Fatal("unknown private text accepted")
+		}
+	}
+	bounded := make([]activity.Uncertainty, 9)
+	for i := range bounded {
+		bounded[i] = u
+	}
+	if _, err := projectUncertainties(bounded[:8]); err != nil {
+		t.Fatal("allowed bound rejected")
+	}
+	if _, err := projectUncertainties(bounded); err == nil {
+		t.Fatal("unbounded projection")
+	}
+	u.UpperBound = nil
+	projected, err = projectUncertainties([]activity.Uncertainty{u})
+	if err != nil || projected[0].Bounded {
+		t.Fatal("missing upper bound accepted")
+	}
+	before := lower.Add(-time.Second)
+	u.UpperBound = &before
+	projected, err = projectUncertainties([]activity.Uncertainty{u})
+	if err != nil || projected[0].Bounded {
+		t.Fatal("reversed bound accepted")
+	}
+	u.UpperBound, u.ResolutionEnd, u.Discarded = &upper, &upper, true
+	projected, err = projectUncertainties([]activity.Uncertainty{u})
+	if err != nil || !projected[0].ResolutionPresent || !projected[0].Discarded {
+		t.Fatal("resolution flags lost")
 	}
 }

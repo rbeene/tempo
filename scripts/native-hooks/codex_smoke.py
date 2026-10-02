@@ -255,6 +255,19 @@ def require_prompt_barrier(receipts, session, turn):
                 and r["ordering"] == "supported" for r in receipts), "prompt_barrier_missing")
 
 
+def require_completed_capture(snapshot):
+    require(snapshot["queued"] > 0 and snapshot["uncertainties"] == 0 and snapshot["uncertainty_details"] == [],
+            "completed_capture_effects_missing")
+    return snapshot["queued"]
+
+
+def require_capture_effects(snapshot, interrupt_receipt, completed_queued):
+    expected = {"actor": interrupt_receipt["actor"], "reason": "source_lost", "state": "unresolved", "bounded": True,
+                "resolution_present": False, "discarded": False}
+    require(interrupt_receipt["actor"] is not None and completed_queued > 0 and snapshot["queued"] >= completed_queued
+            and snapshot["uncertainties"] == 1 and snapshot["uncertainty_details"] == [expected], "native_capture_effects_missing")
+
+
 def require_plan_result(body):
     matches = [v for v in body.get("input", []) if v.get("type") == "function_call_output" and v.get("call_id") == "tempo-plan"]
     require(len(matches) == 1 and matches[0].get("output") == PLAN_RESULT, "actual_plan_result_missing")
@@ -1094,8 +1107,10 @@ def run(args, report):
         require(parent_stop["actor"] != child_start["actor"], "parent_child_actor_collision")
         model.child_release.set()
         report["stage"] = "child_completion"
-        wait_snapshot(lambda s: any(r["kind"] == "SubagentStop" and r["session_id"] == model.session and r["agent_id"] == model.child
+        completed = wait_snapshot(lambda s: any(r["kind"] == "SubagentStop" and r["session_id"] == model.session and r["agent_id"] == model.child
                                    and r["turn_id"] == model.child_turn and accepted(r) for r in s["receipts"]), "child_stop_missing")
+        completed_queued = require_completed_capture(completed)
+        report["completed_queued_count"] = completed_queued
         terminal.command(INTERRUPT_PROMPT)
         report["stage"] = "ordinary_interrupt"
         terminal.until(lambda _: model.interrupt_seen.is_set(), "interrupt_request_missing")
@@ -1116,14 +1131,15 @@ def run(args, report):
                 and ends[0]["actor"] == interrupt_receipt["actor"], "session_end_missing")
         require(actor_state(snapshot, interrupt_receipt) == "interrupted", "interrupt_actor_effect_missing")
         require(model.counts == {"parent": 3, "child": 1, "interrupt": 1}, "provider_request_counts")
-        require(snapshot["queued"] > 0 and snapshot["uncertainties"] == 0, "native_capture_effects_missing")
+        require_capture_effects(snapshot, interrupt_receipt, completed_queued)
         require(all(any(r["kind"] == event and accepted(r) for r in measured) for event in EVENTS if event != "SessionEnd"), "required_native_event_missing")
         require(model.error is None, model.error or "provider_failed")
         report.update({"status": "passed", "receipts": [project_receipt(r) for r in measured], "requests": model.requests,
                        "request_counts": model.counts, "queued_count": snapshot["queued"], "uncertainty_count": snapshot["uncertainties"],
                        "assertions": ["normal_exact_definition_trust", "posttrust_session_restart", "prompt_before_provider",
                                       "actual_plan_result", "actual_child_request", "parent_stop_child_still_working",
-                                      "child_stop", "interrupt", "normal_session_end", "production_capture_effects"]})
+                                      "child_stop", "completed_work_queued_before_interrupt", "interrupt", "normal_session_end",
+                                      "exact_bounded_interrupt_uncertainty", "production_capture_effects"]})
         report["stage"] = "complete"
     finally:
         close_native(terminal, model, primary_failure=sys.exc_info()[0] is not None)

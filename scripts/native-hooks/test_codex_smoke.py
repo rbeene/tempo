@@ -892,6 +892,29 @@ class HarnessTests(unittest.TestCase):
         screen = "SessionStart hooks\n› [!] Hook 1 · new\nEvent     SessionStart\nSource    User config - ~/.codex/hooks.json\nCommand   /tmp/tempo hook codex --input-stdin\nMode      Sync\nTimeout   2s\nTrust     New hook - review required\nt trust · esc back"
         smoke.review_hook_screen(screen, "SessionStart", "/tmp/tempo hook codex --input-stdin", "~/.codex/hooks.json")
 
+    def test_completed_capture_is_clean_before_interrupt(self):
+        good = {"queued": 2, "uncertainties": 0, "uncertainty_details": []}
+        self.assertEqual(smoke.require_completed_capture(good), 2)
+        for changes in ({"queued": 0}, {"uncertainties": 1}, {"uncertainty_details": [{}]}):
+            with self.assertRaises(smoke.FixtureFailure): smoke.require_completed_capture(good | changes)
+
+    def test_final_capture_requires_exact_bounded_interrupt_tail_and_preserved_queue(self):
+        actor = {"key": {"computer_id": "computer", "source": "codex", "session_id": "session", "agent_id": "root"}, "generation": "2"}
+        receipt = {"actor": actor}
+        detail = {"actor": actor, "reason": "source_lost", "state": "unresolved", "bounded": True,
+                  "resolution_present": False, "discarded": False}
+        good = {"queued": 2, "uncertainties": 1, "uncertainty_details": [detail]}
+        smoke.require_capture_effects(good, receipt, 2)
+        cases = [good | {"queued": 1}, good | {"uncertainties": 0}, good | {"uncertainty_details": []},
+                 good | {"uncertainties": 2, "uncertainty_details": [detail, detail]}]
+        for changes in ({"actor": None}, {"actor": actor | {"generation": "1"}}, {"reason": "clock_changed"},
+                        {"state": "resolved"}, {"bounded": False}, {"resolution_present": True}, {"discarded": True}):
+            cases.append(good | {"uncertainty_details": [detail | changes]})
+        for snapshot in cases:
+            with self.subTest(snapshot=snapshot), self.assertRaises(smoke.FixtureFailure):
+                smoke.require_capture_effects(snapshot, receipt, 2)
+        with self.assertRaises(smoke.FixtureFailure): smoke.require_capture_effects(good, {"actor": None}, 2)
+
     def test_root_provider_turns_exclude_native_child_prompts(self):
         receipts = [self.receipt("SessionStart"), self.receipt("UserPromptSubmit"),
                     self.receipt("SubagentStart", agent_id="child", turn_id="child-turn"),
