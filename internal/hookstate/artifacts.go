@@ -57,7 +57,7 @@ func contextFingerprint(c Context) string {
 }
 
 func sampleContext(ctx context.Context, c Context) (Context, error) {
-	if c.Host != "codex" && c.Host != "claude" || c.Scope != "project" || c.Surface != "local" || !filepath.IsAbs(c.Path) || !safeText(c.Path, 4096) || len(c.Artifacts) < 3 || len(c.Artifacts) > 16 || len(c.Conflicts) > 16 {
+	if c.InventoryVersion != "" && c.InventoryVersion != installedInventoryVersion || c.Host != "codex" && c.Host != "claude" || c.Scope != "project" && c.Scope != "user" || c.Surface != "local" || !filepath.IsAbs(c.Path) || !safeText(c.Path, 4096) || len(c.Artifacts) < 3 || len(c.Artifacts) > maxProfileArtifacts || len(c.Conflicts) > 16 {
 		return Context{}, problem("validation")
 	}
 	if c.Host == "codex" && c.RuntimeVersion != "0.159.3" || c.Host == "claude" && c.RuntimeVersion != "2.1.286" {
@@ -88,7 +88,7 @@ func sampleContext(ctx context.Context, c Context) (Context, error) {
 			return Context{}, problem("state_busy")
 		}
 		switch artifact.Role {
-		case "runtime", "executable", "definitions", "skill", "configuration":
+		case "runtime", "executable", "definitions", "skill", "configuration", "repository":
 		default:
 			return Context{}, problem("validation")
 		}
@@ -104,7 +104,7 @@ func sampleContext(ctx context.Context, c Context) (Context, error) {
 		if total > 512<<20 {
 			return Context{}, problem("validation")
 		}
-		if digest == "absent" && (artifact.Role == "runtime" || artifact.Role == "executable" || artifact.Role == "definitions") {
+		if digest == "absent" && (artifact.Role == "runtime" || artifact.Role == "executable" || artifact.Role == "definitions" || artifact.Role == "repository") {
 			return Context{}, problem("validation")
 		}
 		roles[artifact.Role] = true
@@ -122,7 +122,7 @@ func hashArtifact(ctx context.Context, path, role string) (string, int64, error)
 	// Reject symbolic-link components; callers supply reviewed concrete files.
 	for current := path; current != filepath.Dir(current); current = filepath.Dir(current) {
 		fi, err := os.Lstat(current)
-		if errors.Is(err, os.ErrNotExist) && current == path {
+		if errors.Is(err, os.ErrNotExist) {
 			// Still inspect existing parent components before accepting absence.
 			continue
 		}
@@ -137,6 +137,12 @@ func hashArtifact(ctx context.Context, path, role string) (string, int64, error)
 	before, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return "absent", 0, nil
+	}
+	if role == "repository" {
+		if err != nil || !before.IsDir() {
+			return "", 0, problem("validation")
+		}
+		return repositoryIdentity(before), 0, nil
 	}
 	limit := int64(8 << 20)
 	if role == "runtime" {

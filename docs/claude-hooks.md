@@ -63,3 +63,11 @@ Automated tests use synthetic callbacks, isolated stores and injected clocks.
 Actual-host acceptance is a separate exact-head hosted Linux gate; fixture tests
 alone do not verify delivery. Local macOS credential access, interactive Claude
 trust and arbitrary dynamic hook configurations are outside this evidence.
+
+The hosted print-mode fixture uses production preview/install for the project
+settings and bundled skill, then production status/confirmation for the exact
+project context. It checks all 13 installed events separately from the measured
+lifecycle subset. The direct installed command is unchanged; hook stderr evidence
+is explicitly unavailable because the host manages that stream. Committed
+receipts, exact actor effects, queue/review checks and unchanged complete profile
+inventory after production status are required for acceptance.

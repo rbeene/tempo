@@ -18,14 +18,18 @@ type Artifact struct {
 	SHA256 string `json:"sha256"`
 }
 
+const installedInventoryVersion = "tempo-installed-static-v1"
+const maxProfileArtifacts = 128
+
 type Context struct {
-	Host           string     `json:"host"`
-	Scope          string     `json:"scope"`
-	Path           string     `json:"path"`
-	RuntimeVersion string     `json:"runtime_version"`
-	Surface        string     `json:"surface"`
-	Artifacts      []Artifact `json:"artifacts"`
-	Conflicts      []string   `json:"conflicts"`
+	InventoryVersion string     `json:"inventory_version,omitempty"`
+	Host             string     `json:"host"`
+	Scope            string     `json:"scope"`
+	Path             string     `json:"path"`
+	RuntimeVersion   string     `json:"runtime_version"`
+	Surface          string     `json:"surface"`
+	Artifacts        []Artifact `json:"artifacts"`
+	Conflicts        []string   `json:"conflicts"`
 }
 
 type Profile struct {
@@ -51,8 +55,14 @@ type RevokeInput struct {
 }
 
 type Options struct {
-	Path        string
-	LockTimeout time.Duration
+	CodexSystemDir   string
+	ClaudeManagedDir string
+	HomeDir          string
+	Executable       string
+	BuildVersion     string
+	DiscoverRuntime  func(context.Context, string) (Runtime, error)
+	Path             string
+	LockTimeout      time.Duration
 }
 
 type Service struct {
@@ -61,6 +71,7 @@ type Service struct {
 }
 
 type Error struct {
+	RequestID string `json:"request_id,omitempty"`
 	Code      string
 	Retryable bool
 	Uncertain bool
@@ -88,11 +99,13 @@ func (s *Service) Preview(ctx context.Context, input Context) (Profile, error) {
 
 // Confirm retains operator_declared eligibility, never host_observed evidence.
 func (s *Service) Confirm(ctx context.Context, in ConfirmInput) (Profile, error) {
-	return s.confirm(ctx, in)
+	p, err := s.confirm(ctx, in)
+	return p, requestError(err, in.RequestID)
 }
 
 func (s *Service) Revoke(ctx context.Context, in RevokeInput) (Profile, error) {
-	return s.revoke(ctx, in)
+	p, err := s.revoke(ctx, in)
+	return p, requestError(err, in.RequestID)
 }
 
 // Eligibility selects the scoped policy and invalidates known artifact drift.

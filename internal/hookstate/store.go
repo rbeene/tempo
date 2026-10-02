@@ -326,6 +326,10 @@ func (s *Service) update(ctx context.Context, fn func(*metadata) (bool, error)) 
 		}
 		return l.verifyState()
 	}
+	return s.writeMetadata(ctx, l, st)
+}
+
+func (s *Service) writeMetadata(ctx context.Context, l *lockedStore, st *metadata) error {
 	if !validMetadata(st) {
 		return problem("validation")
 	}

@@ -31,9 +31,9 @@ def browser_frames():
 
 
 class HarnessTests(unittest.TestCase):
-    def test_fixture_config_disables_persisted_startup_tooltips_without_trust_seeding(self):
+    def test_fixture_provider_config_leaves_tooltip_to_installer_without_trust_seeding(self):
         config = tomllib.loads(smoke.config_text(43210))
-        self.assertEqual(config.get("tui"), {"show_tooltips": False})
+        self.assertNotIn("tui", config)
         self.assertEqual(config.get("tools"), {"update_plan": {"enabled": True}})
         self.assertNotIn("projects", config)
         self.assertNotIn("hooks", config)
@@ -503,7 +503,7 @@ class HarnessTests(unittest.TestCase):
         class ReachedInventory(Exception): pass
         title = "Hooks need review"
         choices = "\n› 1. Review hooks\n2. Trust all and continue\n3. Continue without trusting (hooks won't run)"
-        full = title + "\n9 hooks are new or changed." + choices
+        full = title + "\n12 hooks are new or changed." + choices
         class Terminal:
             def __init__(self, review):
                 self.screens = iter(["Trust this folder?", *workspace_frames(), *review])
@@ -520,7 +520,7 @@ class HarnessTests(unittest.TestCase):
         with self.assertRaises(ReachedInventory):
             smoke.normal_trust(good, Path("/tmp/exact-project"), "unused", [])
         self.assertEqual(good.sent, [b"\x1b[B", b"\x1b[A", b"\r", b"\x1b[F", b"1", b"\x1b[F", b"\x1b[H"])
-        for invalid in (title, full.replace("9 hooks", "19 hooks"), full.replace("9 hooks", "8 hooks"), full.replace("2. Trust all and continue", ""),
+        for invalid in (title, full.replace("12 hooks", "19 hooks"), full.replace("12 hooks", "8 hooks"), full.replace("2. Trust all and continue", ""),
                         full.replace("› ", ""), full + "\n› 3. Continue without trusting (hooks won't run)"):
             with self.subTest(invalid=invalid):
                 bad = Terminal([invalid + "\ntempo-ci-fixture"])
@@ -543,7 +543,7 @@ class HarnessTests(unittest.TestCase):
         self.assertFalse(any(smoke.startup_trust_probe("").values()))
 
     def test_review_navigation_acknowledges_input_before_single_review_shortcut(self):
-        prompt = "Hooks need review\n9 hooks are new or changed.\n› 1. Review hooks\n2. Trust all and continue\n3. Continue without trusting (hooks won't run)"
+        prompt = "Hooks need review\n12 hooks are new or changed.\n› 1. Review hooks\n2. Trust all and continue\n3. Continue without trusting (hooks won't run)"
         acknowledged = prompt.replace("› 1.", "1.").replace("3. Continue", "› 3. Continue")
         class Terminal:
             def __init__(self, outcomes): self.outcomes, self.sent = iter(outcomes), []
@@ -571,7 +571,7 @@ class HarnessTests(unittest.TestCase):
 
     def test_normal_trust_requires_ack_at_each_initial_input_boundary(self):
         class ReachedInventory(Exception): pass
-        review = "Hooks need review\n9 hooks are new or changed.\n› 1. Review hooks\n2. Trust all and continue\n3. Continue without trusting (hooks won't run)"
+        review = "Hooks need review\n12 hooks are new or changed.\n› 1. Review hooks\n2. Trust all and continue\n3. Continue without trusting (hooks won't run)"
         review_last = review.replace("› 1.", "1.").replace("3. Continue", "› 3. Continue")
         class Terminal:
             def __init__(self, start, depart=False):
@@ -624,7 +624,7 @@ class HarnessTests(unittest.TestCase):
                 self.assertNotIn("PRIVATE", json.dumps(probes))
 
     def test_input_origin_timeout_preserves_last_finite_observation(self):
-        review = "Hooks need review\n9 hooks are new or changed.\n1. Review hooks\n2. Trust all and continue\n3. Continue without trusting (hooks won't run)"
+        review = "Hooks need review\n12 hooks are new or changed.\n1. Review hooks\n2. Trust all and continue\n3. Continue without trusting (hooks won't run)"
         class Terminal:
             def __init__(self, screen): self.screen, self.sent = screen, []
             def until(self, predicate, category, **_):
@@ -893,17 +893,22 @@ class HarnessTests(unittest.TestCase):
         smoke.review_hook_screen(screen, "SessionStart", "/tmp/tempo hook codex --input-stdin", "~/.codex/hooks.json")
 
     def test_completed_capture_is_clean_before_interrupt(self):
-        good = {"queued": 2, "uncertainties": 0, "uncertainty_details": []}
+        good = {"queued": 2, "uncertainties": 0, "uncertainty_details": [], "capture_reviews": 0}
         self.assertEqual(smoke.require_completed_capture(good), 2)
         for changes in ({"queued": 0}, {"uncertainties": 1}, {"uncertainty_details": [{}]}):
             with self.assertRaises(smoke.FixtureFailure): smoke.require_completed_capture(good | changes)
+        for value in (None, False, True, "0", -1, 1, 128):
+            with self.subTest(capture_reviews=value), self.assertRaises(smoke.FixtureFailure):
+                smoke.require_completed_capture(good | {"capture_reviews": value})
+        with self.assertRaises(smoke.FixtureFailure):
+            smoke.require_completed_capture({key: value for key, value in good.items() if key != "capture_reviews"})
 
     def test_final_capture_requires_exact_bounded_interrupt_tail_and_preserved_queue(self):
         actor = {"key": {"computer_id": "computer", "source": "codex", "session_id": "session", "agent_id": "root"}, "generation": "2"}
         receipt = {"actor": actor}
         detail = {"actor": actor, "reason": "source_lost", "state": "unresolved", "bounded": True,
                   "resolution_present": False, "discarded": False}
-        good = {"queued": 2, "uncertainties": 1, "uncertainty_details": [detail]}
+        good = {"queued": 2, "uncertainties": 1, "uncertainty_details": [detail], "capture_reviews": 0}
         smoke.require_capture_effects(good, receipt, 2)
         cases = [good | {"queued": 1}, good | {"uncertainties": 0}, good | {"uncertainty_details": []},
                  good | {"uncertainties": 2, "uncertainty_details": [detail, detail]}]
@@ -914,6 +919,11 @@ class HarnessTests(unittest.TestCase):
             with self.subTest(snapshot=snapshot), self.assertRaises(smoke.FixtureFailure):
                 smoke.require_capture_effects(snapshot, receipt, 2)
         with self.assertRaises(smoke.FixtureFailure): smoke.require_capture_effects(good, {"actor": None}, 2)
+        for value in (None, False, True, "0", -1, 1, 128):
+            with self.subTest(capture_reviews=value), self.assertRaises(smoke.FixtureFailure):
+                smoke.require_capture_effects(good | {"capture_reviews": value}, receipt, 2)
+        with self.assertRaises(smoke.FixtureFailure):
+            smoke.require_capture_effects({key: value for key, value in good.items() if key != "capture_reviews"}, receipt, 2)
 
     def test_root_provider_turns_exclude_native_child_prompts(self):
         receipts = [self.receipt("SessionStart"), self.receipt("UserPromptSubmit"),
@@ -991,6 +1001,161 @@ class HarnessTests(unittest.TestCase):
                 with mock.patch.object(smoke, "run", cancel_run), mock.patch.object(sys, "argv", ["fixture", "--tempo", "unused", "--helper", "unused", "--evidence", str(evidence)]), mock.patch("builtins.print"):
                     self.assertEqual(smoke.main(), 1)
                 self.assertEqual(json.loads(evidence.read_text())["failure_category"], "fixture_cancelled")
+
+
+class InstallIntegrationTests(unittest.TestCase):
+    def test_codex_installs_before_trust_and_confirms_current_status_before_measurement(self):
+        class MeasurementReached(Exception): pass
+        for invalid_install in (False, True):
+            with self.subTest(invalid_install=invalid_install), tempfile.TemporaryDirectory(prefix="tempo-install-") as tmp:
+                root = Path(tmp).resolve(); home = root / "synthetic-home"; home.mkdir()
+                source, helper, runtime = root / "source-tempo", root / "helper", root / "runtime"
+                for path in (source, helper, runtime): path.write_text("inert build")
+                events, launches = [], []
+                project = root / "project"
+                def result(confirmed):
+                    doc = self.profile(confirmed)
+                    row = doc["hooks"][0]; row["path"] = str(project)
+                    row["profile"]["context"]["path"] = str(project)
+                    return doc
+                def bounded(argv, _env, _cwd, **_kwargs):
+                    if argv[0] == "/usr/bin/git": return b""
+                    self.assertEqual(argv[:2], [str(helper), "fixture"])
+                    action = argv[2]; events.append(action)
+                    if action == "link": return b""
+                    if action == "read": return json.dumps({"receipts": []}).encode()
+                    self.assertEqual(argv[-4:], [str(project), str(runtime), str(root / "tempo"), "user"])
+                    if action == "install":
+                        _, _, definitions = self.definitions(root, "codex")
+                        (home / ".codex/hooks.json").write_text(json.dumps(definitions))
+                        doc = result(False)
+                        if invalid_install: doc["hooks"][0]["profile"]["capture_eligible"] = True
+                        return json.dumps(doc).encode()
+                    return json.dumps(result(action == "confirm")).encode()
+                def trust(*_args):
+                    events.append("trust")
+                    config = home / ".codex/config.toml"
+                    config.write_text(config.read_text() + '\n[hooks.state."inert-review"]\nenabled = true\ntrusted_hash = "inert"\n')
+                class Terminal:
+                    def __init__(self, *_args):
+                        launches.append(True)
+                        if len(launches) == 2:
+                            events.append("measure")
+                            raise MeasurementReached()
+                    def close(self): pass
+                model = mock.Mock()
+                model.server.server_port, model.requests, model.error = 43210, [], None
+                model.counts, model.entry_count, model.title_count = {}, 0, 0
+                # No environment variable is changed and no process is started.
+                # Only the Path returned for this read is redirected to an inert
+                # fixture; all other reads/writes remain inside our temp tree.
+                real_home = os.environ["HOME"]
+                def fixture_path(value): return home if str(value) == real_home else Path(value)
+                report = {}
+                with mock.patch.dict(os.environ, {"RUNNER_TEMP": str(root.parent)}), \
+                     mock.patch.object(smoke, "Path", side_effect=fixture_path), \
+                     mock.patch.object(smoke, "hosted_precondition"), mock.patch.object(smoke, "require_absent"), \
+                     mock.patch.object(smoke.tempfile, "mkdtemp", return_value=str(root)), \
+                     mock.patch.object(smoke, "download_runtime", return_value=runtime), \
+                     mock.patch.object(smoke, "bounded_run", side_effect=bounded), \
+                     mock.patch.object(smoke, "Model", return_value=model), \
+                     mock.patch.object(smoke, "Terminal", Terminal), mock.patch.object(smoke, "normal_trust", side_effect=trust), \
+                     mock.patch.object(smoke, "close_native"):
+                    args = mock.Mock(tempo=str(source), helper=str(helper))
+                    if invalid_install:
+                        with self.assertRaisesRegex(smoke.FixtureFailure, "installed_profile_missing"):
+                            smoke.run(args, report)
+                        self.assertEqual(events, ["link", "install"])
+                        self.assertEqual(launches, [])
+                    else:
+                        with self.assertRaises(MeasurementReached): smoke.run(args, report)
+                        self.assertEqual(events[:7], ["link", "install", "trust", "status", "confirm", "read", "measure"])
+                    self.assertEqual(report["hook_diagnostics"], {"status": "unavailable", "counts": []})
+                    self.assertEqual(report["diagnostic_source"], "host_managed_stderr")
+                    self.assertFalse((root / "hook-errors").exists())
+
+    def definitions(self, root, host):
+        events = smoke.EVENT_ORDER if host == "codex" else (
+            "SessionStart", "SessionEnd", "UserPromptSubmit", "Stop", "SubagentStart", "SubagentStop",
+            "PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest", "StopFailure", "TaskCreated", "TaskCompleted")
+        command = "'" + str(root / "tempo") + "' hook " + host + " --input-stdin"
+        return events, command, {"hooks": {event: [{"hooks": [{"type": "command", "command": command, "timeout": 2}]}] for event in events}}
+
+    def test_exact_production_commands_and_full_inventory_without_redirection(self):
+        with tempfile.TemporaryDirectory(prefix="tempo-install-") as tmp:
+            root = Path(tmp)
+            for host in ("codex", "claude"):
+                events, command, doc = self.definitions(root, host)
+                path = root / "settings.json"
+                path.write_text(json.dumps(doc))
+                self.assertEqual(smoke.require_installed_definitions(path, root / "tempo", host, events), command)
+                self.assertNotIn("2>>", command)
+                self.assertFalse((root / "hook-errors").exists())
+
+    def test_installed_definitions_reject_missing_extra_edited_async_or_grants(self):
+        with tempfile.TemporaryDirectory(prefix="tempo-install-") as tmp:
+            root = Path(tmp); events, _, doc = self.definitions(root, "codex")
+            mutations = (
+                lambda d: d["hooks"].pop("Stop"),
+                lambda d: d["hooks"].update(ForeignEvent=[]),
+                lambda d: d["hooks"]["Stop"].append(copy.deepcopy(d["hooks"]["Stop"][0])),
+                lambda d: d["hooks"]["Stop"][0]["hooks"][0].update(command="/tmp/other hook codex --input-stdin"),
+                lambda d: d["hooks"]["Stop"][0]["hooks"][0].update(command="'" + str(root / "tempo") + "' hook codex --input-stdin 2>> /tmp/log"),
+                lambda d: d["hooks"]["Stop"][0]["hooks"][0].update(**{"async": True}),
+                lambda d: d["hooks"]["Stop"][0]["hooks"][0].update(timeout=1),
+                lambda d: d.update(permissions={"allow": ["*"]}),
+            )
+            for mutate in mutations:
+                candidate = copy.deepcopy(doc); mutate(candidate)
+                path = root / "settings.json"; path.write_text(json.dumps(candidate))
+                with self.assertRaises(smoke.FixtureFailure):
+                    smoke.require_installed_definitions(path, root / "tempo", "codex", events)
+            # Duplicate JSON fields cannot conceal an edited definition.
+            path.write_text('{"hooks":{},"hooks":' + json.dumps(doc["hooks"]) + '}')
+            with self.assertRaises(smoke.FixtureFailure):
+                smoke.require_installed_definitions(path, root / "tempo", "codex", events)
+
+    def profile(self, confirmed):
+        return {"contract_version": 1, "hooks": [{"host": "codex", "scope": "user", "path": "/tmp/project", "runtime_version": "0.159.3",
+            "state": "awaiting_real_event" if confirmed else "approval_required", "ordering": "supported" if confirmed else "unavailable",
+            "last_real_event": None, "profile": {"basis": "operator_declared" if confirmed else "none", "capture_eligible": confirmed,
+                "fingerprint": "a" * 64, "declaration_version": "tempo-native-hooks-v1", "context": {"host": "codex", "scope": "user",
+                "path": "/tmp/project", "runtime_version": "0.159.3", "surface": "local", "inventory_version": "tempo-installed-static-v1",
+                "artifacts": [{"role": role, "path": "/tmp/" + role, "sha256": "b" * 64}
+                              for role in ("runtime", "executable", "definitions", "skill")], "conflicts": []}}}]}
+
+    def test_static_and_confirmed_profile_never_claim_receiving_or_real_event(self):
+        for confirmed in (False, True):
+            doc = self.profile(confirmed)
+            result = smoke.require_installed_profile(doc, "codex", "user", Path("/tmp/project"), "0.159.3", confirmed)
+            self.assertEqual(result["fingerprint"], "a" * 64)
+            for mutate in (
+                lambda d: d["hooks"][0].update(state="receiving"),
+                lambda d: d["hooks"][0].update(last_real_event="2026-10-02T12:00:00Z"),
+                lambda d: d["hooks"][0].update(scope="project"),
+                lambda d: d["hooks"][0]["profile"]["context"].update(inventory_version=""),
+                lambda d: d["hooks"][0]["profile"]["context"].update(conflicts=["foreign"]),
+                lambda d: d["hooks"][0]["profile"].update(basis="host_observed"),
+                lambda d: d["hooks"][0]["profile"].update(capture_eligible=not confirmed),
+            ):
+                bad = copy.deepcopy(doc); mutate(bad)
+                with self.assertRaises(smoke.FixtureFailure):
+                    smoke.require_installed_profile(bad, "codex", "user", Path("/tmp/project"), "0.159.3", confirmed)
+
+    def test_complete_inventory_comparison_detects_all_roles_and_absent_source_arrival(self):
+        original = self.profile(True)["hooks"][0]["profile"]
+        original["context"]["artifacts"].append({"role": "configuration", "path": "/tmp/missing", "sha256": "absent"})
+        self.assertEqual(smoke.require_unchanged_profile(original, copy.deepcopy(original)),
+                         {"available": True, "all_matches": True, "artifact_count": 5, "sampled_by": "production_status"})
+        for index in range(5):
+            drifted = copy.deepcopy(original)
+            drifted["context"]["artifacts"][index]["sha256"] = "c" * 64
+            with self.assertRaisesRegex(smoke.FixtureFailure, "installed_profile_drift"):
+                smoke.require_unchanged_profile(original, drifted)
+        drifted = copy.deepcopy(original)
+        drifted["context"]["artifacts"].append({"role": "repository", "path": "/tmp/new-boundary", "sha256": "c" * 64})
+        with self.assertRaisesRegex(smoke.FixtureFailure, "installed_profile_drift"):
+            smoke.require_unchanged_profile(original, drifted)
 
 
 if __name__ == "__main__":

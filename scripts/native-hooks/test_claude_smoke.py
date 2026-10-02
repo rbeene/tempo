@@ -66,6 +66,82 @@ def result(tool, text='tempo-fixture-read-ok'):
     return {'type': 'tool_result', 'tool_use_id': tool, 'content': [{'type': 'text', 'text': text}]}
 
 
+class InertClaudeInstallation:
+    """Synthetic installer replies and files; never runs a host or helper process."""
+    def __init__(self, case, helper, runtime, root, state='state', policy='policy'):
+        self.case, self.helper, self.runtime, self.root = case, helper, runtime, root
+        self.project = root / 'project'
+        self.state, self.policy = root / state, root / policy
+        self.definitions = self.project / '.claude' / 'settings.json'
+        self.skill = root / 'installed-skill.md'
+        self.phase, self.fingerprint = 'new', None
+        for path in (helper, runtime, root, self.project, self.state, self.policy, self.definitions, self.skill):
+            case.assertTrue(path.is_absolute())
+            case.assertTrue(path == root.parent or root.parent in path.parents)
+
+    def context(self):
+        paths = (('runtime', self.runtime), ('executable', self.root / 'tempo'),
+                 ('definitions', self.definitions), ('skill', self.skill))
+        artifacts = []
+        for role, path in paths:
+            self.case.assertTrue(path.is_file())
+            self.case.assertFalse(path.is_symlink())
+            artifacts.append({'role': role, 'path': str(path),
+                              'sha256': hashlib.sha256(path.read_bytes()).hexdigest()})
+        self.case.assertEqual(len({item['path'] for item in artifacts}), 4)
+        return {'host': 'claude', 'scope': 'project', 'path': str(self.project),
+                'runtime_version': '2.1.286', 'surface': 'local',
+                'inventory_version': 'tempo-installed-static-v1',
+                'artifacts': artifacts, 'conflicts': []}
+
+    def profile(self, confirmed):
+        return {'contract_version': 1, 'hooks': [{'host': 'claude', 'scope': 'project',
+            'path': str(self.project), 'runtime_version': '2.1.286',
+            'state': 'awaiting_real_event' if confirmed else 'approval_required',
+            'ordering': 'supported' if confirmed else 'unavailable', 'last_real_event': None,
+            'profile': {'basis': 'operator_declared' if confirmed else 'none',
+                'capture_eligible': confirmed, 'fingerprint': self.fingerprint,
+                'declaration_version': 'tempo-native-hooks-v1', 'context': self.context()}}]}
+
+    def reply(self, argv, timeout):
+        self.case.assertEqual(timeout, 20)
+        self.case.assertIn(argv[2], ('install', 'status', 'confirm'))
+        action = argv[2]
+        self.case.assertEqual(list(argv), [str(self.helper), 'fixture', action,
+            str(self.state), str(self.policy), str(self.project), str(self.runtime),
+            str(self.root / 'tempo'), 'project', '--host', 'claude'])
+        if action == 'install':
+            self.case.assertEqual(self.phase, 'new')
+            self.case.assertTrue(self.project.is_dir())
+            self.case.assertFalse(self.definitions.parent.exists())
+            self.definitions.parent.mkdir(mode=0o700)
+            command = "'" + str(self.root / 'tempo') + "' hook claude --input-stdin"
+            definitions = {'hooks': {event: [{'hooks': [{'type': 'command',
+                'command': command, 'timeout': 2}]}] for event in smoke.INSTALLED_EVENTS}}
+            with self.definitions.open('x') as out:
+                os.chmod(self.definitions, 0o600)
+                out.write(json.dumps(definitions))
+            with self.skill.open('x') as out:
+                os.chmod(self.skill, 0o600)
+                out.write('Inert operator-declared fixture; no host observation.\n')
+            self.case.assertEqual(self.definitions.parent.stat().st_mode & 0o777, 0o700)
+            self.case.assertEqual(self.definitions.stat().st_mode & 0o777, 0o600)
+            self.case.assertEqual(self.skill.stat().st_mode & 0o777, 0o600)
+            self.case.assertEqual(len(definitions['hooks']), 13)
+            self.fingerprint = hashlib.sha256(json.dumps(self.context(), sort_keys=True,
+                separators=(',', ':')).encode()).hexdigest()
+            self.phase = 'installed'
+            confirmed = False
+        elif action == 'status':
+            self.case.assertIn(self.phase, ('installed', 'confirmed'))
+            confirmed = self.phase == 'confirmed'
+            self.phase = 'measured' if confirmed else 'inspected'
+        else:
+            self.case.assertEqual(self.phase, 'inspected')
+            self.phase, confirmed = 'confirmed', True
+        return json.dumps(self.profile(confirmed)).encode()
+
+
 class IsolationTests(unittest.TestCase):
     def test_hosted_guard_rejects_modified_home_platform_and_host_variables(self):
         smoke.hosted_precondition(hosted_env(), 'Linux', 'x86_64', '/home/runner')
@@ -581,16 +657,37 @@ class AcceptanceTests(unittest.TestCase):
                 smoke.run(types.SimpleNamespace(),{})
             download.assert_not_called();mkdir.assert_not_called();provider.assert_not_called()
 
-    def test_settings_have_only_direct_synchronous_hooks_and_no_grants(self):
-        with tempfile.TemporaryDirectory(prefix='tempo-') as d:
-            root=Path(d);(root/'tempo').write_text('inert')
-            settings=smoke.prepare_settings(root/'tempo',root/'errors')
-            self.assertEqual(set(settings),{'hooks'})
-            self.assertEqual(set(settings['hooks']),set(smoke.EVENTS))
-            for groups in settings['hooks'].values():
-                self.assertEqual(groups,[{'hooks':[{'type':'command','command':str(root/'tempo')+' hook claude --input-stdin 2>> '+str(root/'errors'),'timeout':2}]}])
-            self.assertEqual((root/'errors').stat().st_mode & 0o777,0o600)
-            with self.assertRaises(smoke.FixtureFailure):smoke.prepare_settings(root/'tempo',root/'errors')
+    def test_full_installed_inventory_is_distinct_from_native_observed_coverage(self):
+        self.assertEqual(len(smoke.INSTALLED_EVENTS), 13)
+        self.assertEqual(len(smoke.EVENTS), 8)
+        self.assertTrue(set(smoke.EVENTS) < set(smoke.INSTALLED_EVENTS))
+        self.assertEqual(set(smoke.INSTALLED_EVENTS) - set(smoke.EVENTS),
+                         {'PostToolUseFailure', 'PermissionRequest', 'StopFailure', 'TaskCreated', 'TaskCompleted'})
+        with tempfile.TemporaryDirectory(prefix='tempo-installed-qa-') as tmp:
+            fixture = Path(tmp).resolve(); root = fixture / 'owned'
+            root.mkdir(mode=0o700); project = root / 'project'; project.mkdir(mode=0o700)
+            helper, runtime = fixture / 'helper', fixture / 'runtime'
+            for path in (helper, runtime, root / 'tempo'): path.write_text('inert file')
+            installation = InertClaudeInstallation(self, helper, runtime, root)
+            def call(action):
+                argv = [str(helper), 'fixture', action, str(root / 'state'), str(root / 'policy'),
+                        str(project), str(runtime), str(root / 'tempo'), 'project', '--host', 'claude']
+                return json.loads(installation.reply(argv, 20))
+            smoke.require_installed_profile(call('install'), 'claude', 'project', project, '2.1.286', False)
+            command = smoke.require_installed_definitions(installation.definitions, root / 'tempo', 'claude', smoke.INSTALLED_EVENTS)
+            self.assertEqual(command, "'" + str(root / 'tempo') + "' hook claude --input-stdin")
+            smoke.require_installed_profile(call('status'), 'claude', 'project', project, '2.1.286', False)
+            before = smoke.require_installed_profile(call('confirm'), 'claude', 'project', project, '2.1.286', True)
+            after = smoke.require_installed_profile(call('status'), 'claude', 'project', project, '2.1.286', True)
+            self.assertEqual(smoke.require_unchanged_profile(before, after),
+                {'available': True, 'all_matches': True, 'artifact_count': 4, 'sampled_by': 'production_status'})
+            self.assertEqual(installation.phase, 'measured')
+            with self.assertRaises(AssertionError): call('install')
+            definitions = json.loads(installation.definitions.read_text())
+            definitions['hooks']['SessionStart'][0]['hooks'][0]['command'] += ' 2>/dev/null'
+            installation.definitions.write_text(json.dumps(definitions))
+            with self.assertRaises(smoke.FixtureFailure):
+                smoke.require_installed_definitions(installation.definitions, root / 'tempo', 'claude', smoke.INSTALLED_EVENTS)
 
 
     def test_http_slow_trickle_cannot_extend_total_input_deadline(self):
@@ -759,14 +856,15 @@ class NativeApprovalDiagnosticTests(unittest.TestCase):
                 model.read = lambda: {'receipts': []}
                 provider = types.SimpleNamespace(server=types.SimpleNamespace(server_port=43210),
                     budget=smoke.ProviderBudget(), error=None, close=lambda: None)
+                installation = InertClaudeInstallation(self, helper, runtime, root)
                 def bounded(argv, *_args, **_kwargs):
                     if argv[0] == str(runtime):
                         if argv[1:] == ['--version']:
                             return b'2.1.286 (Claude Code)\n'
                         raise failure
                     action = argv[2]
-                    if action == 'confirm':
-                        return json.dumps({'basis': 'operator_declared', 'fingerprint': 'a' * 64}).encode()
+                    if action in ('install', 'status', 'confirm'):
+                        return installation.reply(argv, _kwargs['timeout'])
                     if action == 'read':
                         return b'{"receipts":[]}'
                     self.assertEqual(action, 'link')
@@ -1038,10 +1136,11 @@ class ProviderFirstRejectionTests(unittest.TestCase):
                 if injected is not None: provider.budget.first_rejections = copy.deepcopy(injected)
                 if terminal: provider.error = 'provider_protocol_failed'
             provider.server.server_close.side_effect = close_site
+            installation = InertClaudeInstallation(self, helper, runtime, root)
             def bounded(argv, *_args, **_kwargs):
                 if argv[0] == str(runtime):
                     return b'2.1.286 (Claude Code)\n' if argv[1:] == ['--version'] else b''
-                if argv[2] == 'confirm': return json.dumps({'basis': 'operator_declared', 'fingerprint': 'a'*64}).encode()
+                if argv[2] in ('install', 'status', 'confirm'): return installation.reply(argv, _kwargs['timeout'])
                 return b'{"receipts":[],"queued":0,"uncertainties":0,"capture_reviews":0}' if argv[2] == 'read' else b''
             def owned_root(**_kwargs): root.mkdir(); return str(root)
             real_home = os.environ['HOME']
@@ -1798,9 +1897,10 @@ class MessagesStructureTests(unittest.TestCase):
                 if structural is not self.ABSENT: setattr(provider.budget, '_first_messages_structure', copy.deepcopy(structural))
                 provider.error = terminal
             provider.server.server_close.side_effect = close_site
+            installation = InertClaudeInstallation(self, helper, runtime, root)
             def bounded(argv, *_args, **_kwargs):
                 if argv[0] == str(runtime): return b'2.1.286 (Claude Code)\n' if argv[1:] == ['--version'] else b''
-                if argv[2] == 'confirm': return json.dumps({'basis': 'operator_declared', 'fingerprint': 'a'*64}).encode()
+                if argv[2] in ('install', 'status', 'confirm'): return installation.reply(argv, _kwargs['timeout'])
                 return b'{"receipts":[],"queued":0,"uncertainties":0,"capture_reviews":0}' if argv[2] == 'read' else b''
             def owned_root(**_kwargs): root.mkdir(); return str(root)
             real_home = os.environ['HOME']
@@ -1930,6 +2030,7 @@ class PermissionModeContractTests(unittest.TestCase):
             provider.budget, provider.error, provider.shutdown = smoke.ProviderBudget(), None, threading.Event()
             provider.server, provider.thread = mock.Mock(server_port=43210), mock.Mock()
             observed, versions = [], []
+            installation = InertClaudeInstallation(self, helper, runtime, root, 'activity.json', 'hooks-state.json')
             def bounded(argv, env, project, timeout):
                 if argv[0] == str(runtime):
                     if argv[1:] == ['--version']:
@@ -1937,8 +2038,8 @@ class PermissionModeContractTests(unittest.TestCase):
                         return b'2.1.286 (Claude Code)\n'
                     observed.append((list(argv), dict(env), project, timeout))
                     raise smoke.FixtureFailure('fixture_cancelled')
-                self.assertEqual(argv[0], str(helper)); self.assertEqual(timeout, 8)
-                if argv[2] == 'confirm': return json.dumps({'basis': 'operator_declared', 'fingerprint': 'a'*64}).encode()
+                self.assertEqual(argv[0], str(helper)); self.assertEqual(timeout, 20 if argv[2] in ('install', 'status', 'confirm') else 8)
+                if argv[2] in ('install', 'status', 'confirm'): return installation.reply(argv, timeout)
                 if argv[2] == 'read': return b'{"receipts":[]}'
                 self.assertEqual(argv[2], 'link'); return b''
             def owned_root(**_kwargs): root.mkdir(); return str(root)
@@ -2417,6 +2518,7 @@ class ContinuationTests(unittest.TestCase):
             provider.server,provider.thread=mock.Mock(server_port=43210),mock.Mock()
             if fault=='provider': provider.server.server_close.side_effect=lambda:smoke.record_failure(provider,'provider_protocol_failed')
             print_calls=[]; reads=[]
+            installation = InertClaudeInstallation(self, helper, runtime, root)
             def bounded(argv,*_args,**_kwargs):
                 if argv[0]==str(runtime):
                     if argv[1:]==['--version']: return b'2.1.286 (Claude Code)\n'
@@ -2426,7 +2528,7 @@ class ContinuationTests(unittest.TestCase):
                         body=self.continuation_body(self.notification(tokens=self.CANARY))
                         h=self.handler(provider,body); h.do_POST(); self.assert_empty_rejection(h)
                     raise smoke.FixtureFailure('fixture_cancelled')
-                if argv[2]=='confirm': return json.dumps({'basis':'operator_declared','fingerprint':'a'*64}).encode()
+                if argv[2] in ('install','status','confirm'): return installation.reply(argv,_kwargs['timeout'])
                 if argv[2]=='read':
                     reads.append(argv); return b'{"receipts":[],"queued":0,"uncertainties":0,"capture_reviews":0}'
                 return b''
@@ -2728,6 +2830,7 @@ class HelloProbeTests(unittest.TestCase):
             for path in (runtime,tempo,helper): path.write_text('inert file')
             model,snap=_continuation_terminal_fixture(); provider=self.provider(); provider.conversation=model
             observations=[]
+            installation = InertClaudeInstallation(self, helper, runtime, root)
             def bounded(argv,*_args,**_kwargs):
                 if argv[0]==str(runtime):
                     if argv[1:]==['--version']: return b'2.1.286 (Claude Code)\n'
@@ -2738,7 +2841,7 @@ class HelloProbeTests(unittest.TestCase):
                         self.invoke(provider,headers); observations.append((provider.error,provider.budget.project_first_rejections()))
                         if kind=='duplicate': self.invoke(provider)
                     raise smoke.FixtureFailure('fixture_cancelled')
-                if argv[2]=='confirm': return json.dumps({'basis':'operator_declared','fingerprint':'a'*64}).encode()
+                if argv[2] in ('install','status','confirm'): return installation.reply(argv,_kwargs['timeout'])
                 return b'{"receipts":[]}' if argv[2]=='read' else b''
             def owned_root(**_kwargs): root.mkdir(); return str(root)
             real_home=os.environ['HOME']
