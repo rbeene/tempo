@@ -132,7 +132,7 @@ Failures with `--json` (and the new commands' `--non-interactive`) put one envel
 | 2 | `input_required`, `invalid_transition`, `recovery_bounds`, `unsupported_contract` |
 | 5 | `binding_unavailable`, `actor_not_found`, `uncertainty_not_found` |
 | 6 | `attribution_conflict`, `binding_in_use`, `revision_conflict`, `request_conflict`, `event_conflict`, `event_gap`, `ordering_unavailable`, `clock_conflict`, `state_busy` |
-| 8 | `local_write_unknown` (local durability uncertainty); existing `uncertain_write` remains remote uncertainty |
+| 8 | `local_write_unknown` (local durability uncertainty), `credential_write_unknown` (native credential/config effect uncertain); existing `uncertain_write` remains remote uncertainty |
 
 `state_busy` is retryable for reads and same-ID local mutations; conflict/recovery errors are not. Exit 8 sets `uncertain: true`; other new errors set false. Existing codes/exits remain valid. Hook adapters translate errors to host-required success/output/deadline behavior so capture failure does not block agent execution; safe Tempo diagnostics still retain the failed category.
 
@@ -157,3 +157,7 @@ One owner saves/restores raw mode, alternate screen, cursor and color state. Run
 The machine vectors are acceptance inputs and expected observations, not claims that the feature already passes. They require a future implementation test driver. No reference production engine or pretend file-existence tests are introduced here. Fixtures use short, explicitly supplied clock/evidence samples; the long recovery example supplies an explicit source-loss event. Consumers must test durable restart behavior against real storage and process boundaries, not only an in-memory reducer.
 
 Required independent checks: ordered transitions/replay after restart; parent/nested actor union; parallel projects/computers; precise recovery bounds and preserved gap; uncertainty after resume/replacement/normal stop; mapping conflicts and worktree discovery; clock/sleep/source-loss evidence; simultaneous store writers and outbox claims; no credentials/network for local status; and PTY selection/restoration. Runtime adapters additionally need official-payload and real supported-host smoke evidence. Synchronization additionally needs mock-server ambiguous-write/reconciliation tests. None of these permit personal credentials, real Harvest mutations, personal agent settings changes, Titan or AWS operations.
+
+### Shipped guided authentication boundary
+
+Setup and direct auth commands use the same bounded native helper and account-selection operations. Authentication/config writes serialize across the per-user credential namespace; a dispatched helper write with no conclusive reply has unknown effects even after the helper is killed and reaped. `credential_write_unknown` is nonretryable and carries safe `details.effects` for credential/config. Inspect status and config before an explicit replacement; no automatic replay or credential rollback is implied. Guided setup confirms authentication and linking as separate steps; `error.details.completed_steps` and human diagnostics preserve earlier completion when a later step fails. Finite setup and default doctor only inspect local account configuration/bindings and known capability limits.

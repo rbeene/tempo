@@ -13,7 +13,7 @@ func duplicateTerminal(f *os.File) (*os.File, func(), error) {
 	if e != nil {
 		return nil, nil, e
 	}
-	dup, e := unix.Dup(fd)
+	dup, e := unix.FcntlInt(uintptr(fd), unix.F_DUPFD_CLOEXEC, 0)
 	if e != nil {
 		return nil, nil, e
 	}

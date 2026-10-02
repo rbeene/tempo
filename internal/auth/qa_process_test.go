@@ -75,6 +75,8 @@ func TestQAProcessSyntheticChild(t *testing.T) {
 	case "two":
 		fmt.Fprint(out, `{"effects":{"credential":"applied","config":"saved"}} {}`)
 	}
+	in.Close()
+	out.Close()
 	os.Exit(0)
 }
 func qaProcess(mode string, d time.Duration) ProcessRunner {

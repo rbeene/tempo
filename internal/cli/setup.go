@@ -35,6 +35,12 @@ func executeGuided(ctx context.Context, p parsed, in io.Reader, out io.Writer, d
 				return nil, e
 			}
 			defer func() {
+				if err != nil && (errors.Is(err, context.Canceled) || safeError(err).Code == "network") {
+					var cause *terminal.ExitError
+					if errors.As(context.Cause(session.Context()), &cause) {
+						err = cause
+					}
+				}
 				if e := session.Close(); e != nil && err == nil {
 					err = &terminal.ExitError{Code: 1}
 				}

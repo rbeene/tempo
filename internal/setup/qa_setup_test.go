@@ -24,7 +24,7 @@ func TestQAFiniteReadinessAndDoctorAreReadOnly(t *testing.T) {
 				t.Fatal("local readiness read credentials")
 				return auth.NativeReply{}, nil
 			}), NewProvider: func(string, string) harvest.Provider { t.Fatal("local readiness constructed provider"); return nil }, PersistentAvailable: func() bool { return true }})
-			s := New(Options{Auth: a, Activity: activity.New(activity.Options{Path: filepath.Join(dir, "state")})})
+			s := New(Options{Auth: a, Activity: activity.New(activity.Options{Path: filepath.Join(dir, "activity", "state")})})
 			if op == "setup" {
 				r, e := s.Run(context.Background(), Input{Path: dir}, nil)
 				if e != nil {
@@ -451,5 +451,40 @@ func TestQADoctorLocallyDetectsMalformedConfigAndCorruptState(t *testing.T) {
 				t.Fatal("read-only doctor altered corrupt evidence")
 			}
 		})
+	}
+}
+func TestQAGuidedChildBindingDoesNotReuseInheritedParentRevision(t *testing.T) {
+	s, _, in := qaGuidedLink(t)
+	in.ProjectID = "3"
+	in.TaskID = "4"
+	in.Timezone = "UTC"
+	parent, e := s.Link(context.Background(), in, nil)
+	if e != nil {
+		t.Fatal(e)
+	}
+	child := filepath.Join(in.Path, "child")
+	if e = os.Mkdir(child, 0700); e != nil {
+		t.Fatal(e)
+	}
+	in.Path = child
+	in.TaskID = ""
+	in.Timezone = ""
+	in.RequestID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	p := &qaSetupPrompt{t: t, confirm: true}
+	r, e := s.Link(context.Background(), in, p)
+	if e != nil {
+		t.Fatalf("inherited defaults could not create exact child binding: %v", e)
+	}
+	if r.Binding.ID == parent.Binding.ID || r.Binding.Attribution != parent.Binding.Attribution {
+		t.Fatalf("child changed inherited parent identity/attribution %+v", r)
+	}
+	list, e := s.options.Activity.ListBindings(context.Background())
+	if e != nil || len(list.Bindings) != 2 {
+		t.Fatalf("parent was replaced instead of child override %+v %v", list, e)
+	}
+	for _, b := range list.Bindings {
+		if b.ID == parent.Binding.ID && b.Revision != parent.Binding.Revision {
+			t.Fatal("child confirmation revised parent binding")
+		}
 	}
 }

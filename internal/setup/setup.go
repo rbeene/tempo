@@ -174,7 +174,8 @@ func (s *Service) Link(ctx context.Context, in activity.LinkInput, p terminal.Pr
 		scope += " (all Git worktrees inherit this mapping)"
 	}
 	confirm := fmt.Sprintf("Link %s to account %s / project %s / task %s / %s?", scope, in.AccountID, in.ProjectID, in.TaskID, in.Timezone)
-	if saved != nil {
+	exactSaved := saved != nil && saved.Kind == location.Kind && saved.Locator == location.Locator
+	if exactSaved {
 		confirm = "Update existing mapping: " + confirm
 	}
 	yes, e := p.Confirm(ctx, terminal.Sanitize(confirm))
@@ -184,7 +185,7 @@ func (s *Service) Link(ctx context.Context, in activity.LinkInput, p terminal.Pr
 	if !yes {
 		return empty, &terminal.ExitError{Code: 0}
 	}
-	if saved != nil && in.IfRevision == "" {
+	if exactSaved && in.IfRevision == "" {
 		in.IfRevision = saved.Revision
 	}
 	return bounded(ctx, commit)
@@ -212,6 +213,19 @@ func readiness() Status {
 func (s *Service) Run(ctx context.Context, in Input, p terminal.Prompter) (Status, error) {
 	result := readiness()
 	if p == nil {
+		if _, e := s.options.Auth.EffectiveAccount(in.AccountID); e != nil {
+			return result, e
+		}
+		shown, e := s.options.Activity.ShowBinding(ctx, activity.ShowBindingInput{Path: in.Path})
+		if e != nil {
+			var ae *activity.Error
+			if !errors.As(e, &ae) || ae.Code != "not_found" {
+				return result, e
+			}
+		}
+		if len(shown.Bindings) > 0 {
+			result.Steps[1] = Step{"bindings.link", "complete", []string{}, "Local mapping exists; remote assignment access has not been checked."}
+		}
 		return result, nil
 	}
 	loginCommitted := false
@@ -287,6 +301,22 @@ func (s *Service) Run(ctx context.Context, in Input, p terminal.Prompter) (Statu
 func (s *Service) Doctor(ctx context.Context, check bool) (Diagnostics, error) {
 	action := "auth.status"
 	result := Diagnostics{ContractVersion: 1, Items: []Diagnostic{{"credential_unverified", "info", "Credential validity has not been checked; use doctor --check.", &action}, {"hooks_unverified", "warning", "No installed hook or delivered event has been verified.", nil}, {"sync_unconfigured", "warning", "Upload configuration and background delivery are not verified.", nil}}}
+	account, e := s.options.Auth.EffectiveAccount("")
+	if e != nil {
+		result.Items = append(result.Items, Diagnostic{"config_invalid", "error", "Local account configuration is invalid or unreadable.", nil})
+	} else if account == "" {
+		result.Items = append(result.Items, Diagnostic{"account_missing", "warning", "No account is selected.", &action})
+	} else {
+		result.Items = append(result.Items, Diagnostic{"account_configured", "info", "A local or environment account is selected; access is unverified.", &action})
+	}
+	bindings, e := s.options.Activity.ListBindings(ctx)
+	if e != nil {
+		result.Items = append(result.Items, Diagnostic{"state_invalid", "error", "Local activity state is invalid or unreadable; preserve it for inspection.", nil})
+	} else if len(bindings.Bindings) == 0 {
+		result.Items = append(result.Items, Diagnostic{"bindings_missing", "warning", "No local project mapping exists.", nil})
+	} else {
+		result.Items = append(result.Items, Diagnostic{"bindings_present", "info", "Local project mappings exist; assignment access is unverified.", nil})
+	}
 	if check {
 		r, e := bounded(ctx, func(c context.Context) (auth.Result, error) { return s.options.Auth.Status(c, true, "") })
 		if e != nil {

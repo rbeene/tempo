@@ -1,8 +1,8 @@
 # Architecture and boundaries
 
-Tempo is a standard-library Go executable. macOS builds use cgo for the system Security/CoreFoundation credential bridge and native awake/suspend clock counters. No runtime daemon, Go installation, external library download, subprocess credential command, or package manager is required to run the built binary. Stripping uses normal Go linker flags, never executable packers.
+Tempo is a small Go executable with golang.org/x/term and x/sys for terminal ownership. macOS builds use cgo for the system Security/CoreFoundation credential bridge and native awake/suspend clock counters. No runtime daemon, Go installation, external library download, external credential utility, or package manager is required to run the built binary. Stripping uses normal Go linker flags, never executable packers.
 
-`cmd/tempo` supplies cancellation and a two-minute command deadline. `internal/cli` owns validation, account/user scope and command behavior. `internal/harvest.Provider` is the small injected provider seam; the Harvest adapter owns HTTP, pagination and safe errors. `internal/auth.Store` owns credential persistence, separate from account configuration. A future tracker can implement the small provider boundary and map its data at the command boundary; no registry, generic plugin system or speculative framework is present.
+`cmd/tempo` supplies cancellation and a two-minute finite-command deadline. Eligible interactive setup/link sessions have no command-wide timeout; each API action remains bounded. `internal/cli` owns validation, account/user scope and command behavior. `internal/harvest.Provider` is the small injected provider seam; the Harvest adapter owns HTTP, pagination and safe errors. `internal/auth.Store` owns credential persistence, separate from account configuration. A future tracker can implement the small provider boundary and map its data at the command boundary; no registry, generic plugin system or speculative framework is present.
 
 ## Credentials
 
@@ -10,7 +10,7 @@ Tempo is a standard-library Go executable. macOS builds use cgo for the system S
 
 Configuration contains only `account_id`. It is validated strictly, written atomically with mode 0600, and newly created directories use 0700. Existing parent permissions are not changed. Login validates the token and selected Harvest account before changing local storage, prepares configuration, then replaces the token; storage failure restores the previous account where possible. Partial local persistence failures report the affected step without secrets. Logout removes the saved token and account, but cannot unset a parent environment or revoke a Harvest token.
 
-Development and CI use injected synthetic stores and mock servers. No test calls the actual Keychain. The native bridge is compiled and vetted, but a real user's login and OS permission prompts remain a manual acceptance step.
+Development and CI use injected synthetic stores and mock servers. No test calls the actual Keychain. The native bridge is compiled and vetted, while real user credential provisioning remains a manual acceptance step; helper operations never open OS permission prompts.
 
 ## API and reliability
 
@@ -28,7 +28,7 @@ Public PR verification uses one ephemeral GitHub-hosted Ubuntu job, read-only to
 
 ## Planned local agent activity
 
-The [agent activity contract](agent-contracts.md) specifies the next implementation slices: one local union timer per computer/account/project, durable actor history and uncertainty, immutable attribution, and shared CLI/UI actions. Its [operation catalog](agent-operations.json) and [acceptance vectors](agent-acceptance.json) are design contracts, not shipped features. They preserve the existing Harvest provider and direct time/timer commands. The planned independent sync worker and interactive lifetimes apply only when those features ship; the current executable behavior described above is unchanged.
+The [agent activity contract](agent-contracts.md) specifies the next implementation slices: one local union timer per computer/account/project, durable actor history and uncertainty, immutable attribution, and shared CLI/UI actions. Its [operation catalog](agent-operations.json) and [acceptance vectors](agent-acceptance.json) are design contracts, not shipped features. They preserve the existing Harvest provider and direct time/timer commands. The independent sync worker and dashboard remain planned; guided setup/link interactive lifetimes are implemented.
 
 ## Durable local activity
 
@@ -55,3 +55,11 @@ Binding and receipt decoding validates finite operation/result combinations, can
 `ObserveSource` accepts positive source loss, ordering unavailability or unknown restart continuity for an exact actor generation. `ObserveClock` persists computer-wide discontinuities. Neither extends confirmed work from silence or clock polling; constructing a new Service does not by itself imply source loss. Both use the common typed request ledger, including no-op receipts, before sampling or inspecting newer work. Host-specific detection and integration remain separate.
 
 Valid mutating recovery requests may discover a discontinuity before rejecting the requested time decision. The transaction then preserves quarantine and an exclusive safe error receipt; it does not claim successful detachment or resolution. Store durability errors take precedence, and same-ID replay checks durability before returning the original typed result/error. Pure syntax, revision and bounds failures without newly discovered safety evidence do not mutate state. A source observation's detection timestamp remains diagnostic evidence; erroneous forward jumps do not become permanent recovery bounds after the clock is corrected.
+
+## Shared authentication and terminal setup
+
+`internal/auth.Service` supplies login, logout, account selection, status and provider construction to CLI and future UI callers. Native access runs in an owned same-binary helper: bounded private inherited request/reply pipes carry at most 32 KiB of strict JSON; token input is capped at 16 KiB. No token is placed in arguments, inherited environment, files or ordinary output. The helper disables native UI. A five-second deadline closes pipes, kills/reaps the child and joins all I/O workers; a complete validated reply wins raced cancellation.
+
+All authentication/config mutations acquire the same per-user credential-namespace lock, independent of config/state overrides. The inherited lock descriptor remains owned by the helper if its parent dies. The helper validates its secure expected identity and establishes/retains the lock. Login captures its rollback baseline under this lock, saves account configuration, then stores the token. Only a definite token rejection permits restoring the baseline. Logout deletes first, then clears config without parsing malformed old config. Ambiguous post-dispatch failures report `credential_write_unknown`, affected-resource effects, and exit 8. This does not prevent a late effect already accepted by the OS; reconciliation never claims causal certainty.
+
+`internal/setup.Service` orchestrates separate confirmed operations and returns safe completed steps on later failures. `internal/terminal.Session` exclusively owns raw mode, close-on-exec duplicated descriptors and a bounded input pump. Raw Ctrl-C cancels the shared action context even while no prompt is waiting. Close joins the pump, restores original flags/termios and returns before process exit. Selection labels strip terminal controls. Linux/unsupported native backends guide users to environment authentication before collecting secrets. Tests use synthetic helper subprocesses, injected stores/providers and temporary PTYs only.

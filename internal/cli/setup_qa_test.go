@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"github.com/rbeene/tempo/internal/activity"
 	"github.com/rbeene/tempo/internal/auth"
 	"github.com/rbeene/tempo/internal/cli"
@@ -12,9 +13,11 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type qaForbiddenPrompt struct{ t *testing.T }
@@ -44,7 +47,7 @@ func TestQASetupMachineControlsOverrideInjectedTTY(t *testing.T) {
 				return auth.NativeReply{}, nil
 			})})
 			var out, stderr bytes.Buffer
-			code := cli.Run(context.Background(), []string{"setup", flag}, strings.NewReader(""), &out, &stderr, cli.Dependencies{Auth: a, Activity: activity.New(activity.Options{Path: filepath.Join(dir, "state")}), ConfigPath: filepath.Join(dir, "cfg"), Getenv: func(string) string { return "" }, Prompter: qaForbiddenPrompt{t}, TerminalEligible: func(io.Reader, io.Writer) bool { return true }})
+			code := cli.Run(context.Background(), []string{"setup", flag}, strings.NewReader(""), &out, &stderr, cli.Dependencies{Auth: a, Activity: activity.New(activity.Options{Path: filepath.Join(dir, "activity", "state")}), ConfigPath: filepath.Join(dir, "cfg"), Getenv: func(string) string { return "" }, Prompter: qaForbiddenPrompt{t}, TerminalEligible: func(io.Reader, io.Writer) bool { return true }})
 			if code != 0 || stderr.Len() != 0 {
 				t.Fatalf("setup exit=%d stderr=%s", code, stderr.String())
 			}
@@ -196,5 +199,165 @@ func TestQACLIBareLinkUsesEligibleProjectPicker(t *testing.T) {
 	bindings, e := act.ListBindings(context.Background())
 	if e != nil || len(bindings.Bindings) != 1 || bindings.Bindings[0].Attribution.ProjectID != "3" || bindings.Bindings[0].Attribution.TaskID != "4" {
 		t.Fatalf("guided CLI did not persist chosen mapping %+v %v", bindings, e)
+	}
+}
+
+type qaForbiddenLegacyStore struct{ t *testing.T }
+
+func (s qaForbiddenLegacyStore) Get() (string, error) {
+	s.t.Fatal("bounded operation invoked legacy Get")
+	return "", nil
+}
+func (s qaForbiddenLegacyStore) Set(string) error {
+	s.t.Fatal("bounded operation invoked legacy Set")
+	return nil
+}
+func (s qaForbiddenLegacyStore) Delete() error {
+	s.t.Fatal("bounded operation invoked legacy Delete")
+	return nil
+}
+func TestQACLIAuthUnknownEffectsExitEightAcrossWriters(t *testing.T) {
+	for _, command := range [][]string{{"auth", "logout", "--yes"}, {"accounts", "use", "11"}, {"config", "set-account", "11"}} {
+		t.Run(strings.Join(command, "-"), func(t *testing.T) {
+			dir := t.TempDir()
+			ctx, cancel := context.WithCancelCause(context.Background())
+			defer cancel(nil)
+			calls := 0
+			credential := "unchanged"
+			if command[0] == "auth" {
+				credential = "unknown"
+			}
+			a := auth.NewService(auth.Options{ConfigPath: filepath.Join(dir, "cfg"), LockPath: filepath.Join(dir, "owner.lock"), Getenv: func(k string) string {
+				if k == "HARVEST_TOKEN" {
+					return "synthetic-qa-secret"
+				}
+				return ""
+			}, PersistentAvailable: func() bool { return true }, NewProvider: func(string, string) harvest.Provider { return &fakeAPI{} }, Runner: auth.RunnerFunc(func(_ context.Context, r auth.NativeRequest, l *os.File) (auth.NativeReply, error) {
+				calls++
+				if l == nil {
+					t.Fatal("writer omitted mutation ownership")
+				}
+				if command[0] != "auth" && r.Operation != "account" {
+					t.Fatalf("account writer wrong operation %s", r.Operation)
+				}
+				cancel(&terminal.ExitError{Code: 130})
+				return auth.NativeReply{}, &auth.Error{Code: "credential_write_unknown", Message: "synthetic-qa-secret raw backend message", Uncertain: true, Effects: auth.Effects{Credential: credential, Config: "unknown"}}
+			})})
+			var out, stderr bytes.Buffer
+			code := cli.Run(ctx, append(command, "--json"), strings.NewReader(""), &out, &stderr, cli.Dependencies{Auth: a, Store: qaForbiddenLegacyStore{t}, ConfigPath: filepath.Join(dir, "cfg"), Getenv: func(string) string { return "" }})
+			envelope(t, result{code: code, out: out.String(), err: stderr.String()}, 8, "credential_write_unknown")
+			if calls != 1 {
+				t.Fatalf("mutation replayed %d times", calls)
+			}
+			var result map[string]any
+			json.Unmarshal(stderr.Bytes(), &result)
+			failure := result["error"].(map[string]any)
+			if failure["uncertain"] != true || failure["retryable"] != false {
+				t.Fatalf("unsafe replay guidance %+v", failure)
+			}
+			if strings.Contains(stderr.String(), "synthetic-qa-secret") {
+				t.Fatal("runner error leaked secret")
+			}
+			if !strings.Contains(stderr.String(), `"credential":"`+credential+`"`) || !strings.Contains(stderr.String(), `"config":"unknown"`) {
+				t.Fatalf("operation-specific effects lost %s", stderr.String())
+			}
+		})
+	}
+}
+
+type qaCanceledActionProvider struct{ qaGuidedCLIProvider }
+
+func (p *qaCanceledActionProvider) Accounts(ctx context.Context) ([]harvest.Object, error) {
+	fmt.Fprintln(os.Stdout, "QA_CLI_ACTION_READY")
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+func TestQACLIActionPTYChild(t *testing.T) {
+	if os.Getenv("TEMPO_QA_CLI_ACTION_CHILD") != "1" {
+		return
+	}
+	dir := os.Getenv("TEMPO_QA_CLI_ACTION_DIR")
+	a := auth.NewService(auth.Options{ConfigPath: filepath.Join(dir, "cfg"), LockPath: filepath.Join(dir, "owner.lock"), Getenv: func(k string) string {
+		if k == "HARVEST_TOKEN" {
+			return "synthetic-qa-secret"
+		}
+		if k == "HARVEST_ACCOUNT_ID" {
+			return "11"
+		}
+		return ""
+	}, NewProvider: func(string, string) harvest.Provider { return &qaCanceledActionProvider{} }, Runner: auth.RunnerFunc(func(context.Context, auth.NativeRequest, *os.File) (auth.NativeReply, error) {
+		t.Fatal("synthetic action used native backend")
+		return auth.NativeReply{}, nil
+	})})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	code := cli.Run(ctx, []string{"link", "3", "--task", "4", "--timezone", "UTC", "--path", dir}, os.Stdin, os.Stdout, os.Stderr, cli.Dependencies{Auth: a, Activity: activity.New(activity.Options{Path: filepath.Join(dir, "activity", "state")}), ConfigPath: filepath.Join(dir, "cfg"), Getenv: func(string) string { return "" }})
+	if code != 130 {
+		fmt.Fprintf(os.Stderr, "QA_BAD_EXIT_%d\n", code)
+		os.Exit(51)
+	}
+	os.Exit(0)
+}
+func TestQACLIRealPTYRawCtrlCPreservesActionCancellation(t *testing.T) {
+	python, e := exec.LookPath("python3")
+	if e != nil {
+		t.Fatal(e)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, python, "-c", qaCLIActionScript, os.Args[0], t.TempDir())
+	out, e := cmd.CombinedOutput()
+	if e != nil {
+		t.Fatalf("CLI action cancellation: %v\n%s", e, out)
+	}
+}
+
+const qaCLIActionScript = `
+import os, sys, pty, subprocess, select, time
+master,slave=pty.openpty()
+env=dict(os.environ,TEMPO_QA_CLI_ACTION_CHILD='1',TEMPO_QA_CLI_ACTION_DIR=sys.argv[2],GORACE='atexit_sleep_ms=0')
+p=subprocess.Popen([sys.argv[1],'-test.run=^TestQACLIActionPTYChild$'],stdin=slave,stdout=slave,stderr=slave,env=env)
+transcript=b''
+try:
+ deadline=time.monotonic()+2
+ while b'QA_CLI_ACTION_READY' not in transcript and time.monotonic()<deadline:
+  ready,_,_=select.select([master],[],[],.03)
+  if ready: transcript+=os.read(master,65536)
+ if b'QA_CLI_ACTION_READY' not in transcript: raise AssertionError('action not reached '+repr(transcript))
+ os.write(master,b'\x03')
+ deadline=time.monotonic()+1
+ while p.poll() is None and time.monotonic()<deadline:
+  ready,_,_=select.select([master],[],[],.03)
+  if ready: transcript+=os.read(master,65536)
+ if p.poll() is None: raise AssertionError('raw Ctrl-C did not cancel action promptly')
+ if p.returncode: raise AssertionError('incorrect CLI cancellation '+repr(transcript))
+finally:
+ if p.poll() is None: p.kill();p.wait()
+ os.close(master);os.close(slave)
+`
+
+type qaFailedPrompt struct{ qaCLILinkPrompt }
+
+func (p *qaFailedPrompt) Choose(context.Context, string, []terminal.Choice) (string, error) {
+	return "", &terminal.ExitError{Code: 1}
+}
+func TestQACLITerminalFailureHasSafeDiagnostic(t *testing.T) {
+	dir := t.TempDir()
+	a := auth.NewService(auth.Options{ConfigPath: filepath.Join(dir, "cfg"), LockPath: filepath.Join(dir, "owner.lock"), Getenv: func(k string) string {
+		if k == "HARVEST_TOKEN" {
+			return "synthetic-qa-secret"
+		}
+		if k == "HARVEST_ACCOUNT_ID" {
+			return "11"
+		}
+		return ""
+	}, NewProvider: func(string, string) harvest.Provider { return &qaGuidedCLIProvider{} }})
+	var out, stderr bytes.Buffer
+	code := cli.Run(context.Background(), []string{"link", "--path", dir}, strings.NewReader(""), &out, &stderr, cli.Dependencies{Auth: a, Activity: activity.New(activity.Options{Path: filepath.Join(dir, "activity", "state")}), ConfigPath: filepath.Join(dir, "cfg"), Getenv: func(string) string { return "" }, Prompter: &qaFailedPrompt{qaCLILinkPrompt{t: t}}, TerminalEligible: func(io.Reader, io.Writer) bool { return true }})
+	if code != 1 || stderr.Len() == 0 || out.Len() != 0 {
+		t.Fatalf("terminal failure lacks safe diagnostic exit=%d out=%s err=%s", code, out.String(), stderr.String())
+	}
+	if strings.Contains(stderr.String(), "synthetic-qa-secret") {
+		t.Fatal("terminal error leaked secret")
 	}
 }
