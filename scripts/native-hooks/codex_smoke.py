@@ -45,7 +45,7 @@ TITLE_FORMAT = {"type": "json_schema", "strict": True, "name": "codex_output_sch
     "required": ["title"], "additionalProperties": False}}
 CHILD_PROMPT = "tempo-native-child-case"
 INTERRUPT_PROMPT = "tempo-native-interrupt-case"
-READ_RESULT = "tempo-fixture-read-ok"
+PLAN_RESULT = "Plan updated"
 TOKEN = "tempo-ci-invalid-synthetic-token"
 
 
@@ -255,43 +255,9 @@ def require_prompt_barrier(receipts, session, turn):
                 and r["ordering"] == "supported" for r in receipts), "prompt_barrier_missing")
 
 
-def require_read_result(body):
-    matches = [v for v in body.get("input", []) if v.get("type") == "function_call_output" and v.get("call_id") == "tempo-read"]
-    require(len(matches) == 1 and READ_RESULT in json.dumps(matches[0].get("output")), "actual_read_result_missing")
-
-
-def read_result_probe(body):
-    matches = [v for v in body.get("input", []) if v.get("type") == "function_call_output" and v.get("call_id") == "tempo-read"]
-    result = {"matching_results": min(2, len(matches)), "output_type": "missing", "sentinel_present": False,
-              "error_category": "unavailable", "process_state": "unknown",
-              "namespace_failure_marker": False, "companion_failure_marker": False}
-    if len(matches) != 1: return result
-    value = matches[0].get("output")
-    result["output_type"] = "string" if isinstance(value, str) else "list" if isinstance(value, list) else "object" if isinstance(value, dict) else "other"
-    if not isinstance(value, str): return result
-    if len(value.encode()) > 16384:
-        result["output_type"] = "oversize"
-        return result
-    result["sentinel_present"] = READ_RESULT in value
-    variants = {"CreateProcess": "create_process", "ProcessFailed": "process_failed", "UnknownProcessId": "unknown_process_id",
-                "StdinApproval": "stdin_approval", "WriteToStdin": "write_to_stdin", "StdinClosed": "stdin_closed",
-                "MissingCommandLine": "missing_command_line", "SandboxDenied": "sandbox_denied", "ForeignPath": "foreign_path"}
-    match = re.match(r"^exec_command failed: (" + "|".join(variants) + r")(?= \{|\(|$)", value)
-    if match: result["error_category"] = variants[match[1]]
-    elif value == "unified exec is unavailable in this session": result["error_category"] = "exec_unavailable"
-    lines = value.splitlines()
-    if "Output:" in lines:
-        header = lines[:lines.index("Output:")]
-        states = ["exited_zero" if line == "Process exited with code 0" else "exited_nonzero"
-                  for line in header if re.fullmatch(r"Process exited with code -?[0-9]{1,10}", line)]
-        states += ["running" for line in header if re.fullmatch(r"Process running with session ID [0-9]{1,10}", line)]
-        if len(states) == 1: result["process_state"] = states[0]
-    # Presence only: these selected pinned literals do not prove the cause.
-    result["namespace_failure_marker"] = any(marker in value for marker in ("loopback: Failed RTM_NEWADDR",
-        "loopback: Failed RTM_NEWLINK", "setting up uid map: Permission denied", "No permissions to create a new namespace"))
-    result["companion_failure_marker"] = any(marker in value for marker in ("failed to open bundled bubblewrap ",
-        "failed to exec bundled bubblewrap ", "failed to normalize bundled bubblewrap ", "failed to read bundled bubblewrap "))
-    return result
+def require_plan_result(body):
+    matches = [v for v in body.get("input", []) if v.get("type") == "function_call_output" and v.get("call_id") == "tempo-plan"]
+    require(len(matches) == 1 and matches[0].get("output") == PLAN_RESULT, "actual_plan_result_missing")
 
 
 def review_hook_screen(screen, event, command, source):
@@ -573,7 +539,6 @@ class Model:
         self.counts = {}
         self.entry_count = 0
         self.title_count = 0
-        self.read_probe = read_result_probe({})
         self.phase = "initial"
         self.child_seen = threading.Event()
         self.child_release = threading.Event()
@@ -695,16 +660,17 @@ class Model:
                     self.turn = prompts[0]["turn_id"]
                     require_prompt_barrier(receipts, self.session, self.turn)
                     if self.phase == "initial":
-                        item = function_item(body, ("exec_command", "shell_command"), "tempo-read", {
-                            "exec_command": {"cmd": "cat fixture.txt", "workdir": str(self.repo), "max_output_tokens": 1000},
-                            "shell_command": {"command": "cat fixture.txt", "workdir": str(self.repo), "timeout_ms": 1000}})
-                        self.phase = "read"
-                    elif self.phase == "read":
-                        self.read_probe = read_result_probe(body)
-                        require_read_result(body)
-                        pre = [r for r in receipts if r["kind"] == "PreToolUse" and r["session_id"] == self.session and r["turn_id"] == self.turn and r["tool_id"] == "tempo-read" and accepted(r)]
-                        post = [r for r in receipts if r["kind"] == "PostToolUse" and r["session_id"] == self.session and r["turn_id"] == self.turn and r["tool_id"] == "tempo-read" and accepted(r)]
-                        require(pre and post, "read_tool_receipts_missing")
+                        item = function_item(body, ("update_plan",), "tempo-plan", {
+                            "update_plan": {"plan": [{"step": "Verify native hook lifecycle", "status": "completed"}]}})
+                        self.phase = "plan"
+                    elif self.phase == "plan":
+                        require_plan_result(body)
+                        require(prompts[0].get("actor") is not None, "plan_tool_actor_missing")
+                        pre = [r for r in receipts if r["kind"] == "PreToolUse" and r["session_id"] == self.session and r["turn_id"] == self.turn and r["tool_id"] == "tempo-plan" and r.get("actor") == prompts[0].get("actor")
+                               and r["ordering"] == "supported" and accepted(r)]
+                        post = [r for r in receipts if r["kind"] == "PostToolUse" and r["session_id"] == self.session and r["turn_id"] == self.turn and r["tool_id"] == "tempo-plan" and r.get("actor") == prompts[0].get("actor")
+                               and r["ordering"] == "supported" and accepted(r)]
+                        require(pre and post, "plan_tool_receipts_missing")
                         item = function_item(body, ("spawn_agent",), "tempo-spawn", {"spawn_agent": {"message": CHILD_PROMPT}})
                         self.phase = "spawn"
                     elif self.phase == "spawn":
@@ -1062,8 +1028,7 @@ def run(args, report):
     command = prepare_diagnostic_command(tempo, diagnostics)
     diagnostic_identity = diagnostics.stat()
     bounded_run(["/usr/bin/git", "-c", "credential.helper=", "init", "-q", str(repo)], env, root)
-    (repo / "fixture.txt").write_text(READ_RESULT + "\n")
-    (repo / "AGENTS.md").write_text("Synthetic native lifecycle fixture. Read only fixture.txt. No network or writes.\n")
+    (repo / "AGENTS.md").write_text("Synthetic native lifecycle fixture. Update the native plan and run the requested child lifecycle. No shell, network or file writes.\n")
 
     def helper_call(action, *extra):
         output = bounded_run([str(helper), "fixture", action, env["TEMPO_STATE"], env["TEMPO_HOOK_STATE"], *map(str, extra)], env, repo)
@@ -1119,7 +1084,7 @@ def run(args, report):
             return result
 
         start_measured_turn(terminal, model, baseline, wait_snapshot)
-        report["stage"] = "parent_read_and_child"
+        report["stage"] = "parent_plan_and_child"
         snapshot = wait_snapshot(lambda s: model.child_seen.is_set() and any(r["kind"] == "Stop" and r["session_id"] == model.session and accepted(r) for r in s["receipts"]), "parent_stop_missing", 40)
         require(model.child_seen.is_set() and model.child, "child_request_missing")
         parent_stop = next(r for r in snapshot["receipts"] if r["kind"] == "Stop" and r["session_id"] == model.session and accepted(r))
@@ -1156,7 +1121,7 @@ def run(args, report):
         report.update({"status": "passed", "receipts": [project_receipt(r) for r in measured], "requests": model.requests,
                        "request_counts": model.counts, "queued_count": snapshot["queued"], "uncertainty_count": snapshot["uncertainties"],
                        "assertions": ["normal_exact_definition_trust", "posttrust_session_restart", "prompt_before_provider",
-                                      "actual_read_result", "actual_child_request", "parent_stop_child_still_working",
+                                      "actual_plan_result", "actual_child_request", "parent_stop_child_still_working",
                                       "child_stop", "interrupt", "normal_session_end", "production_capture_effects"]})
         report["stage"] = "complete"
     finally:
@@ -1168,7 +1133,6 @@ def run(args, report):
         report["requests"] = model.requests
         report["provider_entry_count"] = model.entry_count
         report["auxiliary_title_count"] = model.title_count
-        report["read_result_probe"] = model.read_probe
         report["hook_diagnostics"] = hook_diagnostic_probe(diagnostics, diagnostic_identity) if measured_diagnostics else {"status": "unavailable", "counts": []}
         if confirmed_artifacts is not None:
             report["artifact_matches"] = artifact_match_probe(confirmed_artifacts)

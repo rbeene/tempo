@@ -31,56 +31,6 @@ def browser_frames():
 
 
 class HarnessTests(unittest.TestCase):
-    def test_read_result_probe_exports_only_bounded_fixed_observations(self):
-        def body(value):
-            return {"input": [{"type": "function_call_output", "call_id": "tempo-read", "output": value}]}
-        value = 'exec_command failed: CreateProcess { message: "PRIVATE /secret; No permissions to create a new namespace" }'
-        result = smoke.read_result_probe(body(value))
-        self.assertEqual(result, {"matching_results": 1, "output_type": "string", "sentinel_present": False,
-                                  "error_category": "create_process", "process_state": "unknown",
-                                  "namespace_failure_marker": True, "companion_failure_marker": False})
-        self.assertNotIn("PRIVATE", json.dumps(result))
-        self.assertNotIn("/secret", json.dumps(result))
-        for value, kind in (({}, "object"), ([], "list"), (None, "other"), ("x" * 16385, "oversize")):
-            projected = smoke.read_result_probe(body(value))
-            self.assertEqual(projected["output_type"], kind)
-            self.assertEqual(projected["error_category"], "unavailable")
-        duplicate = body("PRIVATE")
-        duplicate["input"] *= 10
-        self.assertEqual(smoke.read_result_probe(duplicate)["matching_results"], 2)
-        self.assertEqual(smoke.read_result_probe(duplicate)["output_type"], "missing")
-        self.assertEqual(smoke.read_result_probe({})["matching_results"], 0)
-
-    def test_read_result_probe_matches_error_boundaries_and_only_process_headers(self):
-        def probe(value):
-            return smoke.read_result_probe({"input": [{"type": "function_call_output", "call_id": "tempo-read", "output": value}]})
-        for variant, category in (("CreateProcess", "create_process"), ("ProcessFailed", "process_failed"),
-                                  ("SandboxDenied", "sandbox_denied"), ("ForeignPath", "foreign_path")):
-            self.assertEqual(probe('exec_command failed: ' + variant + ' { message: "PRIVATE" }')["error_category"], category)
-        self.assertEqual(probe('exec_command failed: CreateProcessPrivate { }')["error_category"], "unavailable")
-        self.assertEqual(probe('PRIVATE exec_command failed: CreateProcess { }')["error_category"], "unavailable")
-        self.assertEqual(probe('exec_command failed: CreateProcess { message: "failed to open bundled bubblewrap /PRIVATE" }')["companion_failure_marker"], True)
-        for line, state in (("Process exited with code 0", "exited_zero"), ("Process exited with code 7", "exited_nonzero"),
-                            ("Process running with session ID 123", "running")):
-            self.assertEqual(probe("Chunk ID: PRIVATE\nWall time: 0.1 seconds\n" + line + "\nOutput:\nPRIVATE")["process_state"], state)
-            self.assertEqual(probe("Output:\n" + line)["process_state"], "unknown")
-        self.assertEqual(probe("Process exited with code 0")["process_state"], "unknown")
-        self.assertTrue(probe("Output:\n" + smoke.READ_RESULT)["sentinel_present"])
-
-    def test_actual_provider_read_failure_records_probe_without_releasing_response(self):
-        receipts = [self.receipt("SessionStart"), self.receipt("UserPromptSubmit")]
-        model = self.model(receipts)
-        model.respond(self.request())
-        body = self.request()
-        body["input"].append({"type": "function_call_output", "call_id": "tempo-read", "output": "exec_command failed: MissingCommandLine"})
-        with self.assertRaisesRegex(smoke.FixtureFailure, "^actual_read_result_missing$"): model.respond(body)
-        self.assertEqual(model.read_probe["error_category"], "missing_command_line")
-        self.assertEqual(model.counts, {"parent": 1})
-        body["input"][-1]["output"] = "PRIVATE"
-        with self.assertRaises(smoke.FixtureFailure): model.respond(body)
-        self.assertEqual(model.read_probe["error_category"], "unavailable")
-        self.assertEqual(model.counts, {"parent": 1})
-
     def test_fixture_config_disables_persisted_startup_tooltips_without_trust_seeding(self):
         config = tomllib.loads(smoke.config_text(43210))
         self.assertEqual(config.get("tui"), {"show_tooltips": False})
@@ -705,7 +655,7 @@ class HarnessTests(unittest.TestCase):
                   "agent_id": "", "kind": kind, "tool_id": "", "disposition": "applied", "ordering": "supported",
                   "durability": "committed", "origin": "unverified", "profile_basis": "operator_declared",
                   "snapshot_revision": "1", "profile_revision": "1", "fingerprint": "a" * 64,
-                  "observed_at": "2026-10-02T10:00:00Z", "actor": None}
+                  "observed_at": "2026-10-02T10:00:00Z", "actor": "root-actor"}
         result.update(extra)
         return result
 
@@ -717,13 +667,16 @@ class HarnessTests(unittest.TestCase):
             with self.assertRaises(smoke.FixtureFailure):
                 smoke.require_prompt_barrier(bad, "session-1", "turn-1")
 
-    def test_tool_result_must_prove_real_read_before_spawn(self):
-        good = {"input": [{"type": "function_call_output", "call_id": "tempo-read", "output": "tempo-fixture-read-ok"}]}
-        smoke.require_read_result(good)
-        for bad in [{"input": []}, {"input": [{"type": "function_call", "call_id": "tempo-read", "output": "tempo-fixture-read-ok"}]},
-                    {"input": [{"type": "function_call_output", "call_id": "wrong", "output": "tempo-fixture-read-ok"}]}]:
+    def test_tool_result_must_prove_exact_native_plan_before_spawn(self):
+        good = {"input": [{"type": "function_call_output", "call_id": "tempo-plan", "output": "Plan updated"}]}
+        smoke.require_plan_result(good)
+        for bad in [{"input": []}, {"input": [{"type": "function_call", "call_id": "tempo-plan", "output": "Plan updated"}]},
+                    {"input": [{"type": "function_call_output", "call_id": "wrong", "output": "Plan updated"}]},
+                    {"input": good["input"] * 2},
+                    {"input": [{"type": "function_call_output", "call_id": "tempo-plan", "output": "Not Plan updated"}]},
+                    {"input": [{"type": "function_call_output", "call_id": "tempo-plan", "output": {"text": "Plan updated"}}]}]:
             with self.assertRaises(smoke.FixtureFailure):
-                smoke.require_read_result(bad)
+                smoke.require_plan_result(bad)
 
     def test_timeout_cleanup_terminates_owned_process_group(self):
         # A plain Python sleeper is safe locally; this never starts an application host.
@@ -748,7 +701,7 @@ class HarnessTests(unittest.TestCase):
 
     def request(self, marker=smoke.PARENT_PROMPT):
         return {"model": "tempo-ci-fixture", "stream": True, "input": [{"role": "user", "content": [{"text": marker}]}],
-                "tools": [{"type": "function", "name": "exec_command", "parameters": {"properties": {"cmd": {}, "workdir": {}, "max_output_tokens": {}}, "required": ["cmd"]}},
+                "tools": [{"type": "function", "name": "update_plan", "parameters": {"properties": {"plan": {}, "explanation": {}}, "required": ["plan"]}},
                           {"type": "function", "name": "spawn_agent", "parameters": {"properties": {"message": {}}, "required": ["message"]}}]}
 
     def title_request(self):
@@ -774,7 +727,7 @@ class HarnessTests(unittest.TestCase):
             self.assertEqual(json.loads(item["content"][0]["text"]), {"title": "Verify native hooks"})
             self.assertEqual((model.session, model.turn, model.phase, model.counts, model.requests), before)
             self.assertEqual(model.title_count, 1)
-            if not primary_first: self.assertEqual(model.respond(self.request())[0]["call_id"], "tempo-read")
+            if not primary_first: self.assertEqual(model.respond(self.request())[0]["call_id"], "tempo-plan")
             with self.assertRaises(smoke.FixtureFailure): model.respond(self.title_request())
             self.assertEqual(model.title_count, 1)
 
@@ -801,7 +754,7 @@ class HarnessTests(unittest.TestCase):
         model.session, model.baseline = None, frozenset({"old-start"})
         item, category, _ = model.respond(self.request())
         self.assertEqual((model.session, model.turn, category, item["call_id"]),
-                         ("session-1", "turn-1", "parent1", "tempo-read"))
+                         ("session-1", "turn-1", "parent1", "tempo-plan"))
         self.assertEqual(len(model.requests), 1)
         cases = [(good, None), (good[2:], frozenset()), (good, frozenset({"old-start", "receipt-SessionStart"})),
                  (good + [self.receipt("SessionStart", id="second-start", session_id="session-2")], frozenset({"old-start"})),
@@ -824,13 +777,13 @@ class HarnessTests(unittest.TestCase):
             with self.assertRaises(smoke.FixtureFailure): model.respond(self.request(marker))
             self.assertEqual(model.requests, [])
 
-    def test_direct_fixture_model_accepts_native_exec_schema_and_rejects_other_model(self):
+    def test_direct_fixture_model_accepts_native_plan_schema_and_rejects_other_model(self):
         receipts = [self.receipt("SessionStart"), self.receipt("UserPromptSubmit")]
         body = self.request()
         body["model"] = "tempo-ci-fixture"
         item, category, hold = self.model(receipts).respond(body)
-        self.assertEqual((item["name"], item["call_id"], category, hold), ("exec_command", "tempo-read", "parent1", None))
-        self.assertEqual(json.loads(item["arguments"]), {"cmd": "cat fixture.txt", "workdir": "/tmp/project", "max_output_tokens": 1000})
+        self.assertEqual((item["name"], item["call_id"], category, hold), ("update_plan", "tempo-plan", "parent1", None))
+        self.assertEqual(json.loads(item["arguments"]), {"plan": [{"step": "Verify native hook lifecycle", "status": "completed"}]})
         body["model"] = "gpt-6.1-sol"
         with self.assertRaisesRegex(smoke.FixtureFailure, "^provider_request_contract$"):
             self.model(receipts).respond(body)
@@ -872,21 +825,42 @@ class HarnessTests(unittest.TestCase):
                 smoke.start_measured_turn(terminal, model, set(), mismatch_wait)
             self.assertEqual(model.session, "session-1")
 
-    def test_model_transition_requires_real_read_and_tool_receipts(self):
+    def test_model_transition_requires_real_plan_and_tool_receipts(self):
         receipts = [self.receipt("SessionStart"), self.receipt("UserPromptSubmit")]
         model = self.model(receipts)
         body = self.request()
         item, _, hold = model.respond(body)
-        self.assertEqual(item["name"], "exec_command")
-        self.assertEqual(item["call_id"], "tempo-read")
+        self.assertEqual(item["name"], "update_plan")
+        self.assertEqual(item["call_id"], "tempo-plan")
         self.assertIsNone(hold)
         with self.assertRaises(smoke.FixtureFailure): model.respond(body)
-        body["input"].append({"type": "function_call_output", "call_id": "tempo-read", "output": smoke.READ_RESULT})
+        body["input"].append({"type": "function_call_output", "call_id": "tempo-plan", "output": smoke.PLAN_RESULT})
         with self.assertRaises(smoke.FixtureFailure): model.respond(body)
-        receipts.extend([self.receipt("PreToolUse", tool_id="tempo-read"), self.receipt("PostToolUse", tool_id="tempo-read")])
+        receipts.extend([self.receipt("PreToolUse", tool_id="tempo-plan"), self.receipt("PostToolUse", tool_id="tempo-plan")])
         item, _, _ = model.respond(body)
         self.assertEqual(item["name"], "spawn_agent")
         self.assertEqual(len(model.requests), 2)
+
+    def test_native_plan_receipts_must_match_actor_turn_session_and_call(self):
+        for kind in ("PreToolUse", "PostToolUse"):
+            for field, value in (("actor", "other-actor"), ("session_id", "other-session"), ("turn_id", "other-turn"),
+                                 ("tool_id", "other-call"), ("durability", "not_committed"), ("ordering", "unavailable")):
+                receipts = [self.receipt("SessionStart"), self.receipt("UserPromptSubmit"),
+                            self.receipt("PreToolUse", tool_id="tempo-plan"), self.receipt("PostToolUse", tool_id="tempo-plan")]
+                next(r for r in receipts if r["kind"] == kind)[field] = value
+                model = self.model(receipts)
+                body = self.request()
+                model.respond(body)
+                body["input"].append({"type": "function_call_output", "call_id": "tempo-plan", "output": "Plan updated"})
+                with self.assertRaises(smoke.FixtureFailure): model.respond(body)
+                self.assertEqual(model.counts, {"parent": 1})
+        receipts = [self.receipt(kind, actor=None, tool_id="tempo-plan") for kind in
+                    ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse")]
+        model = self.model(receipts)
+        body = self.request()
+        model.respond(body)
+        body["input"].append({"type": "function_call_output", "call_id": "tempo-plan", "output": "Plan updated"})
+        with self.assertRaises(smoke.FixtureFailure): model.respond(body)
 
     def test_child_request_requires_real_child_barrier_and_is_bounded(self):
         receipts = [self.receipt("SessionStart"), self.receipt("UserPromptSubmit")]
