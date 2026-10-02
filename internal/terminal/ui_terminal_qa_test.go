@@ -377,7 +377,7 @@ fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',24,80,0,0))
 before=termios.tcgetattr(slave)
 file_flags=fcntl.fcntl(slave,fcntl.F_GETFL)
 report_r,report_w=os.pipe()
-env={'PATH':'/usr/bin:/bin','TEMPO_QA_UI_PTY_MODE':mode,'TEMPO_QA_UI_REPORT_FD':str(report_w)}
+env={'PATH':'/usr/bin:/bin','GORACE':'atexit_sleep_ms=0','TEMPO_QA_UI_PTY_MODE':mode,'TEMPO_QA_UI_REPORT_FD':str(report_w)}
 # A child process group with its parent outside that group makes SIGTSTP a
 # real kernel stop if Tempo fails to consume it; orphan groups can ignore it.
 p=subprocess.Popen([binary,'-test.run=^TestQAUIDashboardPTYChild$'],stdin=slave,stdout=slave,stderr=slave,env=env,pass_fds=(report_w,),preexec_fn=os.setpgrp)
