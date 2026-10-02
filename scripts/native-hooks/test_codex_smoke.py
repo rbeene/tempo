@@ -177,6 +177,47 @@ class HarnessTests(unittest.TestCase):
                     self.assertFalse(any(evidence.values()))
                 self.assertNotIn("PRIVATE", json.dumps(evidence))
 
+    def test_normal_startup_review_requires_complete_nine_hook_prompt(self):
+        class ReachedInventory(Exception): pass
+        title = "Hooks need review"
+        choices = "\n› 1. Review hooks\n2. Trust all and continue\n3. Continue without trusting (hooks won't run)"
+        full = title + "\n9 hooks are new or changed." + choices
+        class Terminal:
+            def __init__(self, review):
+                self.screens = iter(["Trust this folder?", "Trust this folder?\n/tmp/exact-project\nTrust and continue\nQuit", *review])
+                self.sent = []
+            def until(self, predicate, category, **_):
+                if category == "hook_inventory_navigation": raise ReachedInventory()
+                for screen in self.screens:
+                    if predicate(screen): return screen
+                raise smoke.FixtureFailure(category)
+            def send(self, value): self.sent.append(value)
+            def command(self, _): raise AssertionError("must not type /hooks into startup modal")
+        good = Terminal([title, full, "Lifecycle hooks from config and enabled plugins."])
+        with self.assertRaises(ReachedInventory):
+            smoke.normal_trust(good, Path("/tmp/exact-project"), "unused", [])
+        self.assertEqual(good.sent, [b"\r", b"1", b"\x1b[H"])
+        for invalid in (title, full.replace("9 hooks", "19 hooks"), full.replace("9 hooks", "8 hooks"), full.replace("2. Trust all and continue", "")):
+            with self.subTest(invalid=invalid):
+                bad = Terminal([invalid + "\ngpt-6.1-sol"])
+                with self.assertRaises(smoke.FixtureFailure):
+                    smoke.normal_trust(bad, Path("/tmp/exact-project"), "unused", [])
+                self.assertEqual(bad.sent, [b"\r"])
+        cleared = Terminal([title + "\n19 hooks are new or changed.", ""])
+        evidence = {"untrusted_old_text": "SECRET"}
+        with self.assertRaises(smoke.FixtureFailure):
+            smoke.normal_trust(cleared, Path("/tmp/exact-project"), "unused", [], {}, evidence)
+        self.assertEqual(cleared.sent, [b"\r"])
+        self.assertEqual(evidence, smoke.startup_trust_probe(""))
+
+    def test_startup_probe_has_only_fixed_booleans_and_exact_count(self):
+        probe = smoke.startup_trust_probe("Hooks need review\n19 hooks are new or changed.\n1. Review hooks\nSECRET /private/path")
+        self.assertEqual(probe, {"workspace_title_present": False, "model_label_present": False,
+                                "hooks_review_title_present": True, "exact_count_present": False,
+                                "review_choice_present": True, "trust_all_choice_present": False,
+                                "continue_choice_present": False})
+        self.assertFalse(any(smoke.startup_trust_probe("").values()))
+
     def test_receipt_projection_cannot_export_raw_payload_or_unknown_status(self):
         receipt = self.receipt("SessionStart")
         receipt.update(prompt="SECRET", headers={"Authorization": "SECRET"}, diagnostic_code="SECRET")

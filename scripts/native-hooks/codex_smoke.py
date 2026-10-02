@@ -616,11 +616,36 @@ def workspace_trust_probe(screen, repo):
             "nonempty_rows": min(80, sum(bool(line) for line in lines))}
 
 
-def normal_trust(terminal, repo, command, trusted_events, probe=None):
+def startup_trust_probe(screen):
+    lines = [re.sub(r"^›\s*", "", line.strip()) for line in screen.splitlines()]
+    return {"workspace_title_present": "Trust this folder?" in screen,
+            "model_label_present": "gpt-6.1-sol" in screen,
+            "hooks_review_title_present": "Hooks need review" in screen,
+            "exact_count_present": str(len(EVENTS)) + " hooks are new or changed." in lines,
+            "review_choice_present": "1. Review hooks" in lines,
+            "trust_all_choice_present": "2. Trust all and continue" in lines,
+            "continue_choice_present": "3. Continue without trusting (hooks won't run)" in lines}
+
+
+def normal_trust(terminal, repo, command, trusted_events, probe=None, startup_probe=None):
     if probe is None:
         probe = {}
     probe.clear()
     probe.update(workspace_trust_probe("", repo))
+    if startup_probe is None:
+        startup_probe = {}
+    startup_probe.clear()
+    startup_probe.update(startup_trust_probe(""))
+
+    def startup_ready(screen):
+        startup_probe.clear()
+        startup_probe.update(startup_trust_probe(screen))
+        if startup_probe["workspace_title_present"]:
+            return False
+        if startup_probe["hooks_review_title_present"]:
+            return all(startup_probe[key] for key in ("exact_count_present", "review_choice_present",
+                       "trust_all_choice_present", "continue_choice_present"))
+        return startup_probe["model_label_present"]
 
     def observe_until(predicate, category):
         def observed(screen):
@@ -630,7 +655,7 @@ def normal_trust(terminal, repo, command, trusted_events, probe=None):
             return predicate(screen)
         return terminal.until(observed, category)
 
-    initial = observe_until(lambda s: "Trust this folder?" in s or "gpt-6.1-sol" in s, "startup_ui_unavailable")
+    initial = observe_until(lambda s: "Trust this folder?" in s or "gpt-6.1-sol" in s or "Hooks need review" in s, "startup_ui_unavailable")
     if "Trust this folder?" in initial:
         # A PTY read can end halfway through a redraw. Wait for the complete
         # exact folder/choice display before taking the normal trust action.
@@ -640,8 +665,14 @@ def normal_trust(terminal, repo, command, trusted_events, probe=None):
                        and "Trusting will apply to the repository root:" not in s,
                        "workspace_trust_mismatch")
         terminal.send(b"\r")
-        terminal.until(lambda s: "Trust this folder?" not in s and "gpt-6.1-sol" in s, "workspace_trust_failed")
-    terminal.command("/hooks")
+        terminal.until(startup_ready, "workspace_trust_failed")
+    elif not startup_ready(initial):
+        terminal.until(startup_ready, "startup_hooks_review_unavailable")
+    if startup_probe["hooks_review_title_present"]:
+        # Pinned normal UI shortcut 1 opens Review hooks; it grants no trust.
+        terminal.send(b"1")
+    else:
+        terminal.command("/hooks")
     terminal.until(lambda s: "Lifecycle hooks from config and enabled plugins." in s, "hooks_ui_unavailable")
     # Home selects first pinned event. Inspect inventory counts including all
     # zero-handler events before any trust action.
@@ -736,7 +767,8 @@ def run(args, report):
         report["stage"] = "normal_trust_ui"
         report["trusted_events"] = []
         terminal = Terminal(argv, env, repo, deadline)
-        normal_trust(terminal, repo, command, report["trusted_events"], report.setdefault("workspace_trust_probe", {}))
+        normal_trust(terminal, repo, command, report["trusted_events"], report.setdefault("workspace_trust_probe", {}),
+                     report.setdefault("startup_trust_probe", {}))
         terminal.close(); terminal = None
         require(not model.requests and model.error is None, "unexpected_pretrust_inference")
         report["stage"] = "production_policy_confirmation"
