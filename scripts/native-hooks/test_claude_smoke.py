@@ -581,16 +581,12 @@ class AcceptanceTests(unittest.TestCase):
                 smoke.run(types.SimpleNamespace(),{})
             download.assert_not_called();mkdir.assert_not_called();provider.assert_not_called()
 
-    def test_settings_have_only_direct_synchronous_hooks_and_no_grants(self):
-        with tempfile.TemporaryDirectory(prefix='tempo-') as d:
-            root=Path(d);(root/'tempo').write_text('inert')
-            settings=smoke.prepare_settings(root/'tempo',root/'errors')
-            self.assertEqual(set(settings),{'hooks'})
-            self.assertEqual(set(settings['hooks']),set(smoke.EVENTS))
-            for groups in settings['hooks'].values():
-                self.assertEqual(groups,[{'hooks':[{'type':'command','command':str(root/'tempo')+' hook claude --input-stdin 2>> '+str(root/'errors'),'timeout':2}]}])
-            self.assertEqual((root/'errors').stat().st_mode & 0o777,0o600)
-            with self.assertRaises(smoke.FixtureFailure):smoke.prepare_settings(root/'tempo',root/'errors')
+    def test_full_installed_inventory_is_distinct_from_native_observed_coverage(self):
+        self.assertEqual(len(smoke.INSTALLED_EVENTS), 13)
+        self.assertEqual(len(smoke.EVENTS), 8)
+        self.assertTrue(set(smoke.EVENTS) < set(smoke.INSTALLED_EVENTS))
+        self.assertEqual(set(smoke.INSTALLED_EVENTS) - set(smoke.EVENTS),
+                         {'PostToolUseFailure', 'PermissionRequest', 'StopFailure', 'TaskCreated', 'TaskCompleted'})
 
 
     def test_http_slow_trickle_cannot_extend_total_input_deadline(self):

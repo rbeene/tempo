@@ -34,6 +34,7 @@ EVENTS = ("PreToolUse", "PostToolUse", "SessionStart", "SessionEnd", "UserPrompt
           "SubagentStart", "SubagentStop", "Stop", "Interrupt")
 EVENT_ORDER = ("PreToolUse", "PermissionRequest", "PostToolUse", "PreCompact", "PostCompact",
                "SessionStart", "SessionEnd", "UserPromptSubmit", "SubagentStart", "SubagentStop", "Stop", "Interrupt")
+INSTALLED_EVENTS = EVENT_ORDER
 MODEL = "tempo-ci-fixture"
 PARENT_PROMPT = "tempo-native-parent-case"
 TITLE_PROMPT = ("Generate a concise, single-line task title of at most 36 characters and under five words where possible. "
@@ -56,6 +57,74 @@ class FixtureFailure(Exception):
 def require(value, code):
     if not value:
         raise FixtureFailure(code)
+
+
+def require_installed_definitions(path, tempo, host, events):
+    """Inspect production output independently; never author hook definitions."""
+    require(host in ("codex", "claude") and tempo.is_absolute()
+            and re.fullmatch(r"[A-Za-z0-9/_-]+", str(tempo)), "unsafe_fixture_path")
+    command = "'" + str(tempo) + "' hook " + host + " --input-stdin"
+    require(len(command) <= 200, "unsafe_fixture_path")
+    def unique_fields(pairs):
+        result = {}
+        for key, value in pairs:
+            require(key not in result, "installed_definitions_mismatch")
+            result[key] = value
+        return result
+    try:
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as source:
+            info = os.fstat(source.fileno())
+            require(stat.S_ISREG(info.st_mode) and info.st_size <= 8 << 20, "installed_definitions_mismatch")
+            data = source.read((8 << 20) + 1)
+        require(len(data) <= 8 << 20, "installed_definitions_mismatch")
+        doc = json.loads(data, object_pairs_hook=unique_fields)
+    except (OSError, UnicodeError, ValueError):
+        raise FixtureFailure("installed_definitions_mismatch")
+    expected = {"hooks": {event: [{"hooks": [{"type": "command", "command": command, "timeout": 2}]}]
+                          for event in events}}
+    require(doc == expected, "installed_definitions_mismatch")
+    return command
+
+
+def require_installed_profile(result, host, scope, project, version, confirmed):
+    require(isinstance(result, dict) and result.get("contract_version") == 1
+            and isinstance(result.get("hooks"), list) and len(result["hooks"]) == 1, "installed_profile_missing")
+    row = result["hooks"][0]
+    require(isinstance(row, dict) and row.get("host") == host and row.get("scope") == scope
+            and row.get("path") == str(project) and row.get("runtime_version") == version
+            and row.get("state") == ("awaiting_real_event" if confirmed else "approval_required")
+            and row.get("ordering") == ("supported" if confirmed else "unavailable")
+            and "last_real_event" in row and row["last_real_event"] is None, "installed_profile_missing")
+    profile = row.get("profile")
+    require(isinstance(profile, dict) and profile.get("basis") == ("operator_declared" if confirmed else "none")
+            and profile.get("capture_eligible") is confirmed
+            and isinstance(profile.get("fingerprint"), str) and re.fullmatch("[a-f0-9]{64}", profile["fingerprint"])
+            and profile.get("declaration_version") == "tempo-native-hooks-v1", "installed_profile_missing")
+    context = profile.get("context")
+    require(isinstance(context, dict) and context.get("inventory_version") == "tempo-installed-static-v1"
+            and context.get("host") == host and context.get("scope") == scope and context.get("path") == str(project)
+            and context.get("runtime_version") == version and context.get("surface") == "local"
+            and context.get("conflicts") == [], "installed_profile_missing")
+    artifacts = context.get("artifacts")
+    require(isinstance(artifacts, list) and 4 <= len(artifacts) <= 128, "installed_profile_missing")
+    paths, roles = set(), set()
+    for item in artifacts:
+        require(isinstance(item, dict) and item.get("role") in ("runtime", "executable", "definitions", "skill", "configuration", "repository")
+                and isinstance(item.get("path"), str) and len(item["path"]) <= 4096 and Path(item["path"]).is_absolute()
+                and item["path"] not in paths and isinstance(item.get("sha256"), str)
+                and (item["sha256"] == "absent" or re.fullmatch("[a-f0-9]{64}", item["sha256"])), "installed_profile_missing")
+        paths.add(item["path"]); roles.add(item["role"])
+    require({"runtime", "executable", "definitions", "skill"} <= roles, "installed_profile_missing")
+    return profile
+
+
+def require_unchanged_profile(before, after):
+    # Genuine production Status resamples all files, absent sources and repository
+    # identities. Compare the complete inventory, not only the installed file.
+    require(before["fingerprint"] == after["fingerprint"] and before["context"] == after["context"],
+            "installed_profile_drift")
+    return {"available": True, "all_matches": True, "artifact_count": len(after["context"]["artifacts"]),
+            "sampled_by": "production_status"}
 
 
 def hosted_precondition(env, system, machine, user_home):
@@ -757,8 +826,6 @@ cli_auth_credentials_store = "ephemeral"
 web_search = "disabled"
 sandbox_mode = "read-only"
 approval_policy = "on-request"
-[tui]
-show_tooltips = false
 [tools.update_plan]
 enabled = true
 [analytics]
@@ -811,7 +878,7 @@ def startup_trust_probe(screen):
     return {"workspace_title_present": "Trust this folder?" in screen,
             "model_label_present": MODEL in screen,
             "hooks_review_title_present": "Hooks need review" in screen,
-            "exact_count_present": str(len(EVENTS)) + " hooks are new or changed." in lines,
+            "exact_count_present": str(len(INSTALLED_EVENTS)) + " hooks are new or changed." in lines,
             "review_choice_present": "1. Review hooks" in lines,
             "trust_all_choice_present": "2. Trust all and continue" in lines,
             "continue_choice_present": "3. Continue without trusting (hooks won't run)" in lines}
@@ -957,7 +1024,7 @@ def normal_trust(terminal, repo, command, trusted_events, probe=None, startup_pr
     # zero-handler events before any trust action.
     terminal.send(b"\x1b[H")
     for event in EVENT_ORDER:
-        expected = 1 if event in EVENTS else 0
+        expected = 1 if event in INSTALLED_EVENTS else 0
         screen = terminal.until(lambda s: "Issues" not in s and re.search(
             r"›\s+" + event + r"\s+" + str(expected) + r"\s+0\s+" + str(expected) + r"\s", s),
             "hook_inventory_navigation")
@@ -967,7 +1034,7 @@ def normal_trust(terminal, repo, command, trusted_events, probe=None, startup_pr
     terminal.send(b"\x1b[H")
     for event in EVENT_ORDER:
         terminal.until(lambda s: re.search(r"›\s+" + event + r"\s", s), "hook_inventory_navigation")
-        if event in EVENTS:
+        if event in INSTALLED_EVENTS:
             terminal.send(b"\r")
             def details_ready(screen):
                 try:
@@ -1038,14 +1105,12 @@ def run(args, report):
     # Copy to a short controlled path so the exact command is never TUI-truncated.
     shutil.copy2(tempo, root / "tempo")
     tempo = root / "tempo"
-    diagnostics = root / "hook-errors"
-    command = prepare_diagnostic_command(tempo, diagnostics)
-    diagnostic_identity = diagnostics.stat()
     bounded_run(["/usr/bin/git", "-c", "credential.helper=", "init", "-q", str(repo)], env, root)
     (repo / "AGENTS.md").write_text("Synthetic native lifecycle fixture. Update the native plan and run the requested child lifecycle. No shell, network or file writes.\n")
 
     def helper_call(action, *extra):
-        output = bounded_run([str(helper), "fixture", action, env["TEMPO_STATE"], env["TEMPO_HOOK_STATE"], *map(str, extra)], env, repo)
+        output = bounded_run([str(helper), "fixture", action, env["TEMPO_STATE"], env["TEMPO_HOOK_STATE"], *map(str, extra)],
+                             env, repo, timeout=20 if action in ("install", "status", "confirm") else 8)
         return json.loads(output) if output else None
 
     report["stage"] = "production_link"
@@ -1054,18 +1119,23 @@ def run(args, report):
     terminal = None
     baseline = None
     confirmed_artifacts = None
-    measured_diagnostics = False
+    report["hook_diagnostics"] = {"status": "unavailable", "counts": []}
+    report["diagnostic_source"] = "host_managed_stderr"
     try:
         hostdir = home / ".codex"
         hostdir.mkdir(mode=0o700)
         config = hostdir / "config.toml"
         definitions = hostdir / "hooks.json"
         config.write_text(config_text(model.server.server_port))
-        definitions.write_text(json.dumps({"hooks": {event: [{"hooks": [{"type": "command", "command": command, "timeout": 2}]}] for event in EVENTS}}, indent=2) + "\n")
-        config.chmod(0o600); definitions.chmod(0o600)
+        config.chmod(0o600)
+        report["stage"] = "production_install"
+        installed = helper_call("install", repo, runtime, tempo, "user")
+        require_installed_profile(installed, "codex", "user", repo, pin["version"], False)
+        command = require_installed_definitions(definitions, tempo, "codex", INSTALLED_EVENTS)
         report.update({"runtime_version": pin["version"], "archive_sha256": pin["sha256"], "runtime_sha256": digest(runtime),
                        "tempo_sha256": digest(tempo), "definitions_sha256": digest(definitions),
-                       "configuration_origin": "fixture_authored", "delivery_origin": "actual_codex_process",
+                       "configuration_origin": "production_installer", "provider_configuration_origin": "fixture_authored",
+                       "installed_events": list(INSTALLED_EVENTS), "delivery_origin": "actual_codex_process",
                        "profile_basis": "operator_declared", "product_receipt_origin": "unverified"})
         argv = codex_argv(runtime)
         report["stage"] = "normal_trust_ui"
@@ -1076,14 +1146,13 @@ def run(args, report):
         terminal.close(); terminal = None
         require(not model.requests and model.error is None, "unexpected_pretrust_inference")
         report["stage"] = "production_policy_confirmation"
-        profile = helper_call("confirm", repo, runtime, tempo, definitions, config)
+        require_installed_profile(helper_call("status", repo, runtime, tempo, "user"), "codex", "user", repo, pin["version"], False)
+        profile = require_installed_profile(helper_call("confirm", repo, runtime, tempo, "user"), "codex", "user", repo, pin["version"], True)
         report["profile_fingerprint"] = profile["fingerprint"]
         report["configuration_sha256"] = digest(config)
         baseline = {r["id"] for r in helper_call("read")["receipts"]}
         confirmed_artifacts = {role: (path, digest(path)) for role, path in
                                (("runtime", runtime), ("executable", tempo), ("definitions", definitions), ("configuration", config))}
-        reset_hook_diagnostics(diagnostics, diagnostic_identity)
-        measured_diagnostics = True
         report["stage"] = "measured_restart"
         terminal = Terminal(argv, env, repo, deadline, report.setdefault("command_input_probe", {}))
 
@@ -1134,9 +1203,11 @@ def run(args, report):
         require_capture_effects(snapshot, interrupt_receipt, completed_queued)
         require(all(any(r["kind"] == event and accepted(r) for r in measured) for event in EVENTS if event != "SessionEnd"), "required_native_event_missing")
         require(model.error is None, model.error or "provider_failed")
+        current_profile = require_installed_profile(helper_call("status", repo, runtime, tempo, "user"), "codex", "user", repo, pin["version"], True)
+        report["installed_artifact_matches"] = require_unchanged_profile(profile, current_profile)
         report.update({"status": "passed", "receipts": [project_receipt(r) for r in measured], "requests": model.requests,
                        "request_counts": model.counts, "queued_count": snapshot["queued"], "uncertainty_count": snapshot["uncertainties"],
-                       "assertions": ["normal_exact_definition_trust", "posttrust_session_restart", "prompt_before_provider",
+                       "assertions": ["production_install", "full_installed_inventory", "all_profile_artifacts_unchanged", "normal_exact_definition_trust", "posttrust_session_restart", "prompt_before_provider",
                                       "actual_plan_result", "actual_child_request", "parent_stop_child_still_working",
                                       "child_stop", "completed_work_queued_before_interrupt", "interrupt", "normal_session_end",
                                       "exact_bounded_interrupt_uncertainty", "production_capture_effects"]})
@@ -1147,7 +1218,6 @@ def run(args, report):
         report["requests"] = model.requests
         report["provider_entry_count"] = model.entry_count
         report["auxiliary_title_count"] = model.title_count
-        report["hook_diagnostics"] = hook_diagnostic_probe(diagnostics, diagnostic_identity) if measured_diagnostics else {"status": "unavailable", "counts": []}
         if confirmed_artifacts is not None:
             report["artifact_matches"] = artifact_match_probe(confirmed_artifacts)
         if baseline is not None and "receipts" not in report:

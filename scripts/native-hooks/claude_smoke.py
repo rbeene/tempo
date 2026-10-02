@@ -23,7 +23,7 @@ import urllib.request
 
 # Generic safety primitives only; never reuse Codex protocol/configuration.
 from codex_smoke import (FixtureFailure, require, require_absent, digest,
-                         bounded_run, hook_diagnostic_probe)
+                         bounded_run, require_installed_definitions, require_installed_profile, require_unchanged_profile)
 
 VERSION = '2.1.286'
 MODEL = 'claude-sonnet-4-6'
@@ -33,6 +33,7 @@ CHILD_PROMPT = 'tempo-native-child-case'
 READ_RESULT = 'tempo-fixture-read-ok'
 EVENTS = ('SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse',
           'SubagentStart', 'SubagentStop', 'Stop', 'SessionEnd')
+INSTALLED_EVENTS = (*EVENTS, 'PostToolUseFailure', 'PermissionRequest', 'StopFailure', 'TaskCreated', 'TaskCompleted')
 
 
 def hosted_precondition(env, system, machine, user_home):
@@ -1120,21 +1121,6 @@ def require_runtime_version(output):
     require(output in (b'2.1.286 (Claude Code)', b'2.1.286 (Claude Code)\n'), 'runtime_version_mismatch')
 
 
-def prepare_settings(tempo, diagnostics):
-    require(tempo.is_absolute() and diagnostics.is_absolute() and tempo.parent == diagnostics.parent
-            and all(re.fullmatch(r'[A-Za-z0-9/_-]+', str(p)) for p in (tempo, diagnostics)), 'unsafe_fixture_path')
-    command = str(tempo) + ' hook claude --input-stdin 2>> ' + str(diagnostics)
-    require(len(command) <= 250, 'unsafe_fixture_path')
-    try:
-        fd = os.open(diagnostics, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        try: os.fchmod(fd, 0o600)
-        finally: os.close(fd)
-    except OSError:
-        raise FixtureFailure('diagnostic_setup_failed')
-    return {'hooks': {event: [{'hooks': [{'type': 'command', 'command': command, 'timeout': 2}]}]
-                      for event in EVENTS}}
-
-
 def require_final(conversation, snapshot):
     require(conversation.counts == {'parent': 3, 'child': 1, 'continuation': 1}
             and all(type(n) is int for n in conversation.counts.values())
@@ -1148,7 +1134,8 @@ def require_final(conversation, snapshot):
 
 def run(args, report):
     started, root, provider, conversation = time.monotonic(), None, None, None
-    diagnostics = diagnostic_identity = None
+    report['hook_diagnostics'] = {'status': 'unavailable', 'counts': []}
+    report['diagnostic_source'] = 'host_managed_stderr'
     report['stage'] = 'hosted_preconditions'
     hosted_precondition(os.environ, platform.system(), platform.machine(), pwd.getpwuid(os.getuid()).pw_dir)
     sha = os.environ.get('GITHUB_SHA', '')
@@ -1168,12 +1155,7 @@ def run(args, report):
         tempo, helper = Path(args.tempo).resolve(strict=True), Path(args.helper).resolve(strict=True)
         require(tempo.is_file() and helper.is_file(), 'built_binaries_required')
         shutil.copy2(tempo, root / 'tempo'); tempo = root / 'tempo'
-        diagnostics = root / 'hook-errors'
-        settings = prepare_settings(tempo, diagnostics)
-        diagnostic_identity = diagnostics.stat()
-        (project / '.claude').mkdir(mode=0o700)
         definitions = project / '.claude/settings.json'
-        definitions.write_text(json.dumps(settings) + '\n'); definitions.chmod(0o600)
         (project / 'mcp.json').write_text('{"mcpServers":{}}\n')
         (project / 'fixture.txt').write_text(READ_RESULT + '\n')
         # No parent environment is forwarded, even to the test-only Go helper.
@@ -1181,20 +1163,25 @@ def run(args, report):
         def helper_call(action, *extra):
             selector = [] if action == 'link' else ['--host', 'claude']
             output = bounded_run([str(helper), 'fixture', action, env['TEMPO_STATE'], env['TEMPO_HOOK_STATE'],
-                                  *map(str, extra), *selector], env, project, timeout=8)
+                                  *map(str, extra), *selector], env, project,
+                                 timeout=20 if action in ('install', 'status', 'confirm') else 8)
             return json.loads(output) if output else None
-        report['stage'] = 'production_link_and_policy'
+        report['stage'] = 'production_link'
         helper_call('link', project)
-        profile = helper_call('confirm', project, runtime, tempo, definitions)
-        require(profile['basis'] == 'operator_declared' and re.fullmatch('[a-f0-9]{64}', profile['fingerprint']),
-                'native_profile_missing')
+        report['stage'] = 'production_install'
+        require_installed_profile(helper_call('install', project, runtime, tempo, 'project'), 'claude', 'project', project, VERSION, False)
+        require_installed_definitions(definitions, tempo, 'claude', INSTALLED_EVENTS)
+        require_installed_profile(helper_call('status', project, runtime, tempo, 'project'), 'claude', 'project', project, VERSION, False)
+        report['stage'] = 'production_policy_confirmation'
+        profile = require_installed_profile(helper_call('confirm', project, runtime, tempo, 'project'), 'claude', 'project', project, VERSION, True)
         require(helper_call('read')['receipts'] == [], 'nonempty_native_baseline')
         conversation = Conversation(lambda: helper_call('read'), project)
         provider = Provider(conversation, started + 240)
         env = child_environment(os.environ, root, provider.server.server_port)
         report.update({'runtime_version': VERSION, 'archive_sha256': pin['sha256'], 'runtime_sha256': digest(runtime),
                        'tempo_sha256': digest(tempo), 'definitions_sha256': digest(definitions),
-                       'profile_fingerprint': profile['fingerprint'], 'configuration_origin': 'fixture_authored',
+                       'profile_fingerprint': profile['fingerprint'], 'configuration_origin': 'production_installer',
+                       'installed_events': list(INSTALLED_EVENTS),
                        'delivery_origin': 'actual_claude_process', 'profile_basis': 'operator_declared',
                        'product_receipt_origin': 'unverified'})
         report['stage'] = 'runtime_version'
@@ -1207,10 +1194,12 @@ def run(args, report):
         report['stage'] = 'native_terminal_receipts'
         snapshot = helper_call('read')
         require_final(conversation, snapshot)
+        current_profile = require_installed_profile(helper_call('status', project, runtime, tempo, 'project'), 'claude', 'project', project, VERSION, True)
+        report['installed_artifact_matches'] = require_unchanged_profile(profile, current_profile)
         report.update({'receipts': [project_receipt(r) for r in snapshot['receipts']],
                        'queued_count': snapshot['queued'], 'uncertainty_count': snapshot['uncertainties'],
                        'capture_review_count': snapshot['capture_reviews'],
-                       'assertions': ['empty_initial_receipts', 'normal_print_settings', 'prompt_before_provider',
+                       'assertions': ['production_install', 'full_installed_inventory', 'all_profile_artifacts_unchanged', 'empty_initial_receipts', 'normal_print_settings', 'prompt_before_provider',
                                       'actual_read_result', 'actual_child_request', 'parent_stop_child_still_working',
                                       'exact_child_stop', 'normal_session_end', 'successful_host_exit', 'production_capture_effects']})
     finally:
@@ -1236,8 +1225,6 @@ def run(args, report):
                             report['receipts'] = [project_receipt(r) for r in rows]
                         except Exception:
                             report['receipt_observation_status'] = 'unavailable'
-                if diagnostics is not None and diagnostic_identity is not None:
-                    report['hook_diagnostics'] = hook_diagnostic_probe(diagnostics, diagnostic_identity)
                 report['elapsed_ms'] = int((time.monotonic() - started) * 1000)
             finally:
                 # Only our fresh temporary tree is removed. Host-generated HOME

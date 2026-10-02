@@ -52,28 +52,55 @@ func fixtureArguments(args []string) ([]string, string, string, error) {
 			return nil, "", "", fmt.Errorf("arguments")
 		}
 		expected = 4
-	case "confirm":
-		expected = 8
-		if host == "claude" {
-			expected = 7
-		}
+	case "install", "status", "confirm":
+		expected = 7
 	case "read":
 		expected = 3
 	}
 	if expected == 0 || len(args) != expected {
 		return nil, "", "", fmt.Errorf("arguments")
 	}
+	for i := 3; i < len(args); i++ {
+		if i == 6 {
+			if args[i] != "user" && args[i] != "project" {
+				return nil, "", "", fmt.Errorf("arguments")
+			}
+		} else if !filepath.IsAbs(args[i]) {
+			return nil, "", "", fmt.Errorf("arguments")
+		}
+	}
 	return args, host, version, nil
 }
 
 func run(raw []string) error {
+	return runWithOptions(raw, hookstate.Options{})
+}
+
+// Options are injected only by inert unit tests. Hosted fixture calls use the
+// actual unchanged home and production default managed/system roots.
+func runWithOptions(raw []string, options hookstate.Options) error {
 	args, host, version, err := fixtureArguments(raw)
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	timeout := 5 * time.Second
+	if args[0] == "install" || args[0] == "status" || args[0] == "confirm" {
+		// Production inspection resamples the large pinned runtime at each
+		// integrity boundary, including again inside the confirmation lock.
+		timeout = 15 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	policy := hookstate.New(hookstate.Options{Path: args[2]})
+	options.Path = args[2]
+	if args[0] == "install" || args[0] == "status" || args[0] == "confirm" {
+		options.Executable = args[5]
+		options.DiscoverRuntime = func(context.Context, string) (hookstate.Runtime, error) {
+			// The hosted caller has already verified the official pinned archive.
+			// Production installation hashes this exact path again itself.
+			return hookstate.Runtime{Path: args[4], Version: version, Surface: "local"}, nil
+		}
+	}
+	policy := hookstate.New(options)
 	service := activity.New(activity.Options{Path: args[1], HookPolicies: policy})
 	switch args[0] {
 	case "link":
@@ -103,26 +130,34 @@ func run(raw []string) error {
 			},
 		})
 		return err
-	case "confirm":
-		artifacts := []hookstate.Artifact{
-			{Role: "runtime", Path: args[4]}, {Role: "executable", Path: args[5]},
-			{Role: "definitions", Path: args[6]},
+	case "install", "status", "confirm":
+		selector := hookstate.HookSelector{Host: host, Scope: args[6], Path: args[3]}
+		if args[0] == "install" {
+			preview, err := policy.PreviewInstall(ctx, hookstate.InstallIntent{Host: host, Scope: selector.Scope, Path: selector.Path, Operation: "install"})
+			if err != nil {
+				return err
+			}
+			if _, err := policy.ApplyInstall(ctx, hookstate.ApplyInstallInput{Intent: preview.Intent, Fingerprint: preview.Fingerprint, RequestID: "f354e4f2-a5f9-45a6-a657-10f7b3d98a15", Confirmed: true}); err != nil {
+				return err
+			}
 		}
-		if host == "codex" {
-			artifacts = append(artifacts, hookstate.Artifact{Role: "configuration", Path: args[7]})
-		}
-		preview, err := policy.Preview(ctx, hookstate.Context{Host: host, Scope: "project", Path: args[3], RuntimeVersion: version, Surface: "local", Conflicts: []string{}, Artifacts: artifacts})
+		result, err := policy.Status(ctx, selector)
 		if err != nil {
 			return err
 		}
-		profile, err := policy.Confirm(ctx, hookstate.ConfirmInput{Context: preview.Context, Fingerprint: preview.Fingerprint, DeclarationVersion: hookstate.DeclarationVersion, RequestID: "8565ed5c-e3b2-4fa3-b6d3-fb49e7a3ca13", Confirmed: true})
-		if err != nil {
-			return err
+		if args[0] == "confirm" {
+			if len(result.Hooks) != 1 || result.Hooks[0].State != "approval_required" || result.Hooks[0].Profile.Fingerprint == "" {
+				return fmt.Errorf("profile")
+			}
+			result, err = policy.ConfirmInstalled(ctx, hookstate.InstalledConfirmInput{Selector: selector, Fingerprint: result.Hooks[0].Profile.Fingerprint, DeclarationVersion: hookstate.DeclarationVersion, RequestID: "8565ed5c-e3b2-4fa3-b6d3-fb49e7a3ca13", Confirmed: true})
+			if err != nil {
+				return err
+			}
+			if len(result.Hooks) != 1 || result.Hooks[0].State != "awaiting_real_event" || result.Hooks[0].Profile.Basis != "operator_declared" || !result.Hooks[0].Profile.CaptureEligible {
+				return fmt.Errorf("profile")
+			}
 		}
-		if profile.Basis != "operator_declared" || !profile.CaptureEligible {
-			return fmt.Errorf("profile")
-		}
-		return json.NewEncoder(os.Stdout).Encode(map[string]string{"basis": profile.Basis, "revision": profile.Revision, "fingerprint": profile.Fingerprint})
+		return json.NewEncoder(os.Stdout).Encode(result)
 	case "read":
 		if len(args) != 3 {
 			return fmt.Errorf("arguments")
@@ -270,41 +305,5 @@ func TestFixtureHostSelectorRejectsBeforeAccess(t *testing.T) {
 		if err != nil || len(args) != 3 || host != tc.host || version != tc.version {
 			t.Fatal("valid selector contract rejected")
 		}
-	}
-}
-
-func TestFixtureClaudeConfirmsThreeArtifacts(t *testing.T) {
-	root, err := filepath.EvalSymlinks(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	project := filepath.Join(root, "project")
-	if err := os.Mkdir(project, 0700); err != nil {
-		t.Fatal(err)
-	}
-	state, policyPath := filepath.Join(root, "state"), filepath.Join(root, "metadata", "policy")
-	paths := []string{}
-	for _, name := range []string{"runtime", "tempo", "settings"} {
-		path := filepath.Join(root, name)
-		if err := os.WriteFile(path, []byte("inert fixture artifact"), 0600); err != nil {
-			t.Fatal(err)
-		}
-		paths = append(paths, path)
-	}
-	args := append([]string{"confirm", state, policyPath, project}, paths...)
-	args = append(args, "--host", "claude")
-	if err := run(args); err != nil {
-		if problem, ok := err.(*hookstate.Error); ok {
-			t.Fatalf("genuine Claude profile confirmation: %s", problem.Code)
-		}
-		t.Fatal("genuine Claude profile confirmation failed")
-	}
-	policy := hookstate.New(hookstate.Options{Path: policyPath})
-	eligibility, err := policy.Eligibility(context.Background(), "claude", project)
-	if err != nil || !eligibility.CaptureEligible || eligibility.Basis != "operator_declared" {
-		t.Fatal("confirmed Claude policy not eligible")
-	}
-	if _, err := os.Stat(state); !os.IsNotExist(err) {
-		t.Fatal("profile confirmation created activity state")
 	}
 }
