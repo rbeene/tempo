@@ -19,9 +19,6 @@ type parsed struct {
 
 func parse(args []string) (parsed, error) {
 	p := parsed{flags: map[string]string{}}
-	if len(args) == 0 {
-		args = []string{"help"}
-	}
 	if len(args) == 1 && args[0] == "--version" {
 		args = []string{"version"}
 	}
@@ -73,11 +70,11 @@ func parse(args []string) (parsed, error) {
 		return p, nil
 	}
 	if len(words) == 0 {
-		return p, problem("usage", "command required")
+		words = []string{"ui"}
 	}
 	name := words[0]
 	n := 1
-	if name != "help" && name != "schema" && name != "version" && name != "link" && name != "setup" && name != "doctor" {
+	if name != "help" && name != "schema" && name != "version" && name != "link" && name != "setup" && name != "doctor" && name != "ui" {
 		if len(words) < 2 {
 			return p, problem("usage", "subcommand required; use tempo help")
 		}
@@ -228,6 +225,9 @@ func wantsLocalJSON(args []string, redirected bool) bool {
 	forced := false
 	for i := 0; i < len(args); i++ {
 		token := args[i]
+		if token == "--help" || token == "-h" {
+			return false
+		}
 		if strings.HasPrefix(token, "--") {
 			key, _, eq := strings.Cut(strings.TrimPrefix(token, "--"), "=")
 			if key == "non-interactive" && !eq {
@@ -245,5 +245,5 @@ func wantsLocalJSON(args []string, redirected bool) bool {
 			first = token
 		}
 	}
-	return (first == "hooks" || first == "worker" || first == "sync" || first == "activity" || first == "link" || first == "links" || first == "setup" || first == "doctor") && forced || (first == "hooks" || first == "worker" || first == "sync" || first == "setup" || first == "doctor" || first == "link") && redirected
+	return (first == "" || first == "ui" || first == "hooks" || first == "worker" || first == "sync" || first == "activity" || first == "link" || first == "links" || first == "setup" || first == "doctor") && forced || (first == "" || first == "ui" || first == "hooks" || first == "worker" || first == "sync" || first == "activity" || first == "setup" || first == "doctor" || first == "link") && redirected
 }

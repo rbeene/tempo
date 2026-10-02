@@ -131,7 +131,16 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 			if p.command.Name == "hook codex" || p.command.Name == "hook claude" {
 				return runHook(ctx, strings.TrimPrefix(p.command.Name, "hook "), in, out, errOut, d)
 			}
-			if guidedCommand(p.command.Name) {
+			if p.command.Name == "ui" || p.command.Name == "activity status" && p.flags["watch"] == "true" {
+				if eligible(in, out) && p.flags["json"] != "true" && p.flags["non-interactive"] != "true" {
+					// The interactive runner belongs to the next independently tested
+					// slice; never silently substitute a finite view for it.
+					err = problem("unsupported_contract", "interactive dashboard is not available in this build; use --json for a local snapshot")
+				} else {
+					jsonMode = true
+					data, err = activityService(d).Status(ctx)
+				}
+			} else if guidedCommand(p.command.Name) {
 				interactive := eligible(in, out) && p.flags["json"] != "true" && p.flags["non-interactive"] != "true"
 				if !interactive {
 					jsonMode = true
