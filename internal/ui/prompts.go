@@ -38,13 +38,30 @@ func newPromptBridge(ctx context.Context) *promptBridge {
 
 // chooseStyled previews supplied immutable candidate styles inside one modal.
 func (p *promptBridge) chooseStyled(ctx context.Context, title string, choices []terminal.Choice, styles map[string]terminal.Styler) (string, error) {
-	return "", nil
+	r := p.ask(promptRequest{kind: "choose", ctx: ctx, title: title, choices: append([]terminal.Choice(nil), choices...), styles: copyStyles(styles)})
+	defer clear(r.secret)
+	return r.choiceID, r.err
 }
 func (p *promptBridge) confirmStyled(ctx context.Context, title string, style terminal.Styler) (bool, error) {
-	return false, nil
+	r := p.ask(promptRequest{kind: "confirm", ctx: ctx, title: title, style: style})
+	defer clear(r.secret)
+	return r.confirmed, r.err
 }
 func (p *promptBridge) viewStyled(ctx context.Context, title, body string, style terminal.Styler) error {
-	return nil
+	r := p.ask(promptRequest{kind: "view", ctx: ctx, title: title, body: body, style: style})
+	defer clear(r.secret)
+	return r.err
+}
+
+func copyStyles(styles map[string]terminal.Styler) map[string]terminal.Styler {
+	if styles == nil {
+		return nil
+	}
+	owned := make(map[string]terminal.Styler, len(styles))
+	for id, style := range styles {
+		owned[id] = style
+	}
+	return owned
 }
 func (p *promptBridge) Choose(ctx context.Context, title string, choices []terminal.Choice) (string, error) {
 	r := p.ask(promptRequest{kind: "choose", ctx: ctx, title: title, choices: append([]terminal.Choice(nil), choices...)})
@@ -133,10 +150,23 @@ type promptModel struct {
 	affirmative, reviewed, done bool
 }
 
-func (m *promptModel) styler(base terminal.Styler) terminal.Styler { return base }
+func (m *promptModel) styler(base terminal.Styler) terminal.Styler {
+	if m.kind == "choose" {
+		choices := m.matches()
+		if len(choices) > 0 {
+			if style := m.styles[choices[min(m.selected, len(choices)-1)].ID]; style != nil {
+				return style
+			}
+		}
+	}
+	if m.style != nil {
+		return m.style
+	}
+	return base
+}
 
 func newPromptModel(request promptRequest, columns, rows int) *promptModel {
-	m := &promptModel{caller: request.ctx, kind: request.kind, title: request.title, body: request.body, choices: append([]terminal.Choice(nil), request.choices...), columns: columns, rows: rows}
+	m := &promptModel{caller: request.ctx, kind: request.kind, title: request.title, body: request.body, choices: append([]terminal.Choice(nil), request.choices...), styles: copyStyles(request.styles), style: request.style, columns: columns, rows: rows}
 	if request.kind == "secret" {
 		m.secret = make([]byte, 0, 16384)
 	} else if request.kind == "text" {
@@ -284,6 +314,7 @@ func (m *promptModel) warningLines() []string {
 }
 func (m *promptModel) warningScrollLimit() int { return max(0, len(m.warningLines())-max(1, m.rows-3)) }
 func (m *promptModel) Render(styler terminal.Styler) []string {
+	styler = m.styler(styler)
 	if m.rows <= 0 {
 		return nil
 	}
