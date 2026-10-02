@@ -893,17 +893,22 @@ class HarnessTests(unittest.TestCase):
         smoke.review_hook_screen(screen, "SessionStart", "/tmp/tempo hook codex --input-stdin", "~/.codex/hooks.json")
 
     def test_completed_capture_is_clean_before_interrupt(self):
-        good = {"queued": 2, "uncertainties": 0, "uncertainty_details": []}
+        good = {"queued": 2, "uncertainties": 0, "uncertainty_details": [], "capture_reviews": 0}
         self.assertEqual(smoke.require_completed_capture(good), 2)
         for changes in ({"queued": 0}, {"uncertainties": 1}, {"uncertainty_details": [{}]}):
             with self.assertRaises(smoke.FixtureFailure): smoke.require_completed_capture(good | changes)
+        for value in (None, False, True, "0", -1, 1, 128):
+            with self.subTest(capture_reviews=value), self.assertRaises(smoke.FixtureFailure):
+                smoke.require_completed_capture(good | {"capture_reviews": value})
+        with self.assertRaises(smoke.FixtureFailure):
+            smoke.require_completed_capture({key: value for key, value in good.items() if key != "capture_reviews"})
 
     def test_final_capture_requires_exact_bounded_interrupt_tail_and_preserved_queue(self):
         actor = {"key": {"computer_id": "computer", "source": "codex", "session_id": "session", "agent_id": "root"}, "generation": "2"}
         receipt = {"actor": actor}
         detail = {"actor": actor, "reason": "source_lost", "state": "unresolved", "bounded": True,
                   "resolution_present": False, "discarded": False}
-        good = {"queued": 2, "uncertainties": 1, "uncertainty_details": [detail]}
+        good = {"queued": 2, "uncertainties": 1, "uncertainty_details": [detail], "capture_reviews": 0}
         smoke.require_capture_effects(good, receipt, 2)
         cases = [good | {"queued": 1}, good | {"uncertainties": 0}, good | {"uncertainty_details": []},
                  good | {"uncertainties": 2, "uncertainty_details": [detail, detail]}]
@@ -914,6 +919,11 @@ class HarnessTests(unittest.TestCase):
             with self.subTest(snapshot=snapshot), self.assertRaises(smoke.FixtureFailure):
                 smoke.require_capture_effects(snapshot, receipt, 2)
         with self.assertRaises(smoke.FixtureFailure): smoke.require_capture_effects(good, {"actor": None}, 2)
+        for value in (None, False, True, "0", -1, 1, 128):
+            with self.subTest(capture_reviews=value), self.assertRaises(smoke.FixtureFailure):
+                smoke.require_capture_effects(good | {"capture_reviews": value}, receipt, 2)
+        with self.assertRaises(smoke.FixtureFailure):
+            smoke.require_capture_effects({key: value for key, value in good.items() if key != "capture_reviews"}, receipt, 2)
 
     def test_root_provider_turns_exclude_native_child_prompts(self):
         receipts = [self.receipt("SessionStart"), self.receipt("UserPromptSubmit"),

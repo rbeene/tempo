@@ -327,6 +327,8 @@ def require_prompt_barrier(receipts, session, turn):
 def require_completed_capture(snapshot):
     require(snapshot["queued"] > 0 and snapshot["uncertainties"] == 0 and snapshot["uncertainty_details"] == [],
             "completed_capture_effects_missing")
+    require(type(snapshot.get("capture_reviews")) is int and snapshot["capture_reviews"] == 0,
+            "completed_capture_effects_missing")
     return snapshot["queued"]
 
 
@@ -335,6 +337,7 @@ def require_capture_effects(snapshot, interrupt_receipt, completed_queued):
                 "resolution_present": False, "discarded": False}
     require(interrupt_receipt["actor"] is not None and completed_queued > 0 and snapshot["queued"] >= completed_queued
             and snapshot["uncertainties"] == 1 and snapshot["uncertainty_details"] == [expected], "native_capture_effects_missing")
+    require(type(snapshot.get("capture_reviews")) is int and snapshot["capture_reviews"] == 0, "native_capture_effects_missing")
 
 
 def require_plan_result(body):
@@ -1180,6 +1183,7 @@ def run(args, report):
                                    and r["turn_id"] == model.child_turn and accepted(r) for r in s["receipts"]), "child_stop_missing")
         completed_queued = require_completed_capture(completed)
         report["completed_queued_count"] = completed_queued
+        report["completed_capture_review_count"] = completed["capture_reviews"]
         terminal.command(INTERRUPT_PROMPT)
         report["stage"] = "ordinary_interrupt"
         terminal.until(lambda _: model.interrupt_seen.is_set(), "interrupt_request_missing")
@@ -1207,6 +1211,7 @@ def run(args, report):
         report["installed_artifact_matches"] = require_unchanged_profile(profile, current_profile)
         report.update({"status": "passed", "receipts": [project_receipt(r) for r in measured], "requests": model.requests,
                        "request_counts": model.counts, "queued_count": snapshot["queued"], "uncertainty_count": snapshot["uncertainties"],
+                       "capture_review_count": snapshot["capture_reviews"],
                        "assertions": ["production_install", "full_installed_inventory", "all_profile_artifacts_unchanged", "normal_exact_definition_trust", "posttrust_session_restart", "prompt_before_provider",
                                       "actual_plan_result", "actual_child_request", "parent_stop_child_still_working",
                                       "child_stop", "completed_work_queued_before_interrupt", "interrupt", "normal_session_end",

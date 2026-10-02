@@ -273,6 +273,9 @@ func (s *Service) ApplyInstall(ctx context.Context, in ApplyInstallInput) (resul
 	for _, t := range r.Targets {
 		current, e := readInstallFile(ctx, "", t.Path, "")
 		if e != nil {
+			if crossed {
+				return HookList{}, problem("local_write_unknown")
+			}
 			return HookList{}, e
 		}
 		if current.Hash == t.After {
@@ -283,6 +286,9 @@ func (s *Service) ApplyInstall(ctx context.Context, in ApplyInstallInput) (resul
 			continue
 		}
 		if current.Hash != t.Before {
+			if crossed {
+				return HookList{}, problem("local_write_unknown")
+			}
 			return HookList{}, problem("revision_conflict")
 		}
 		if s.fault("install_target_rename") != nil {
