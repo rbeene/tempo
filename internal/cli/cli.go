@@ -118,8 +118,8 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		}
 		err = validate(&p, d.Now())
 		if err == nil {
-			if p.command.Name == "hook codex" {
-				return runHook(ctx, in, out, errOut, d)
+			if p.command.Name == "hook codex" || p.command.Name == "hook claude" {
+				return runHook(ctx, strings.TrimPrefix(p.command.Name, "hook "), in, out, errOut, d)
 			}
 			if guidedCommand(p.command.Name) {
 				interactive := eligible(in, out) && p.flags["json"] != "true" && p.flags["non-interactive"] != "true"
@@ -268,9 +268,9 @@ func validate(p *parsed, now time.Time) error {
 		}
 	}
 	switch n {
-	case "hook codex":
+	case "hook codex", "hook claude":
 		if f["input-stdin"] != "true" {
-			return problem("usage", "hook codex requires --input-stdin")
+			return problem("usage", n+" requires --input-stdin")
 		}
 		if _, ok := f["account"]; ok {
 			return problem("usage", "hook capture does not accept account overrides")

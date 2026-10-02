@@ -78,7 +78,7 @@ func (s *Service) HostReceipts(ctx context.Context, filter HostReceiptFilter) (H
 }
 
 func (s *Service) ObserveHost(ctx context.Context, in HostObservation) (MutationResult, error) {
-	if in.Source != "codex" || !safeIdentifier(in.SessionID, 256) || !safeIdentifier(in.TurnID, 256) || in.AgentID != "" && !safeIdentifier(in.AgentID, 128) {
+	if !hostSource(in.Source) || !safeIdentifier(in.SessionID, 256) || !safeIdentifier(in.TurnID, 256) || in.AgentID != "" && !safeIdentifier(in.AgentID, 128) {
 		return MutationResult{}, failure("validation")
 	}
 	switch in.Reason {

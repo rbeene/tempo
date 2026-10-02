@@ -68,7 +68,7 @@ func initHostState(st *state) {
 }
 func validHostState(st *state) bool {
 	for key, s := range st.HostSessions {
-		if s == nil || !validUUID(s.ID) || s.Source != "codex" || !safeIdentifier(s.NativeID, 256) || key != hostSessionKey(HostEvent{Source: s.Source, SessionID: s.NativeID}) || !filepath.IsAbs(s.CWD) {
+		if s == nil || !validUUID(s.ID) || !hostSource(s.Source) || !safeIdentifier(s.NativeID, 256) || key != hostSessionKey(HostEvent{Source: s.Source, SessionID: s.NativeID}) || !filepath.IsAbs(s.CWD) {
 			return false
 		}
 		if s.RootTurn != "" {
@@ -79,11 +79,11 @@ func validHostState(st *state) bool {
 		}
 	}
 	for key, t := range st.HostTurns {
-		if t == nil || t.Source != "codex" || !safeIdentifier(t.SessionID, 256) || !validUUID(t.Session) || !safeIdentifier(t.TurnID, 256) || t.AgentID != "" && !safeIdentifier(t.AgentID, 128) || !filepath.IsAbs(t.CWD) || key != hostTurnKey(t.Session, HostEvent{TurnID: t.TurnID, AgentID: t.AgentID}) {
+		if t == nil || !hostSource(t.Source) || !safeIdentifier(t.SessionID, 256) || !validUUID(t.Session) || !safeIdentifier(t.TurnID, 256) || t.AgentID != "" && !safeIdentifier(t.AgentID, 128) || !filepath.IsAbs(t.CWD) || key != hostTurnKey(t.Session, HostEvent{TurnID: t.TurnID, AgentID: t.AgentID}) {
 			return false
 		}
 		for id, tool := range t.Tools {
-			if !safeIdentifier(id, 256) || !safeIdentifier(tool.Name, 256) || tool.Phase != "pre" && tool.Phase != "post" {
+			if !safeIdentifier(id, 256) || !safeIdentifier(tool.Name, 256) || tool.Phase != "pre" && tool.Phase != "post" && !(t.Source == "claude" && tool.Phase == "failed") {
 				return false
 			}
 		}
@@ -95,7 +95,7 @@ func validHostState(st *state) bool {
 		result := r.Result
 		rev, ok := counter(result.SnapshotRevision)
 		current, _ := counter(st.Revision)
-		if len(key) != 64 || len(r.Fingerprint) != 64 || result.ContractVersion != 1 || !validUUID(result.ID) || result.Source != "codex" || !safeIdentifier(result.SessionID, 256) || !ok || rev == 0 || rev > current || result.Durability != "committed" || result.Origin != "unverified" || result.ObservedAt.IsZero() {
+		if len(key) != 64 || len(r.Fingerprint) != 64 || result.ContractVersion != 1 || !validUUID(result.ID) || !hostSource(result.Source) || !safeIdentifier(result.SessionID, 256) || !ok || rev == 0 || rev > current || result.Durability != "committed" || result.Origin != "unverified" || result.ObservedAt.IsZero() {
 			return false
 		}
 		if result.Actor != nil && (!validRef(*result.Actor) || result.Actor.Key.ComputerID != st.ComputerID) {

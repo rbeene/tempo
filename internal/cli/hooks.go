@@ -19,7 +19,7 @@ import (
 // The margin is for process startup and the host's one-second Interrupt default.
 const hookBudget = 900 * time.Millisecond
 
-func runHook(ctx context.Context, in io.Reader, out, errOut io.Writer, d Dependencies) int {
+func runHook(ctx context.Context, host string, in io.Reader, out, errOut io.Writer, d Dependencies) int {
 	ctx, cancel := context.WithTimeout(ctx, hookBudget)
 	defer cancel()
 	reader, cleanup, err := hookInput(ctx, in)
@@ -29,7 +29,11 @@ func runHook(ctx context.Context, in io.Reader, out, errOut io.Writer, d Depende
 	result := activity.HostReceipt{Durability: "not_committed"}
 	if err == nil {
 		var event activity.HostEvent
-		event, err = hooks.DecodeCodex(reader)
+		if host == "claude" {
+			event, err = hooks.DecodeClaude(reader)
+		} else {
+			event, err = hooks.DecodeCodex(reader)
+		}
 		if err == nil && ctx.Err() != nil {
 			err = problem("validation", "hook input deadline exceeded")
 		}
@@ -58,8 +62,10 @@ func runHook(ctx context.Context, in io.Reader, out, errOut io.Writer, d Depende
 		fmt.Fprintf(errOut, "tempo hook: %s; durability=%s\n", safeHookCode(code), result.Durability)
 	}
 	// No control fields, approvals, context, or Tempo envelope enter host output.
-	if _, writeErr := io.WriteString(out, "{}\n"); writeErr != nil {
-		return 1
+	if host == "codex" {
+		if _, writeErr := io.WriteString(out, "{}\n"); writeErr != nil {
+			return 1
+		}
 	}
 	return 0
 }

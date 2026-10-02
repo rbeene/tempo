@@ -1,0 +1,9 @@
+{
+  "version": "2.1.286",
+  "platform": "linux-x64",
+  "url": "https://github.com/anthropics/claude-code/releases/download/v2.1.286/claude-linux-x64.tar.gz",
+  "size": 106930957,
+  "sha256": "ce19bf64fa7e1bc27c1607a8119cc7167f926f363c85b0983a4516a505b330b3",
+  "binary_size": 241667256,
+  "binary_sha256": "fe503f65c6289d59c23e5b21ae44f03583f997dd33a2cbfc75ab4f96fb8fc73f"
+}

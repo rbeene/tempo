@@ -83,7 +83,7 @@
       "contract_version": "integer=1",
       "snapshot_revision": "counter",
       "id": "uuid",
-      "source": "codex",
+      "source": "codex|claude",
       "session_id": "string",
       "turn_id": "string",
       "agent_id": "string",

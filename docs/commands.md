@@ -306,3 +306,13 @@ owned child processes and local mock HTTP; it does not install personal services
 ## Native Codex callbacks
 
 `hook codex --input-stdin` consumes one bounded native callback and returns exactly `{}` for the host. It runs locally without credentials or prompts; capture diagnostics and durability appear only on stderr. `--json` and `--non-interactive` preserve that host protocol. Account overrides and confirmation flags are inapplicable. Capture requires an existing link and retained eligible hook policy. This command does not install or trust hooks. See [Codex lifecycle capture](codex-hooks.md) for the supported runtime, identity rules and delivery limits.
+
+## Native Claude callbacks
+
+`hook claude --input-stdin` consumes one bounded Claude callback with empty stdout.
+Capture failures exit zero and report a fixed diagnostic and durability on stderr;
+invalid arguments remain usage errors. The same 64 KiB input limit, 900 ms budget,
+offline capture and retained eligibility requirements apply. `--json` and
+`--non-interactive` preserve empty host stdout. See [Claude lifecycle
+capture](claude-hooks.md) for prompt/child identity, question waits, failure and
+delivery limits. Neither hook command installs configuration or grants trust.

@@ -2,10 +2,19 @@ package activity
 
 import "time"
 
-// These exact flattened names and matched native call IDs are supported by the
-// pinned Codex runtime. No suffix matching, target body or lineage inference.
-func hostWaitTool(name string) bool {
-	return name == "wait_agent" || name == "multi_agent_v1wait_agent"
+// Native names are source-specific. No suffix matching or argument inference.
+func hostWaitTool(source, name string) bool {
+	if source == "claude" {
+		return name == "AskUserQuestion"
+	}
+	return source == "codex" && (name == "wait_agent" || name == "multi_agent_v1wait_agent")
+}
+
+func hostWaitState(source string) string {
+	if source == "claude" {
+		return "wait_user"
+	}
+	return "wait_children"
 }
 
 func hostWaiting(turn *hostTurn) bool {
@@ -14,12 +23,31 @@ func hostWaiting(turn *hostTurn) bool {
 		if tool.Phase != "pre" {
 			continue
 		}
-		if !hostWaitTool(tool.Name) {
+		if !hostWaitTool(turn.Source, tool.Name) {
 			return false
 		}
 		waiting = true
 	}
 	return waiting
+}
+
+// A completed Claude turn also waits for the user, but has no pending native
+// question whose lost completion needs a continuity fence.
+func hostPendingWait(st *state, a *Actor) bool {
+	if a == nil {
+		return false
+	}
+	if a.State == "wait_children" {
+		return true
+	}
+	if a.State == "wait_user" && a.Ref.Key.Source == "claude" {
+		for _, turn := range st.HostTurns {
+			if turn.Actor != nil && *turn.Actor == a.Ref && hostWaiting(turn) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Waiting has no open work segment. A positive loss fences continuity without
@@ -44,7 +72,7 @@ func captureReview(r HostReceipt) bool {
 // Preserve the waiting actor's own provenance when a different actor or a
 // shared recovery operation observes the loss. No new timing record is created.
 func retainHostWaitLoss(st *state, a *Actor, kind string, observed time.Time) bool {
-	if a == nil || a.State != "wait_children" || a.Health != "continuous" {
+	if !hostPendingWait(st, a) || a.Health != "continuous" {
 		return false
 	}
 	var receipt HostReceipt

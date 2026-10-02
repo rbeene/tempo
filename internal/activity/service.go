@@ -129,6 +129,13 @@ func (s *Service) resolveInitial(ctx context.Context, st *state, e Event) (Bindi
 // reduce is an already-locked transaction primitive. Future bridges can persist
 // source ordering tokens and call it in the same transaction, without reentering Ingest.
 func (s *Service) reduce(ctx context.Context, st *state, e Event) (EventResult, bool, error) {
+	return s.reduceWithWaitGuard(ctx, st, e, false)
+}
+
+// Native question completion can resume only if the same clock sample used for
+// the transition preserves continuity. Explicit normalized work keeps its usual
+// recovery semantics.
+func (s *Service) reduceWithWaitGuard(ctx context.Context, st *state, e Event, guardWaitResume bool) (EventResult, bool, error) {
 	result := baseResult(e, st.Revision, "applied")
 	if e.Actor.ComputerID != st.ComputerID {
 		return result, false, failure("validation")
@@ -222,6 +229,9 @@ func (s *Service) reduce(ctx context.Context, st *state, e Event) (EventResult, 
 	clockChanged := quarantineClock(st, sample)
 	if clockErr != nil {
 		return result, clockChanged, clockErr
+	}
+	if guardWaitResume && !newer && a.Health != "continuous" {
+		return result, clockChanged, failure("clock_conflict")
 	}
 	if newer {
 		var oldIDs []string
