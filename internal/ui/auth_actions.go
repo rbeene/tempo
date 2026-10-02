@@ -217,9 +217,21 @@ func authRead(ctx context.Context, p *promptBridge, actions *AuthActions, id str
 
 func (c *authController) finish(ctx context.Context, p *promptBridge, actions *AuthActions, operation, account string, result auth.Result, err error) error {
 	if err == nil {
+		// Retain the shared reply before presenting it: terminal cancellation
+		// may prevent the view, but cannot erase an acknowledged local effect.
+		c.completed = &authCompletion{operation: operation, result: result}
 		return p.View(ctx, "Auth complete", authResult(result))
 	}
 	if !unknownOutcome(err) {
+		var domain *auth.Error
+		if errors.As(err, &domain) {
+			effects := domain.Effects
+			credentialChanged := effects.Credential == "applied" || effects.Credential == "unknown"
+			configChanged := effects.Config == "saved" || effects.Config == "cleared" || effects.Config == "restored" || effects.Config == "unknown"
+			if credentialChanged || configChanged {
+				c.completed = &authCompletion{operation: operation, result: result, err: err}
+			}
+		}
 		return authFailure(ctx, p, err)
 	}
 	c.pending, c.operation, c.account = err, operation, account
