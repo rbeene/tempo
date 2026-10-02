@@ -3,6 +3,7 @@ package activity
 import (
 	"context"
 	"sort"
+	"time"
 )
 
 // A callback may return a committed safety error only when it has quarantined
@@ -135,6 +136,7 @@ func (s *Service) Interrupt(ctx context.Context, in InterruptInput) (MutationRes
 				}
 			}
 		}
+		retainHostWaitLoss(st, a, "Interrupt", time.Now().UTC())
 		detach(a)
 		return MutationResult{Changed: true, AffectedIDs: affected, EntityRevision: &a.Revision}, false, nil
 	})
@@ -149,35 +151,39 @@ func (s *Service) ObserveSource(ctx context.Context, in SourceObservation) (Muta
 		return MutationResult{}, failure("validation")
 	}
 	return s.recoveryMutation(ctx, in.RequestID, "activity.observe_source", in, func(st *state) (MutationResult, bool, error) {
-		a := st.Actors[actorKey(in.Actor.Key)]
-		if a == nil {
-			return MutationResult{}, false, failure("actor_not_found")
-		}
-		if a.Ref != in.Actor {
-			old, _ := counter(in.Actor.Generation)
-			current, _ := counter(a.Ref.Generation)
-			if old > current {
-				return MutationResult{}, false, failure("actor_not_found")
-			}
-			return MutationResult{}, false, nil
-		}
-		if terminal(a) {
-			return MutationResult{}, false, nil
-		}
-		before := actorRevisions(st)
-		sample, _ := s.sample()
-		// Preserve the positive source-loss reason on the target even if the same
-		// observation also discovers computer-wide clock discontinuity.
-		quarantine(st, a, in.Reason, sample)
-		quarantineClock(st, sample)
-		if in.Reason == "ordering_unavailable" && a.Health != "order_blocked" {
-			a.Health = "order_blocked"
-			a.Revision = bump(a.Revision)
-		}
-		ids := changedActors(st, before)
-		return MutationResult{Changed: len(ids) > 0, AffectedIDs: ids}, false, nil
+		return s.observeSourceState(st, in)
 	})
 }
+func (s *Service) observeSourceState(st *state, in SourceObservation) (MutationResult, bool, error) {
+	a := st.Actors[actorKey(in.Actor.Key)]
+	if a == nil {
+		return MutationResult{}, false, failure("actor_not_found")
+	}
+	if a.Ref != in.Actor {
+		old, _ := counter(in.Actor.Generation)
+		current, _ := counter(a.Ref.Generation)
+		if old > current {
+			return MutationResult{}, false, failure("actor_not_found")
+		}
+		return MutationResult{}, false, nil
+	}
+	if terminal(a) {
+		return MutationResult{}, false, nil
+	}
+	before := actorRevisions(st)
+	sample, _ := s.sample()
+	// Preserve the positive source-loss reason on the target even if the same
+	// observation also discovers computer-wide clock discontinuity.
+	quarantine(st, a, in.Reason, sample)
+	quarantineClock(st, sample)
+	if in.Reason == "ordering_unavailable" && a.Health != "order_blocked" {
+		a.Health = "order_blocked"
+		a.Revision = bump(a.Revision)
+	}
+	ids := changedActors(st, before)
+	return MutationResult{Changed: len(ids) > 0, AffectedIDs: ids}, false, nil
+}
+
 func (s *Service) ObserveClock(ctx context.Context, in ClockObservation) (MutationResult, error) {
 	return s.recoveryMutation(ctx, in.RequestID, "activity.observe_clock", in, func(st *state) (MutationResult, bool, error) {
 		before := actorRevisions(st)

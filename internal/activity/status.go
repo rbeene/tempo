@@ -14,7 +14,7 @@ func (s *Service) Status(ctx context.Context) (ActivitySnapshot, error) {
 		return ActivitySnapshot{}, err
 	}
 	sample, _ := s.sample()
-	result := ActivitySnapshot{ContractVersion: 1, SnapshotRevision: st.Revision, ObservedAt: sample.WallUTC, Projects: []ProjectActivity{}, Actors: []Actor{}, Uncertainties: []Uncertainty{}, ClosedIntervals: []Interval{}, Worker: WorkerStatus{State: "not_installed"}}
+	result := ActivitySnapshot{ContractVersion: 1, SnapshotRevision: st.Revision, ObservedAt: sample.WallUTC, Projects: []ProjectActivity{}, Actors: []Actor{}, Uncertainties: []Uncertainty{}, CaptureReviews: []HostReceipt{}, ClosedIntervals: []Interval{}, Worker: WorkerStatus{State: "not_installed"}}
 	if !exists {
 		result.Worker = s.observedWorker(ctx, result.Worker)
 		return result, nil
@@ -22,6 +22,12 @@ func (s *Service) Status(ctx context.Context) (ActivitySnapshot, error) {
 	result.ComputerID = &st.ComputerID
 	result.SyncEnabled = st.SyncEnabled
 	result.Worker.SyncEnabled = st.SyncEnabled
+	for _, receipt := range st.HostReceipts {
+		if captureReview(receipt.Result) {
+			result.CaptureReviews = append(result.CaptureReviews, receipt.Result)
+		}
+	}
+	sort.Slice(result.CaptureReviews, func(i, j int) bool { return result.CaptureReviews[i].ID < result.CaptureReviews[j].ID })
 	projects := map[string]*ProjectActivity{}
 	get := func(computer string, a Attribution) *ProjectActivity {
 		k := attributionKey(computer, a)

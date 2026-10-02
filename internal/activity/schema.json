@@ -79,6 +79,27 @@
       "synced_count": "integer",
       "needs_attention_count": "integer"
     },
+    "HostReceipt": {
+      "contract_version": "integer=1",
+      "snapshot_revision": "counter",
+      "id": "uuid",
+      "source": "codex",
+      "session_id": "string",
+      "turn_id": "string",
+      "agent_id": "string",
+      "kind": "string",
+      "tool_id": "string",
+      "disposition": "applied|stale|review_required",
+      "ordering": "supported|review_required|unavailable",
+      "diagnostic_code": "string",
+      "durability": "committed",
+      "origin": "unverified",
+      "profile_basis": "operator_declared|none",
+      "profile_revision": "counter",
+      "fingerprint": "string",
+      "actor": "ActorRef|null",
+      "observed_at": "utc"
+    },
     "ActivitySnapshot": {
       "contract_version": "integer=1",
       "snapshot_revision": "counter",
@@ -87,6 +108,7 @@
       "projects": "ProjectActivity[]",
       "actors": "Actor[]",
       "uncertainties": "Uncertainty[]",
+      "capture_reviews": "HostReceipt[]",
       "closed_intervals": "Interval[]",
       "worker": "WorkerStatus",
       "sync_enabled": "bool"

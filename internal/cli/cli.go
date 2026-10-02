@@ -118,6 +118,9 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		}
 		err = validate(&p, d.Now())
 		if err == nil {
+			if p.command.Name == "hook codex" {
+				return runHook(ctx, in, out, errOut, d)
+			}
 			if guidedCommand(p.command.Name) {
 				interactive := eligible(in, out) && p.flags["json"] != "true" && p.flags["non-interactive"] != "true"
 				if !interactive {
@@ -265,6 +268,16 @@ func validate(p *parsed, now time.Time) error {
 		}
 	}
 	switch n {
+	case "hook codex":
+		if f["input-stdin"] != "true" {
+			return problem("usage", "hook codex requires --input-stdin")
+		}
+		if _, ok := f["account"]; ok {
+			return problem("usage", "hook capture does not accept account overrides")
+		}
+		if _, ok := f["yes"]; ok {
+			return problem("usage", "hook capture does not accept confirmation flags")
+		}
 	case "links show":
 		if len(p.args) > 0 && f["path"] != "" {
 			return problem("validation", "use binding ID or --path, not both")

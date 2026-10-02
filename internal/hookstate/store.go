@@ -1,0 +1,501 @@
+package hookstate
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"time"
+	"unicode/utf8"
+)
+
+const maxStateBytes = 4 << 20
+
+func (s *Service) fault(stage string) error {
+	if s.fail != nil {
+		return s.fail(stage)
+	}
+	return nil
+}
+func randomID() string {
+	var b [16]byte
+	if _, e := rand.Read(b[:]); e != nil {
+		panic(e)
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// secureDirectory verifies path components, then pins the private leaf by descriptor.
+// Parent permissions are never changed. Standard macOS /var and /tmp aliases are
+// canonicalized before this walk; user-supplied symlinks are not followed.
+func secureDirectory(dir string, create bool) (*os.Root, os.FileInfo, error) {
+	cur := string(filepath.Separator)
+	for _, part := range strings.Split(strings.TrimPrefix(dir, cur), string(filepath.Separator)) {
+		if part == "" {
+			continue
+		}
+		parent := cur
+		cur = filepath.Join(cur, part)
+		fi, err := os.Lstat(cur)
+		if errors.Is(err, os.ErrNotExist) && create {
+			if err = os.Mkdir(cur, 0700); err != nil && !errors.Is(err, os.ErrExist) {
+				return nil, nil, problem("state_corrupt")
+			}
+			pf, e := os.Open(parent)
+			if e != nil {
+				return nil, nil, problem("local_write_unknown")
+			}
+			e = pf.Sync()
+			pf.Close()
+			if e != nil {
+				return nil, nil, problem("local_write_unknown")
+			}
+			fi, err = os.Lstat(cur)
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		if !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
+			return nil, nil, problem("state_corrupt")
+		}
+	}
+	before, err := os.Lstat(dir)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !privateInfo(before, true) {
+		return nil, nil, problem("state_corrupt")
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, nil, problem("state_corrupt")
+	}
+	f, err := root.Open(".")
+	if err != nil {
+		root.Close()
+		return nil, nil, problem("state_corrupt")
+	}
+	after, err := f.Stat()
+	f.Close()
+	if err != nil || !os.SameFile(before, after) || !privateInfo(after, true) {
+		root.Close()
+		return nil, nil, problem("state_corrupt")
+	}
+	return root, after, nil
+}
+
+type lockedStore struct {
+	root        *os.Root
+	lock        *os.File
+	dir         string
+	dirInfo     os.FileInfo
+	name        string
+	stateInfo   os.FileInfo
+	stateExists bool
+}
+
+func (l *lockedStore) close() { unlockFile(l.lock); l.lock.Close(); l.root.Close() }
+func (l *lockedStore) verifyState() error {
+	current, err := l.root.Lstat(l.name)
+	if !l.stateExists {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return problem("state_corrupt")
+	}
+	if err != nil || !privateInfo(current, false) || !os.SameFile(l.stateInfo, current) || current.Size() != l.stateInfo.Size() || !current.ModTime().Equal(l.stateInfo.ModTime()) {
+		return problem("state_corrupt")
+	}
+	return nil
+}
+func (l *lockedStore) verify() error {
+	fi, e := os.Lstat(l.dir)
+	if e != nil || fi.Mode()&os.ModeSymlink != 0 || !os.SameFile(fi, l.dirInfo) {
+		return problem("state_corrupt")
+	}
+	a, e := l.lock.Stat()
+	if e != nil {
+		return problem("state_corrupt")
+	}
+	b, e := l.root.Lstat(l.name + ".lock")
+	if e != nil || !os.SameFile(a, b) || !privateInfo(a, false) || b.Mode()&os.ModeSymlink != 0 {
+		return problem("state_corrupt")
+	}
+	return nil
+}
+func (s *Service) acquire(ctx context.Context, create bool) (*lockedStore, bool, error) {
+	p, err := s.location()
+	if err != nil {
+		return nil, false, err
+	}
+	dir, name := filepath.Dir(p), filepath.Base(p)
+	root, info, err := secureDirectory(dir, create)
+	if errors.Is(err, os.ErrNotExist) && !create {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, failureFrom(err)
+	}
+	exists := true
+	fi, err := root.Lstat(name)
+	if errors.Is(err, os.ErrNotExist) {
+		exists = false
+	} else if err != nil || !privateInfo(fi, false) {
+		root.Close()
+		return nil, false, problem("state_corrupt")
+	}
+	if !exists && !create {
+		root.Close()
+		return nil, false, nil
+	}
+	flags := os.O_RDWR
+	if create && !exists {
+		flags |= os.O_CREATE
+	}
+	lock, err := openNoFollow(root, name+".lock", flags, 0600)
+	// Simultaneous first creators can observe ENOENT from openat on macOS.
+	// Retry only this initial create, through the same pinned root/no-follow
+	// boundary; all inode/permission checks below still apply.
+	for attempt := 0; create && !exists && errors.Is(err, os.ErrNotExist) && attempt < 3; attempt++ {
+		lock, err = openNoFollow(root, name+".lock", flags, 0600)
+	}
+	if err != nil {
+		root.Close()
+		return nil, false, problem("state_corrupt")
+	}
+	if create && !exists {
+		if lock.Sync() != nil {
+			lock.Close()
+			root.Close()
+			return nil, false, problem("local_write_unknown")
+		}
+	}
+	li, err := lock.Stat()
+	if err != nil || !privateInfo(li, false) {
+		lock.Close()
+		root.Close()
+		return nil, false, problem("state_corrupt")
+	}
+	timeout := s.options.LockTimeout
+	if timeout == 0 {
+		timeout = 250 * time.Millisecond
+	}
+	if timeout < 0 || timeout > time.Second {
+		lock.Close()
+		root.Close()
+		return nil, false, problem("validation")
+	}
+	limit, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	for {
+		if limit.Err() != nil {
+			lock.Close()
+			root.Close()
+			return nil, false, problem("state_busy")
+		}
+		ok, e := tryLockFile(lock)
+		if e != nil {
+			lock.Close()
+			root.Close()
+			return nil, false, problem("state_corrupt")
+		}
+		if ok {
+			break
+		}
+		select {
+		case <-limit.Done():
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	l := &lockedStore{root: root, lock: lock, dir: dir, dirInfo: info, name: name}
+	if err := l.verify(); err != nil {
+		l.close()
+		return nil, false, err
+	}
+	return l, true, nil
+}
+func failureFrom(err error) error {
+	var e *Error
+	if errors.As(err, &e) {
+		return e
+	}
+	return problem("state_corrupt")
+}
+func decodeMetadata(l *lockedStore) (*metadata, bool, error) {
+	f, err := openNoFollow(l.root, l.name, os.O_RDONLY, 0)
+	if errors.Is(err, os.ErrNotExist) {
+		l.stateExists = false
+		l.stateInfo = nil
+		return emptyMetadata(), false, nil
+	}
+	if err != nil {
+		return nil, false, problem("state_corrupt")
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil || !privateInfo(fi, false) || fi.Size() > maxStateBytes {
+		return nil, false, problem("state_corrupt")
+	}
+	l.stateExists = true
+	l.stateInfo = fi
+	b, err := io.ReadAll(io.LimitReader(f, maxStateBytes+1))
+	if err != nil || len(b) > maxStateBytes || !strictJSON(b) || !exactJSONFields(b, reflect.TypeOf(metadata{})) {
+		return nil, false, problem("state_corrupt")
+	}
+	var st metadata
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	if dec.Decode(&st) != nil || !validMetadata(&st) {
+		return nil, false, problem("state_corrupt")
+	}
+	return &st, true, nil
+}
+func (s *Service) read(ctx context.Context) (*metadata, bool, error) {
+	l, ok, err := s.acquire(ctx, false)
+	if err != nil || !ok {
+		return emptyMetadata(), false, err
+	}
+	defer l.close()
+	return decodeMetadata(l)
+}
+func (s *Service) syncVisible(l *lockedStore) error {
+	if err := l.verifyState(); err != nil {
+		return err
+	}
+	if err := l.verify(); err != nil {
+		return err
+	}
+	f, err := openNoFollow(l.root, l.name, os.O_RDONLY, 0)
+	if err != nil {
+		return problem("local_write_unknown")
+	}
+	actual, statErr := f.Stat()
+	if statErr != nil || !os.SameFile(l.stateInfo, actual) {
+		f.Close()
+		return problem("state_corrupt")
+	}
+	err = f.Sync()
+	f.Close()
+	if err != nil {
+		return problem("local_write_unknown")
+	}
+	if s.fault("directory_sync") != nil {
+		return problem("local_write_unknown")
+	}
+	d, err := l.root.Open(".")
+	if err != nil {
+		return problem("local_write_unknown")
+	}
+	err = d.Sync()
+	d.Close()
+	if err != nil {
+		return problem("local_write_unknown")
+	}
+	return nil
+}
+func (s *Service) update(ctx context.Context, fn func(*metadata) (bool, error)) error {
+	if ctx.Err() != nil {
+		return problem("state_busy")
+	}
+	l, _, err := s.acquire(ctx, true)
+	if err != nil {
+		return err
+	}
+	defer l.close()
+	st, exists, err := decodeMetadata(l)
+	if err != nil {
+		return err
+	}
+	changed, err := fn(st)
+	if err != nil {
+		return err
+	}
+	if !changed {
+		if err := l.verify(); err != nil {
+			return err
+		}
+		if exists {
+			return s.syncVisible(l)
+		}
+		return l.verifyState()
+	}
+	if !validMetadata(st) {
+		return problem("validation")
+	}
+	b, err := json.Marshal(st)
+	if err != nil {
+		return problem("validation")
+	}
+	if len(b) > maxStateBytes {
+		return problem("validation")
+	}
+	if ctx.Err() != nil {
+		return problem("state_busy")
+	}
+	if s.fault("before_write") != nil {
+		return problem("state_corrupt")
+	}
+	tmp := ".hooks-" + randomID() + ".tmp"
+	f, err := openNoFollow(l.root, tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return problem("state_corrupt")
+	}
+	defer l.root.Remove(tmp)
+	_, err = f.Write(b)
+	if err == nil {
+		err = s.fault("file_sync")
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	tempInfo, statErr := f.Stat()
+	if err == nil {
+		err = statErr
+	}
+	closeErr := f.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return problem("state_corrupt")
+	}
+	if ctx.Err() != nil {
+		return problem("state_busy")
+	}
+	if err = l.verify(); err != nil {
+		return err
+	}
+	if s.fault("rename") != nil {
+		return problem("state_corrupt")
+	}
+	if err := l.verifyState(); err != nil {
+		return err
+	}
+	if l.root.Rename(tmp, l.name) != nil {
+		return problem("local_write_unknown")
+	}
+	l.stateInfo = tempInfo
+	l.stateExists = true
+	if s.syncVisible(l) != nil {
+		return problem("local_write_unknown")
+	}
+	return nil
+}
+
+// JSON's default decoder accepts duplicate keys and malformed UTF-8. Reject
+// those before decoding any persisted or ingress value/fingerprint.
+func strictJSON(b []byte) bool {
+	if !utf8.Valid(b) {
+		return false
+	}
+	d := json.NewDecoder(bytes.NewReader(b))
+	d.UseNumber()
+	var value func(int) bool
+	value = func(depth int) bool {
+		if depth > 64 {
+			return false
+		}
+		t, e := d.Token()
+		if e != nil {
+			return false
+		}
+		delim, ok := t.(json.Delim)
+		if !ok {
+			return true
+		}
+		switch delim {
+		case '{':
+			seen := map[string]bool{}
+			for d.More() {
+				k, e := d.Token()
+				if e != nil {
+					return false
+				}
+				key, ok := k.(string)
+				if !ok || seen[key] {
+					return false
+				}
+				seen[key] = true
+				if !value(depth + 1) {
+					return false
+				}
+			}
+			end, e := d.Token()
+			return e == nil && end == json.Delim('}')
+		case '[':
+			for d.More() {
+				if !value(depth + 1) {
+					return false
+				}
+			}
+			end, e := d.Token()
+			return e == nil && end == json.Delim(']')
+		default:
+			return false
+		}
+	}
+	if !value(0) {
+		return false
+	}
+	_, err := d.Token()
+	return err == io.EOF
+}
+
+// Reject case-insensitive field aliases throughout typed persisted records.
+func exactJSONFields(raw []byte, typ reflect.Type) bool {
+	for typ.Kind() == reflect.Pointer {
+		typ = typ.Elem()
+	}
+	if typ == reflect.TypeOf(time.Time{}) || string(raw) == "null" {
+		return true
+	}
+	switch typ.Kind() {
+	case reflect.Struct:
+		var object map[string]json.RawMessage
+		if json.Unmarshal(raw, &object) != nil || object == nil {
+			return false
+		}
+		fields := map[string]reflect.Type{}
+		for i := 0; i < typ.NumField(); i++ {
+			f := typ.Field(i)
+			name := strings.Split(f.Tag.Get("json"), ",")[0]
+			if name != "" && name != "-" {
+				fields[name] = f.Type
+			}
+		}
+		for key, value := range object {
+			ft, ok := fields[key]
+			if !ok || !exactJSONFields(value, ft) {
+				return false
+			}
+		}
+	case reflect.Map:
+		var object map[string]json.RawMessage
+		if json.Unmarshal(raw, &object) != nil {
+			return false
+		}
+		for _, v := range object {
+			if !exactJSONFields(v, typ.Elem()) {
+				return false
+			}
+		}
+	case reflect.Slice:
+		var array []json.RawMessage
+		if json.Unmarshal(raw, &array) != nil {
+			return false
+		}
+		for _, v := range array {
+			if !exactJSONFields(v, typ.Elem()) {
+				return false
+			}
+		}
+	}
+	return true
+}

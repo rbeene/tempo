@@ -108,3 +108,9 @@ persistent disablement precedes publication; Linux installation reloads an
 unenabled user unit. Explicit Start enables startup, Stop disables it, and removal
 preserves local activity and replay journals. Native commands are bounded and raw
 manager diagnostics never become user-visible error messages.
+
+## Native hook ingress and retained policy
+
+`internal/hooks` decodes bounded native payloads into allowlisted metadata. `activity.Service.IngestHost` persists native incarnation/turn/tool mappings and receipts in the same transaction as the existing reducer. Root and child identities are separate; registered followups retain their context across cwd changes or link removal. `ObserveHost` resolves exactly one recorded native tuple and calls the same transaction-local recovery helper as `ObserveSource`. It rejects reused ambiguous identities without guessing a newer actor. Host receipts do not assert native delivery.
+
+`internal/hookstate.Service` owns a separate private 4 MiB hooks metadata file, one lock and a typed request ledger. It initializes retained operator-declared capture policy without initializing computer identity. Preview hashes bounded no-follow regular artifacts without retaining content. Confirmation, revocation and durable invalidation use revision-sensitive fingerprints and atomic commits; identical request replay reconciles uncertain durability without resurrection. This is the single metadata domain for later hook installation manifests and request types. It is not another timing store. See [Codex lifecycle capture](codex-hooks.md) for policy sampling races, supported hosts and residual delivery limits.

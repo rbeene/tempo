@@ -4,6 +4,8 @@ package activity
 import (
 	"context"
 	"time"
+
+	"github.com/rbeene/tempo/internal/hookstate"
 )
 
 type Clock interface{ Sample() (ClockSample, error) }
@@ -17,6 +19,7 @@ type Options struct {
 	Clock          Clock
 	ResolveBinding BindingResolver
 	LockTimeout    time.Duration
+	HookPolicies   *hookstate.Service
 }
 type BindingResolver func(context.Context, Event) (BindingSnapshot, bool, error)
 type ActorKey struct {
@@ -79,6 +82,9 @@ type Error struct {
 func (e *Error) Error() string { return e.Message }
 
 type ActivitySnapshot struct {
+	// CaptureReviews retain non-reconstructable host capture warnings. They are
+	// not timing uncertainties and cannot be resolved with an interval end.
+	CaptureReviews   []HostReceipt     `json:"capture_reviews"`
 	ContractVersion  int               `json:"contract_version"`
 	SnapshotRevision string            `json:"snapshot_revision"`
 	ObservedAt       time.Time         `json:"observed_at"`

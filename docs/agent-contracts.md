@@ -171,3 +171,7 @@ Required independent checks: ordered transitions/replay after restart; parent/ne
 ### Shipped guided authentication boundary
 
 Setup and direct auth commands use the same bounded native helper and account-selection operations. Authentication/config writes serialize across the per-user credential namespace; a dispatched helper write with no conclusive reply has unknown effects even after the helper is killed and reaped. `credential_write_unknown` is nonretryable and carries safe `details.effects` for credential/config. Inspect status and config before an explicit replacement; no automatic replay or credential rollback is implied. Guided setup confirms authentication and linking as separate steps; `error.details.completed_steps` and human diagnostics preserve earlier completion when a later step fails. Finite setup and default doctor only inspect local account configuration/bindings and known capability limits.
+
+## Native Codex capture subset
+
+The shipped local Codex hook protocol and its retained eligibility, ordering, delivery limits and native acceptance bounds are documented in [codex-hooks.md](codex-hooks.md). `ActivitySnapshot.capture_reviews` projects retained non-reconstructable host warnings from committed receipts. It is separate from end-resolvable `uncertainties`: an incomplete blocking wait has no proven continuous working tail to resolve. The warning retains exact actor/native/policy provenance and never authorizes automatic billing or implicit acknowledgment. Later independent generations remain usable.

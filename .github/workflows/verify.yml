@@ -33,6 +33,29 @@ jobs:
       - name: Format
         run: test -z "$(gofmt -l cmd internal)"
       - run: go vet ./...
+      - name: Build Linux single binary
+        run: go build -trimpath -ldflags="-s -w -X github.com/rbeene/tempo/internal/cli.Version=${GITHUB_SHA}" -o bin/tempo ./cmd/tempo
+      - name: Offline smoke checks and schema drift
+        run: |
+          bin/tempo version
+          bin/tempo help
+          bin/tempo schema > /tmp/tempo-schema.json
+          cmp docs/cli-schema.json /tmp/tempo-schema.json
+      - name: Build native fixture setup and read helper
+        run: go test -c -o bin/tempo-native-fixture.test ./internal/nativefixture
+      - name: Native fixture safety and protocol tests (no host execution)
+        run: python3 -B scripts/native-hooks/test_codex_smoke.py
+      - name: Native Codex hook acceptance (synthetic loopback provider)
+        timeout-minutes: 5
+        run: python3 -B scripts/native-hooks/codex_smoke.py --tempo bin/tempo --helper bin/tempo-native-fixture.test --evidence bin/native-codex-evidence.json
+      - name: Upload allowlisted native evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tempo-native-codex-${{ github.sha }}
+          path: bin/native-codex-evidence.json
+          if-no-files-found: ignore
+          retention-days: 7
       - run: go test -race -coverpkg=./internal/... -coverprofile=coverage.out ./...
       - run: sh scripts/test-install.sh
       - run: sh scripts/test-release-version.sh
@@ -46,14 +69,6 @@ jobs:
           goreleaser check
           goreleaser check --config .goreleaser.macos.yaml
           goreleaser release --snapshot --clean --skip=publish --parallelism=1
-      - name: Build Linux single binary
-        run: go build -trimpath -ldflags="-s -w -X github.com/rbeene/tempo/internal/cli.Version=${GITHUB_SHA}" -o bin/tempo ./cmd/tempo
-      - name: Offline smoke checks and schema drift
-        run: |
-          bin/tempo version
-          bin/tempo help
-          bin/tempo schema > /tmp/tempo-schema.json
-          cmp docs/cli-schema.json /tmp/tempo-schema.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: tempo-linux-${{ runner.arch }}
