@@ -146,11 +146,17 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 							}
 							return service.Run(readCtx, setup.Input{}, nil)
 						}}
-						err = uiResultError(ui.Run(session.Context(), session, a, ui.Options{Views: views}))
+						links := &ui.LinkActions{Prepare: func(actionCtx context.Context, input activity.LinkInput, prompt terminal.Prompter) (activity.LinkInput, error) {
+							service := setup.New(setup.Options{Auth: authService(d), Activity: a})
+							return service.PrepareLink(actionCtx, input, prompt)
+						}, Commit: func(actionCtx context.Context, input activity.LinkInput) (activity.BindingResult, error) {
+							service := setup.New(setup.Options{Auth: authService(d), Activity: a})
+							return service.CommitLink(actionCtx, input)
+						}, Unlink: a.Unlink, Repair: a.RepairBinding}
+						err = uiResultError(ui.Run(session.Context(), session, a, ui.Options{Views: views, Links: links}))
 						if err == nil {
 							return 0
 						}
-
 					}
 				} else {
 					jsonMode = true

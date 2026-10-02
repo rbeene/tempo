@@ -28,6 +28,7 @@ type SnapshotReader interface {
 type Options struct {
 	Styler terminal.Styler
 	Views  *ReadViews
+	Links  *LinkActions
 	// Refresh is an optional testable refresh source. Nil uses a one-second
 	// ticker; closing an injected channel disables further scheduled refreshes.
 	Refresh <-chan time.Time
@@ -195,6 +196,7 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 	}
 	request()
 	flowBusy := false
+	links := &linkController{}
 	var endFlow context.CancelFunc
 	startFlow := func(name string, run func(context.Context) (terminal.Styler, error)) {
 		if flowBusy {
@@ -238,6 +240,9 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 			remember(result)
 			if result.err == nil && result.style != nil {
 				options.Styler = result.style
+			}
+			if result.name == "links" && links.pending == nil {
+				request()
 			}
 			flowBusy = false
 			endFlow = nil
@@ -350,6 +355,10 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 					startView(setupView)
 				case "?":
 					startView(helpView)
+				case "l":
+					startFlow("links", func(flowCtx context.Context) (terminal.Styler, error) {
+						return nil, links.run(flowCtx, bridge, options.Views, options.Links)
+					})
 				}
 				continue
 			case "up":
