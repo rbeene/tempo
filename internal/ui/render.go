@@ -81,9 +81,12 @@ func (m *Model) Render(styler terminal.Styler) []string {
 	for len(lines) < m.rows-2 {
 		add(terminal.RoleText, "")
 	}
-	syncState := "paused"
-	if m.snapshot.SyncEnabled {
-		syncState = "enabled"
+	syncState := "unavailable"
+	if m.observed {
+		syncState = "paused"
+		if m.snapshot.SyncEnabled {
+			syncState = "enabled"
+		}
 	}
 	worker := m.snapshot.Worker.State
 	if worker == "" {
