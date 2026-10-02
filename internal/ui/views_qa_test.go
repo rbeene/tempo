@@ -88,7 +88,7 @@ func TestQAUIViewsLinkSearchQAndEscapeStayInsideModal(t *testing.T) {
 	views := &ui.ReadViews{Links: func(context.Context) (activity.BindingList, error) { return qaUIReadonlyLinks(), nil }}
 	x, _ := qaUIViewsRig(t, views)
 	x.screen.events <- terminal.Event{Kind: "text", Text: "2"}
-	x.frame(t, "Links")
+	x.frame(t, "quiet-project")
 	x.screen.events <- terminal.Event{Kind: "text", Text: "q"}
 	x.frame(t, "quiet-project")
 	x.screen.events <- terminal.Event{Kind: "enter"}
@@ -182,7 +182,7 @@ func TestQAUIViewsHelpHasReachableKeyboardHintsAndNoReads(t *testing.T) {
 	views := &ui.ReadViews{Links: func(context.Context) (activity.BindingList, error) { calls.Add(1); return qaUIReadonlyLinks(), nil }, Sync: func(context.Context) (activity.SyncStatus, error) { calls.Add(1); return qaUIReadonlySync(), nil }, Setup: func(context.Context) (setup.Status, error) { calls.Add(1); return qaUIReadonlySetup(), nil }}
 	x, _ := qaUIViewsRig(t, views)
 	x.screen.events <- terminal.Event{Kind: "text", Text: "?"}
-	frame := x.frame(t, "Help")
+	frame := x.frame(t, "q: quit only from dashboard")
 	text := strings.Join(frame, "\n")
 	for _, hint := range []string{"Links", "Sync", "Setup", "Enter", "Escape"} {
 		if !strings.Contains(text, hint) {
