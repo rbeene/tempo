@@ -49,10 +49,24 @@ func (m *Model) Render(styler terminal.Styler) []string {
 	if splitHints {
 		footerRows++
 	}
-	add(terminal.RoleAccent, "TEMPO  /  LOCAL ACTIVITY")
-	// At the minimum height, the extra hint row takes the decorative border
-	// so scope and both authoritative durations keep their existing rows.
-	if !splitHints || m.rows > 8 || len(m.snapshot.ProjectTimers) == 0 {
+	contentRows := 1
+	if m.observed {
+		contentRows = 2
+		if len(m.snapshot.ProjectTimers) > 0 {
+			contentRows = 3
+		}
+	}
+	// Reserve scope or stale state, activity, warnings, status and hints before
+	// spending any remaining rows on decorative branding and the border.
+	mandatoryRows := footerRows + contentRows + 1
+	if m.appearanceWarning != "" {
+		mandatoryRows++
+	}
+	decorationRows := m.rows - mandatoryRows
+	if decorationRows > 0 {
+		add(terminal.RoleAccent, "TEMPO  /  LOCAL ACTIVITY")
+	}
+	if decorationRows > 1 {
 		add(terminal.RoleBorder, strings.Repeat("─", width))
 	}
 	if m.appearanceWarning != "" {
