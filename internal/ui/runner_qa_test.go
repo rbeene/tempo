@@ -33,6 +33,7 @@ func (r *qaRunnerReader) Status(ctx context.Context) (activity.ActivitySnapshot,
 
 type qaRunnerScreen struct {
 	events                                  chan terminal.Event
+	endErrors                               chan error
 	frames                                  chan []string
 	nextActive, nextMaximum, closes, enters atomic.Int32
 	mu                                      sync.Mutex
@@ -42,7 +43,7 @@ type qaRunnerScreen struct {
 }
 
 func qaNewRunnerScreen() *qaRunnerScreen {
-	return &qaRunnerScreen{events: make(chan terminal.Event, 128), frames: make(chan []string, 128)}
+	return &qaRunnerScreen{events: make(chan terminal.Event, 128), endErrors: make(chan error, 1), frames: make(chan []string, 128)}
 }
 func (s *qaRunnerScreen) Next(ctx context.Context) (terminal.Event, error) {
 	n := s.nextActive.Add(1)
@@ -55,8 +56,29 @@ func (s *qaRunnerScreen) Next(ctx context.Context) (terminal.Event, error) {
 	select {
 	case e := <-s.events:
 		return e, nil
+	case err := <-s.endErrors:
+		return terminal.Event{}, err
 	case <-ctx.Done():
 		return terminal.Event{}, context.Cause(ctx)
+	}
+}
+
+func TestQAUIRunnerCleanEOFDoesNotHideCleanupFailure(t *testing.T) {
+	for _, mode := range []string{"input-eof", "context-exit0"} {
+		t.Run(mode, func(t *testing.T) {
+			s := qaNewRunnerScreen()
+			want := errors.New("synthetic restoration failure")
+			s.closeErr = want
+			r := &qaRunnerReader{read: func(context.Context) (activity.ActivitySnapshot, error) { return qaUISnapshot("1"), nil }}
+			x := qaStartRunner(t, s, r, make(chan time.Time))
+			x.frame(t, "No activity")
+			if mode == "input-eof" {
+				s.endErrors <- &terminal.ExitError{Code: 0}
+			} else {
+				x.cancel(&terminal.ExitError{Code: 0})
+			}
+			x.finish(t, want)
+		})
 	}
 }
 func (s *qaRunnerScreen) Size() (int, int, error)           { return 120, 24, s.sizeErr }

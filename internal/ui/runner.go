@@ -39,8 +39,11 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 	defer func() {
 		cancel(nil)
 		workers.Wait()
-		if closeErr := screen.Close(); err == nil {
-			err = closeErr
+		if closeErr := screen.Close(); closeErr != nil {
+			var ended *terminal.ExitError
+			if err == nil || errors.As(err, &ended) && ended.Code == 0 {
+				err = closeErr
+			}
 		}
 	}()
 	columns, rows, err := screen.Size()
