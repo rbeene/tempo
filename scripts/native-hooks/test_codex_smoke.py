@@ -38,7 +38,7 @@ class HarnessTests(unittest.TestCase):
         self.assertNotIn("projects", config)
         self.assertNotIn("hooks", config)
         self.assertEqual(config["model"], "tempo-ci-fixture")
-        self.assertEqual(config["agents"]["default_subagent_model"], "tempo-ci-fixture")
+        self.assertNotIn("default_subagent_model", config["agents"])
         self.assertFalse(config["features"]["code_mode"])
         self.assertFalse(config["features"]["code_mode_only"])
         self.assertEqual(config["model_providers"]["tempo_ci"]["base_url"], "http://127.0.0.1:43210/codex/v1")

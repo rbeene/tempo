@@ -757,7 +757,6 @@ metrics_exporter = "none"
 log_user_prompt = false
 [agents]
 enabled = true
-default_subagent_model = "{MODEL}"
 max_concurrent_threads_per_session = 1
 max_depth = 1
 [features]
