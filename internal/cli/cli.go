@@ -153,7 +153,14 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 							service := setup.New(setup.Options{Auth: authService(d), Activity: a})
 							return service.CommitLink(actionCtx, input)
 						}, Unlink: a.Unlink, Repair: a.RepairBinding}
-						err = uiResultError(ui.Run(session.Context(), session, a, ui.Options{Views: views, Links: links}))
+						credentials := authService(d)
+						authActions := &ui.AuthActions{CanPersist: credentials.CanPersist, Status: credentials.Status, Accounts: credentials.Accounts, PrepareLogin: credentials.PrepareLogin, CommitLogin: credentials.CommitLogin, Logout: credentials.Logout, UseAccount: credentials.UseAccount, ConfigShow: credentials.ConfigShow}
+						capture := &ui.ActivityActions{Status: a.Status, Review: a.Review, Preview: a.Preview, Resolve: a.Resolve, Interrupt: a.Interrupt}
+						err = uiResultError(ui.Run(session.Context(), session, a, ui.Options{Views: views, Links: links, Activity: capture, Auth: authActions, OnAuthResult: func(operation string, result auth.Result, outcome error) {
+							uiAuthReport(errOut, operation, result, outcome)
+						}, OnRetainedOutcome: func(family, requestID string, outcome error) {
+							uiRetainedReport(errOut, family, requestID, outcome)
+						}, OnRestorationFailure: func() { uiRestorationReport(errOut) }}))
 						if err == nil {
 							return 0
 						}
@@ -455,6 +462,9 @@ func execute(ctx context.Context, p parsed, in io.Reader, d Dependencies) (any, 
 		}
 		return result, err
 	}
+	if p.command.Name == "config show" {
+		return authService(d).ConfigShow(ctx, p.flags["account"])
+	}
 	path := d.ConfigPath
 	if path == "" {
 		path = d.Getenv("TEMPO_CONFIG")
@@ -480,9 +490,6 @@ func execute(ctx context.Context, p parsed, in io.Reader, d Dependencies) (any, 
 	}
 	if s.account != "" && !validID(s.account) {
 		return nil, problem("validation", "selected account ID must be a positive integer")
-	}
-	if p.command.Name == "config show" {
-		return map[string]any{"path": path, "saved_account_id": cfg.Account, "account_id": s.account, "token_stored_in_config": false}, nil
 	}
 	s.api, err = authService(d).Provider(ctx, s.account)
 	if err != nil {

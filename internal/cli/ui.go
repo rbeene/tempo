@@ -2,6 +2,8 @@ package cli
 
 import (
 	"errors"
+	"fmt"
+	"io"
 	"regexp"
 
 	"github.com/rbeene/tempo/internal/activity"
@@ -12,7 +14,76 @@ import (
 	"github.com/rbeene/tempo/internal/worker"
 )
 
-var uiRequestIdentity = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+var uiRequestIdentity = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+func uiAuthReport(w io.Writer, operation string, result auth.Result, err error) {
+	switch operation {
+	case "login", "logout", "account selection":
+	default:
+		operation = "credential operation"
+	}
+	state, effects := "complete", result.Effects
+	if err != nil {
+		state = "operation_failed"
+		var domain *auth.Error
+		if errors.As(err, &domain) {
+			state, effects = uiAuthCode(domain.Code), domain.Effects
+		}
+	}
+	account := "unavailable"
+	if validID(result.AccountID) {
+		account = result.AccountID
+	}
+	fmt.Fprintf(w, "tempo: auth: %s %s; account %s; %s\n", operation, state, account, uiAuthEffects(effects))
+}
+
+func uiRetainedReport(w io.Writer, family, requestID string, err error) {
+	switch family {
+	case "auth", "links", "activity", "sync", "hooks", "worker", "appearance":
+	default:
+		family = "operation"
+	}
+	code := "local_write_unknown"
+	var credential *auth.Error
+	var remote *harvest.Error
+	if errors.As(err, &credential) {
+		fmt.Fprintf(w, "tempo: %s: credential_write_unknown; %s; inspect auth status and config show\n", family, uiAuthEffects(credential.Effects))
+		return
+	}
+	if errors.As(err, &remote) {
+		code = "uncertain_write"
+	}
+	identity := ""
+	if uiRequestIdentity.MatchString(requestID) {
+		identity = "; request ID: " + requestID
+	}
+	fmt.Fprintf(w, "tempo: %s: %s%s; preserve the exact submitted intent and inspect shared status\n", family, code, identity)
+}
+
+func uiRestorationReport(w io.Writer) {
+	fmt.Fprintln(w, "tempo: terminal: terminal restoration failed")
+}
+
+func uiAuthCode(code string) string {
+	switch code {
+	case "auth", "keychain", "validation", "confirmation_required", "config", "forbidden", "input_required", "credential_write_unknown", "state_busy", "response":
+		return code
+	}
+	return "operation_failed"
+}
+
+func uiAuthEffects(effects auth.Effects) string {
+	credential, config := "unknown", "unknown"
+	switch effects.Credential {
+	case "unchanged", "applied", "unknown":
+		credential = effects.Credential
+	}
+	switch effects.Config {
+	case "unchanged", "saved", "cleared", "restored", "unknown":
+		config = effects.Config
+	}
+	return "credential " + credential + "; config " + config
+}
 
 // uiResultError retains shared domain outcomes after terminal restoration and
 // bounds unexpected presentation failures to the terminal I/O error contract.
@@ -33,10 +104,18 @@ func uiResultError(err error) error {
 		return err
 	}
 	var credential *auth.Error
+	if errors.As(err, &credential) {
+		copy := *credential
+		copy.Message = "credential operation returned " + uiAuthCode(credential.Code) + "; " + uiAuthEffects(credential.Effects)
+		if credential.Uncertain {
+			copy.Message += "; inspect auth status and config show before an explicitly reviewed replacement"
+		}
+		return &copy
+	}
 	var remote *harvest.Error
 	var hooks *hookstate.Error
 	var service *worker.Error
-	if errors.As(err, &credential) || errors.As(err, &remote) || errors.As(err, &hooks) || errors.As(err, &service) || errors.Is(err, auth.ErrNotFound) || errors.Is(err, auth.ErrPersistenceUnavailable) {
+	if errors.As(err, &remote) || errors.As(err, &hooks) || errors.As(err, &service) || errors.Is(err, auth.ErrNotFound) || errors.Is(err, auth.ErrPersistenceUnavailable) {
 		return err
 	}
 	var ended *terminal.ExitError

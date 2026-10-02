@@ -2,6 +2,7 @@ package ui
 
 import (
 	"errors"
+	"sort"
 
 	"github.com/rbeene/tempo/internal/activity"
 	"github.com/rbeene/tempo/internal/auth"
@@ -20,5 +21,25 @@ func unknownOutcome(err error) bool {
 }
 
 func primaryOutcome(retained map[string]error) error {
+	for _, name := range retainedNames(retained) {
+		if retained[name] != nil {
+			return retained[name]
+		}
+	}
 	return nil
+}
+
+func retainedNames(retained map[string]error) []string {
+	credential, other := []string{}, []string{}
+	for name, err := range retained {
+		var outcome *auth.Error
+		if errors.As(err, &outcome) && outcome.Uncertain {
+			credential = append(credential, name)
+		} else {
+			other = append(other, name)
+		}
+	}
+	sort.Strings(credential)
+	sort.Strings(other)
+	return append(credential, other...)
 }

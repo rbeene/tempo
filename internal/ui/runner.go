@@ -35,7 +35,7 @@ type Options struct {
 	// Outcome callbacks run only after owned work joins and Close has attempted
 	// terminal restoration. They must report safe shared observations only.
 	OnAuthResult         func(string, auth.Result, error)
-	OnRetainedOutcome    func(string, error)
+	OnRetainedOutcome    func(string, string, error)
 	OnRestorationFailure func()
 	// Refresh is an optional testable refresh source. Nil uses a one-second
 	// ticker; closing an injected channel disables further scheduled refreshes.
@@ -46,6 +46,9 @@ type Options struct {
 func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Options) (err error) {
 	ctx, cancel := context.WithCancelCause(ctx)
 	var workers sync.WaitGroup
+	links := &linkController{}
+	capture := &activityController{}
+	credential := &authController{}
 	type flowResult struct {
 		name  string
 		style terminal.Styler
@@ -86,7 +89,7 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 		}
 		// Catchable cancellation and presentation/cleanup failure cannot hide a
 		// joined uncertain shared write. Read flows never clear another family.
-		for _, outcome := range retained {
+		if outcome := primaryOutcome(retained); outcome != nil {
 			err = outcome
 		}
 		clearReply(active)
@@ -103,6 +106,33 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 			var ended *terminal.ExitError
 			if err == nil || errors.As(err, &ended) && ended.Code == 0 {
 				err = closeErr
+			}
+			if options.OnRestorationFailure != nil {
+				options.OnRestorationFailure()
+			}
+		}
+		if credential.completed != nil && options.OnAuthResult != nil {
+			result := credential.completed
+			options.OnAuthResult(result.operation, result.result, result.err)
+		}
+		if options.OnRetainedOutcome != nil {
+			for _, name := range retainedNames(retained) {
+				outcome := retained[name]
+				id := ""
+				var authFailure *auth.Error
+				if !errors.As(outcome, &authFailure) {
+					switch name {
+					case "links":
+						if links.pending != nil {
+							id = links.id()
+						}
+					case "activity":
+						if capture.pending != nil {
+							id = capture.id()
+						}
+					}
+				}
+				options.OnRetainedOutcome(name, id, outcome)
 			}
 		}
 	}()
@@ -204,7 +234,6 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 	}
 	request()
 	flowBusy := false
-	links := &linkController{}
 	var endFlow context.CancelFunc
 	startFlow := func(name string, run func(context.Context) (terminal.Styler, error)) {
 		if flowBusy {
@@ -250,6 +279,9 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 				options.Styler = result.style
 			}
 			if result.name == "links" && links.pending == nil {
+				request()
+			}
+			if result.name == "activity" && capture.pending == nil {
 				request()
 			}
 			flowBusy = false
@@ -304,7 +336,6 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 					if event.Kind == "escape" {
 						endFlow()
 						modal.Close()
-						modal = nil
 					}
 					if event.Kind == "text" && event.Text == "q" {
 						return nil
@@ -325,7 +356,6 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 					if event.Kind == "escape" {
 						endFlow()
 						modal.Close()
-						modal = nil
 					}
 					// Keep the completed frame until the service either opens
 					// its next prompt or finishes the flow.
@@ -366,6 +396,14 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 				case "l":
 					startFlow("links", func(flowCtx context.Context) (terminal.Styler, error) {
 						return nil, links.run(flowCtx, bridge, options.Views, options.Links)
+					})
+				case "x":
+					startFlow("activity", func(flowCtx context.Context) (terminal.Styler, error) {
+						return nil, capture.run(flowCtx, bridge, options.Activity)
+					})
+				case "a":
+					startFlow("auth", func(flowCtx context.Context) (terminal.Styler, error) {
+						return nil, credential.run(flowCtx, bridge, options.Auth)
 					})
 				}
 				continue
