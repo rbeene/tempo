@@ -100,7 +100,7 @@ The complete generated interface is [cli-schema.json](cli-schema.json). `make sc
 
 ## Planned agent activity interface
 
-The [agent activity contract](agent-contracts.md) and [planned operation catalog](agent-operations.json) define `tempo link [PROJECT_ID]`, local `activity` status/recovery, setup, hooks, worker, sync and themes for the agent timing epic. They also define equal CLI/UI access, searchable arrow-key pickers and forced finite JSON output. `activity status` and `activity event --input-stdin` are now shipped as described below. Explicit linking, link inspection/mutation and local recovery are also shipped. Guided setup, project/task pickers and finite doctor diagnostics are shipped. Hooks, worker, sync, themes and interactive activity views remain planned. The generated schema describes available commands. `timer …` retains its Harvest meaning; `activity …` describes local computer activity.
+The [agent activity contract](agent-contracts.md) and [planned operation catalog](agent-operations.json) define `tempo link [PROJECT_ID]`, local `activity` status/recovery, setup, hooks, worker, sync and themes for the agent timing epic. They also define equal CLI/UI access, searchable arrow-key pickers and forced finite JSON output. `activity status` and `activity event --input-stdin` are now shipped as described below. Explicit linking, link inspection/mutation and local recovery are also shipped. Guided setup, project/task pickers and finite doctor diagnostics are shipped. Automatic sync and the optional worker are shipped below. Hooks, themes and interactive activity views remain planned. The generated schema describes available commands. `timer …` retains its Harvest meaning; `activity …` describes local computer activity.
 
 ## Local agent activity
 
@@ -113,7 +113,7 @@ Local activity is independent of Harvest `timer` commands. `TEMPO_STATE` selects
 
 Every accepted event has stable source/actor/generation/sequence identity. Retry the exact same event after an uncertain local write; a conflicting payload returns `event_conflict`. `state_busy` is retryable; `local_write_unknown` exits 8 with uncertainty set. State and clock failures use safe errors, never raw payloads. Binding, ordering and attribution conflicts use exit 6; unsupported contract/input/transition uses exit 2. Local `--non-interactive` errors use one stderr JSON envelope and empty stdout.
 
-Working actors contribute to one union per computer/account/project; separate projects run concurrently. Waits close only that actor's segment. Parent termination never stops a child. Reliable closed unions appear with queued counts, but this slice makes no Harvest requests and has no active synchronization worker. Uncertainties remain separate and cannot become queued time through an ordinary later stop or resume.
+Working actors contribute to one union per computer/account/project; separate projects run concurrently. Waits close only that actor's segment. Parent termination never stops a child. Reliable closed unions appear with queued counts, and capture itself makes no Harvest requests; explicit sync or the optional worker submits eligible completed intervals. Uncertainties remain separate and cannot become queued time through an ordinary later stop or resume.
 
 ## Project and directory links
 
@@ -209,8 +209,8 @@ A root exceeding 100 daily parts remains for review with zero POST.
 
 `sync pause` stops future claims while capture continues. A pass has a two-minute
 bound and selects at most 100 roots (default 20). It holds a separate process lock;
-status and pause remain available. Background worker installation and the terminal
-Sync UI are separate features; the finite shared service and CLI ship here.
+status and pause remain available. The optional background worker uses this same
+service; the terminal Sync UI remains separate.
 
 Each attempt records its originating run request ID; `attempted_ids` counts only
 intents committed by that run, including interrupted claims, never historical
@@ -243,3 +243,59 @@ retains its ID and stays visible for review without rebilling.
 Provider behavior and mappings follow the official [time-entry API](https://help.getharvest.com/api-v2/timesheets-api/timesheets/time-entries/),
 [company API](https://help.getharvest.com/api-v2/company-api/company/company/), and
 [supported timezone table](https://help.getharvest.com/api-v2/introduction/overview/supported-timezones/).
+
+## Optional automatic sync worker
+
+`tempo worker run` owns a foreground lifetime until stopped or signalled, including
+with `--json` or `--non-interactive`. It does not install a service or enable sync.
+SIGINT exits 130 and SIGTERM exits 143 after cleanup. One worker owns each resolved
+`TEMPO_STATE`; a duplicate returns `state_busy`. Manual `sync now` shares the sync
+engine's separate lock. Credentials use the existing bounded, non-prompting reader.
+
+```sh
+tempo worker install --yes --json
+tempo worker status --json
+tempo worker start --json
+tempo worker stop --json
+tempo worker uninstall --yes --json
+```
+
+Install creates an owned user LaunchAgent on macOS or a systemd user unit on Linux
+(systemd 247 or later), without starting it. macOS installation establishes and
+verifies persistent disablement before publishing the plist. Start explicitly
+enables login startup and launches the worker. Stop disables startup and waits for
+worker ownership to end. Uninstall removes only the unchanged owned definition;
+activity, pending sync identity and control receipts remain. No root service,
+`sudo`, automatic linger or credential provisioning is used. Service directories
+are `~/Library/LaunchAgents` or the user's config directory `systemd/user`.
+
+Finite controls accept `--request-id UUID`, generated when omitted. Retain that ID
+and repeat the same input after `local_write_unknown`; completed replay causes no
+new manager effects. Installation and removal require `--yes`. Foreign or edited
+service definitions are preserved with `revision_conflict`. Binaries and selected
+state/config paths are pinned in the definition; moving them requires deliberate
+service repair. Lifecycle commands never grant account or rounding consent.
+
+Each pass selects at most 20 eligible queued roots and lasts at most two minutes.
+Progress waits at least one second between passes; idle/paused polling is every
+30 seconds. Transient failures back off from five seconds to five minutes, and
+auth failures wait five minutes. Local wakeups are bounded hints with polling
+fallback. Successful capture emits an ordinary wake; successful resume, explicit
+sync configuration and credential/account changes request a rate-limited recheck.
+Ordinary wakes never bypass failure backoff, and failed notification delivery never
+changes a successful durable command result. Unknown writes and rejected entries remain for explicit review; the
+worker does not reconcile or retry them automatically. `sync pause` stops future
+claims while capture continues independently.
+
+Status is read-only and uses the activity snapshot's counts. `installed` and
+`instance_mode` are nullable; a live instance lock, rather than manager success or
+a saved PID, establishes running state. Edited definitions and pending controls
+remain visible. `last_success` is a locally persisted confirmation time and can
+lag after a crash; receipt replay never invents a new delivery time. Runtime and
+control journals have separate writers and locks. Control history is bounded to
+4096 receipts and 16 MiB; exhaustion preserves existing replay and refuses new
+controls rather than silently pruning them.
+
+Native launchd/systemd behavior requires isolated manual acceptance. Automated
+coverage uses synthetic service directories, fake managers, parsed definitions,
+owned child processes and local mock HTTP; it does not install personal services.

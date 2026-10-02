@@ -12,6 +12,7 @@ type ClockFunc func() (ClockSample, error)
 func (f ClockFunc) Sample() (ClockSample, error) { return f() }
 
 type Options struct {
+	ObserveWorker  WorkerObserver
 	Path           string
 	Clock          Clock
 	ResolveBinding BindingResolver
@@ -139,6 +140,9 @@ type ProjectActivity struct {
 	NeedsAttentionCount int         `json:"needs_attention_count"`
 }
 type WorkerStatus struct {
+	Installed       *bool      `json:"installed"`
+	InstanceMode    *string    `json:"instance_mode"`
+	SubmittingCount int        `json:"submitting_count"`
 	State           string     `json:"state"`
 	LastSuccess     *time.Time `json:"last_success"`
 	QueuedCount     int        `json:"queued_count"`

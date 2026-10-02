@@ -9,9 +9,10 @@ import (
 )
 
 type Service struct {
-	store   *fileStore
-	clock   Clock
-	resolve BindingResolver
+	store         *fileStore
+	clock         Clock
+	resolve       BindingResolver
+	observeWorker WorkerObserver
 }
 
 func New(o Options) *Service {
@@ -19,7 +20,7 @@ func New(o Options) *Service {
 	if c == nil {
 		c = nativeClock{}
 	}
-	return &Service{store: &fileStore{path: o.Path, timeout: o.LockTimeout}, clock: c, resolve: o.ResolveBinding}
+	return &Service{store: &fileStore{path: o.Path, timeout: o.LockTimeout}, clock: c, resolve: o.ResolveBinding, observeWorker: o.ObserveWorker}
 }
 func (s *Service) sample() (ClockSample, error) {
 	v, err := s.clock.Sample()

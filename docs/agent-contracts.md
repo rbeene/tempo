@@ -121,7 +121,8 @@ hundredth hour; timestamp mode is exact with declared clock and verified timezon
 All daily parts preflight before any write. Missing confirmed amounts are null;
 planned and total residuals remain signed. See [commands](commands.md#safe-activity-synchronization)
 for precision limits and finite controls. Terminal UI placement remains planned
-for #16; background worker installation remains #12.
+for #16. The optional #12 worker uses the same sync engine and preserves this
+recovery ordering; see [worker commands](commands.md#optional-automatic-sync-worker).
 
 ## 5. Shared CLI/UI operations
 

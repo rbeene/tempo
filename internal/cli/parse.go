@@ -245,5 +245,5 @@ func wantsLocalJSON(args []string, redirected bool) bool {
 			first = token
 		}
 	}
-	return (first == "sync" || first == "activity" || first == "link" || first == "links" || first == "setup" || first == "doctor") && forced || (first == "sync" || first == "setup" || first == "doctor" || first == "link") && redirected
+	return (first == "worker" || first == "sync" || first == "activity" || first == "link" || first == "links" || first == "setup" || first == "doctor") && forced || (first == "worker" || first == "sync" || first == "setup" || first == "doctor" || first == "link") && redirected
 }

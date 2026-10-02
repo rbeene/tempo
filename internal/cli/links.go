@@ -24,10 +24,7 @@ func linkRequestID() string {
 	return h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]
 }
 func executeLinks(ctx context.Context, p parsed, d Dependencies) (any, error) {
-	service := d.Activity
-	if service == nil {
-		service = activity.New(activity.Options{Path: d.Getenv("TEMPO_STATE")})
-	}
+	service := activityService(d)
 	f := p.flags
 	id := ""
 	if len(p.args) > 0 {

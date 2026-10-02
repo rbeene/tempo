@@ -59,6 +59,8 @@ func (s *syncSum) totals() SyncTotals {
 	return r
 }
 func (s *Service) SyncStatus(ctx context.Context) (SyncStatus, error) {
+	ctx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+	defer cancel()
 	st, _, e := s.store.read(ctx)
 	if e != nil {
 		return SyncStatus{}, e
@@ -98,6 +100,8 @@ func (s *Service) SyncStatus(ctx context.Context) (SyncStatus, error) {
 		switch o.State {
 		case "queued":
 			r.Worker.QueuedCount++
+		case "submitting":
+			r.Worker.SubmittingCount++
 		case "unknown":
 			r.Worker.UnknownCount++
 		}
@@ -134,5 +138,6 @@ func (s *Service) SyncStatus(ctx context.Context) (SyncStatus, error) {
 		v.Totals = groups[k].totals()
 		r.Accounting = append(r.Accounting, v)
 	}
+	r.Worker = s.observedWorker(ctx, r.Worker)
 	return r, nil
 }
