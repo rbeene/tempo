@@ -1,6 +1,6 @@
 # Install, update and release Tempo
 
-Tempo's source is public at https://github.com/rbeene/tempo. No first release or tag has been published yet. Until a release is explicitly approved and published, build from source; the release installer will correctly fail to find an unpublished version.
+Tempo's source is public at https://github.com/rbeene/tempo. No first release or tag has been published yet. Merging the distribution workflow to `main` enables automatic releases. Until the first workflow succeeds, build from source; the release installer will correctly fail to find an unpublished version.
 
 ## Install a published version
 
@@ -41,18 +41,24 @@ sh scripts/test-install.sh
 
 The first config builds Intel and Apple Silicon binaries natively against Apple's SDK. The second builds Linux amd64/arm64 with `CGO_ENABLED=0`. `dist/` and the copied Mac staging directory are ignored by Git. Snapshot suffixes intentionally differ from installable stable release versions; no tag, GitHub Release or upload is created by these commands.
 
-## Release workflow and approvals
+## Automatic releases from main
 
-A future release requires a separately approved merge, version tag, workflow dispatch, and publication. This change performs none of them. After the reviewed configuration reaches integration and the owner approves an existing canonical `vX.Y.Z` tag:
+Every push to `main`, including a merged PR, triggers **Release**. No manual dispatch, separate tag push, or publication approval is required by the workflow. This setup change is still in a draft PR; it has not merged or published anything.
 
-1. Dispatch **Prepare versioned release** from `integration`, as the repository owner, with that tag. The workflow verifies the tag is an ancestor of integration and uses exactly that commit.
-2. One GitHub-hosted macOS job tests and creates native archives without publishing. One subsequent Titan job builds Linux and attaches both platforms to a **draft** GitHub release. Each build uses parallelism one and Go parallelism two. There is no matrix and only one Titan job.
-3. Inspect the draft's four archives, both checksums, version output and notes. Publish only after separate approval.
+1. One GitHub-hosted macOS job selects the version, tests, and builds native Intel/Apple Silicon archives. Version tags exist only in that temporary checkout at this stage.
+2. A subsequent GitHub-hosted Ubuntu job verifies the Mac checksums, tests Linux and the installer/version selector, and builds Linux amd64/arm64 archives. Both builds use parallelism one and Go parallelism two; there is no matrix.
+3. After validation succeeds, the workflow creates the version tag at the exact triggering commit. GoReleaser uploads all four archives and both checksum files into a draft, then the workflow checks that exactly the four expected versioned archives and both checksum files were uploaded and automatically publishes the complete release. GitHub determines the latest release by creation date and semantic version, so an older retry does not explicitly force itself to latest.
 
-The persistent Tempo runner is **disabled and stopped** while the repository is public. Before the Titan job is permitted, a maintainer must establish an approved server-side execution boundary (for example, an isolated disposable runner without access to the host’s credentials/services, or a private release-control repository). An editable workflow condition or a reviewed tag alone is insufficient. The existing persistent service must remain disabled until that boundary is approved and in place. No runner service changes are made from a workflow supplied by a PR.
+The first automatic version is `v0.1.0`. Each untagged commit receives the next patch version after the highest canonical stable `vX.Y.Z` tag. Prerelease and malformed tags are ignored. A commit with one existing stable tag reuses it; multiple stable tags on one commit fail as ambiguous. Version selection never modifies Git state. Major/minor changes require a separately deliberate versioning change or stable tag; they are not inferred from commit messages.
+
+Release runs are serialized with GitHub's expanded concurrency queue (up to 100 pending runs), and do not cancel active builds or replace a single pending merge. A failed upload can leave a version tag and unpublished draft. Rerun that commit's failed workflow to complete it; GoReleaser reuses the draft and replaces duplicate assets before publication. Reruns reuse that commit's tag, and a release already published by a previous attempt is left unchanged. No user-managed personal access token is needed: only the publishing job receives the repository-scoped `GITHUB_TOKEN` with `contents: write`.
+
+The release-upload path cannot be fully exercised without creating a real release. Local snapshot builds, installer/version tests, workflow lint, and PR CI validate the nonpublishing path. Mac artifacts are not Developer ID signed or notarized.
+
+Intermediate Mac artifacts are retained for seven days. If they have expired, rerun all workflow jobs to rebuild them, rather than only rerunning the failed publishing job.
 
 ## Public repository trust boundary
 
-The checked-in PR verification workflow runs on ephemeral GitHub-hosted Ubuntu runners with a read-only token and credential persistence disabled. The previous private-repository self-hosted CI workflow has been disabled in GitHub and removed from this branch. Every outside contributor's workflow requires maintainer approval. Do not approve a fork workflow that requests any self-hosted runner or changes the release path; inspect the proposed workflow as code.
+PR verification and releases use ephemeral GitHub-hosted runners. PR tokens are read-only and checkout credential persistence is disabled. The release workflow triggers only on pushes to `main`, never on a PR or `pull_request_target`. Review changes before merging: code merged into `main` is trusted release code and can use the publishing job's token.
 
-The release workflow has no pull-request event and no `pull_request_target` use. Owner/default-branch gates and tag ancestry checks reduce accidental dispatch; they are not a sandbox against malicious workflow edits. Personal repository runners cannot be restricted to selected workflow files with organization runner-group policy. Therefore keeping Titan parked is the effective protection; the Titan packaging job is intentionally not runnable yet. Public self-hosted release execution requires a separate isolated-runner design and approval; this change does not expand organization permissions or expose other Titan services.
+The former private-repository self-hosted CI workflow is disabled. Every outside contributor's workflow requires maintainer approval. The dedicated persistent Tempo runner on Titan remains disabled/stopped; other Titan services were left unchanged. Release execution no longer depends on Titan. Future self-hosted builds require a separately approved isolated execution environment: editable workflow conditions do not protect a persistent server from malicious workflow edits.

@@ -70,6 +70,6 @@ make check
 make build
 ```
 
-Tests use mock HTTP and injected credential stores, never a real Harvest account or Keychain. See [AGENTS.md](AGENTS.md). PR CI is one GitHub-hosted Linux job with no matrix. Native Mac release builds run on a hosted Mac, followed by one trusted Titan packaging job. The Titan runner stays parked until a separately approved execution-isolation boundary exists. The repository is public; no release or installation has been performed.
+Tests use mock HTTP and injected credential stores, never a real Harvest account or Keychain. See [AGENTS.md](AGENTS.md). PR CI is one GitHub-hosted Linux job with no matrix. Merges to `main` automatically build native Mac archives on a hosted Mac, then Linux archives on hosted Ubuntu, and publish a versioned GitHub Release. The Titan runner stays parked pending a separately approved isolation setup. The repository is public; no release or installation has been performed.
 
 Primary API references: [authentication](https://help.getharvest.com/api-v2/authentication-api/authentication/authentication/), [time entries](https://help.getharvest.com/api-v2/timesheets-api/timesheets/time-entries/), [pagination](https://help.getharvest.com/api-v2/introduction/overview/pagination/), and [user project assignments](https://help.getharvest.com/api-v2/users-api/users/project-assignments/).

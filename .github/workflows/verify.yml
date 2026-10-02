@@ -1,9 +1,9 @@
 name: Tempo verification
 on:
   push:
-    branches: [integration]
+    branches: [main]
   pull_request:
-    branches: [integration]
+    branches: [main]
 permissions:
   contents: read
 concurrency:
@@ -35,6 +35,8 @@ jobs:
       - run: go vet ./...
       - run: go test -race -coverpkg=./internal/... -coverprofile=coverage.out ./...
       - run: sh scripts/test-install.sh
+      - run: sh scripts/test-release-version.sh
+      - run: python3 -B scripts/test-release-assets.py
       - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
         with:
           version: v2.18.2

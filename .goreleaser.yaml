@@ -27,6 +27,8 @@ release:
     owner: rbeene
     name: tempo
   draft: true
+  use_existing_draft: true
+  replace_existing_artifacts: true
   extra_files:
     - glob: release-macos/tempo_*_darwin_*.tar.gz
     - glob: release-macos/checksums-darwin.txt

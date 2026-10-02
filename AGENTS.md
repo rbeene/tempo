@@ -2,7 +2,7 @@
 
 Tempo is a public, personal Harvest CLI. Use Go and keep the runtime small.
 
-- Work only in an issue-linked feature worktree; integration is the clean base. Do not merge or release without Robert's approval.
+- Work only in an issue-linked feature worktree; main is the clean base. Do not merge without Robert's approval; a merge to main triggers automatic tagging and release publication.
 - Read docs/architecture.md and docs/commands.md before changing contracts.
 - No real Harvest credentials, Keychain access, or real account mutations in development/tests. Use injected stores and mock HTTP servers. Never log secrets, headers, API error bodies, or raw transport errors.
 - Native macOS Keychain stores tokens; config contains only account ID. Environment tokens override the store. No plaintext token fallback or token flags.
@@ -12,4 +12,4 @@ Tempo is a public, personal Harvest CLI. Use Go and keep the runtime small.
 - Machine contract: versioned JSON envelopes, stable codes/exits, offline schema/help. Keep docs and schema synchronized.
 
 - Public PR workflows must use GitHub-hosted runners. Never run fork code on Titan or use pull_request_target for checkout/build. Keep the dedicated Titan service parked until a separately approved server-side isolation boundary is implemented; see docs/distribution.md.
-- GoReleaser changes require snapshot builds on a Mac to preserve native Keychain support. Do not create tags, releases or publish artifacts without explicit approval.
+- GoReleaser changes require snapshot builds on a Mac to preserve native Keychain support. Do not manually create tags, releases or publish artifacts without explicit approval. Once merged, the approved main-branch workflow automatically tags and publishes releases.
