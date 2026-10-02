@@ -25,7 +25,20 @@ func newAppearanceFlow(service *themes.Service, caps themes.Capabilities) *appea
 	return &appearanceFlow{service: service, caps: caps}
 }
 
-func (f *appearanceFlow) run(ctx context.Context, bridge *promptBridge) (terminal.Styler, error) {
+func (f *appearanceFlow) run(ctx context.Context, bridge *promptBridge) (style terminal.Styler, err error) {
+	defer func() {
+		if f.unknown == nil {
+			return
+		}
+		// Current presentation and transaction durability are independent. A
+		// read cannot acknowledge the write or replace its retained identity.
+		var readErr error
+		style, readErr = currentAppearance(ctx, f.service, f.caps)
+		if readErr != nil {
+			style, _ = themes.NewStyler("terminal-default", f.caps)
+			err = errors.Join(err, readErr)
+		}
+	}()
 	if f.pending != nil {
 		style, err := themes.NewStyler(f.pending.Theme, f.caps)
 		if err != nil {
