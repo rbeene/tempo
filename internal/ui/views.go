@@ -25,7 +25,6 @@ const (
 	timerDetails localView = iota
 	linksView
 	syncView
-	setupView
 	helpView
 )
 
@@ -40,7 +39,7 @@ func showView(ctx context.Context, view localView, snapshot activity.ActivitySna
 	case timerDetails:
 		return p.View(ctx, "Timer details", timerDetail(snapshot, key, selected))
 	case helpView:
-		return p.View(ctx, "Help", "Enter: inspect selected timer and immutable attribution\n2 Links: search local mappings and inspect full scope\nl Links actions: create, repair or unlink a reviewed mapping\nx Activity: inspect actors, review timing or capture warnings\na Accounts and auth: inspect, verify or explicitly change credentials/account\n3 Sync: inspect upload queue and exact accounting\nh Hooks: inspect evidence or review installation/capture changes\nw Worker: inspect or explicitly control the owned service\nd Diagnostics: local readiness or explicit account verification\n, Setup: inspect local readiness\nUp/Down: select timer or scroll details\nr: refresh authoritative local activity\nEscape: close the current modal or quit from the dashboard\nq: quit only from dashboard navigation; search text inside pickers\nPaste never submits or confirms a form\nResize to at least 40x8 to use forms\nJob suspension is unavailable; quit normally instead.")
+		return p.View(ctx, "Help", "Enter: inspect selected timer and immutable attribution\n2 Links: search local mappings and inspect full scope\nl Links actions: create, repair or unlink a reviewed mapping\nx Activity: inspect actors, review timing or capture warnings\na Accounts and auth: inspect, verify or explicitly change credentials/account\n3 Sync: inspect upload queue and exact accounting\ns Sync controls: configure, upload, reconcile, resolve or pause/resume\nh Hooks: inspect evidence or review installation/capture changes\nw Worker: inspect or explicitly control the owned service\nd Diagnostics: local readiness or explicit account verification\n, Setup: inspect readiness or explicitly run the shared guided wizard\nUp/Down: select timer or scroll details\nr: refresh authoritative local activity\nEscape: close the current modal or quit from the dashboard\nq: quit only from dashboard navigation; search text inside pickers\nPaste never submits or confirms a form\nResize to at least 40x8 to use forms\nJob suspension is unavailable; quit normally instead.")
 	case linksView:
 		if views == nil || views.Links == nil {
 			return p.View(ctx, "Links", "Local links unavailable.")
@@ -90,20 +89,6 @@ func showView(ctx context.Context, view localView, snapshot activity.ActivitySna
 				return p.View(ctx, "Sync · Details", body+fmt.Sprintf("\n\nOutbox %s\nRevision %s\nState %s\nComputer %s\n%s\nCaptured %s\nEntry %s", item.ID, item.Revision, item.State, item.Interval.ComputerID, attributionDetail(item.Interval.Attribution), duration(item.Interval.DurationNS), optionalCounter(item.EntryID)))
 			}
 		}
-	case setupView:
-		if views == nil || views.Setup == nil {
-			return p.View(ctx, "Setup", "Local setup readiness unavailable.")
-		}
-		result, err := observeView(ctx, views.Setup)
-		if err != nil {
-			return p.View(ctx, "Setup", "Local setup readiness unavailable; inspect configuration before checking again.")
-		}
-		var body strings.Builder
-		for _, step := range result.Steps {
-			fmt.Fprintf(&body, "%s · %s\n%s\n\n", step.Action, step.State, step.SafeMessage)
-		}
-		body.WriteString("Capture mapping, host trust/delivery, upload consent and worker ownership are separate.")
-		return p.View(ctx, "Setup", body.String())
 	}
 	return nil
 }
