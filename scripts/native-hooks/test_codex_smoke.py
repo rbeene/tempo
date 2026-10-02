@@ -109,6 +109,118 @@ class HarnessTests(unittest.TestCase):
                 self.assertNotIn("CANARY", json.dumps(terminal.input_probe))
                 self.assertFalse(terminal.input_probe["enter_sent"])
 
+    def test_diagnostic_command_preserves_stdin_stdout_exit_and_exact_append_only_stderr(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            log, tempo = root / "hook-errors", root / "tempo"
+            command = smoke.prepare_diagnostic_command(tempo, log)
+            identity = log.stat()
+            self.assertEqual(command, str(tempo) + " hook codex --input-stdin 2>> " + str(log))
+            self.assertEqual(log.stat().st_mode & 0o777, 0o600)
+            tempo.write_text('#!/bin/sh\n[ "$*" = "hook codex --input-stdin" ] || exit 2\n[ "$(cat)" = "synthetic-input" ] || exit 3\nprintf \'{}\\n\'\nprintf \'tempo hook: state_busy; durability=not_committed\\n\' >&2\n')
+            tempo.chmod(0o700)
+            for _ in range(2):
+                result = subprocess.run(["/bin/sh", "-c", command], input=b"synthetic-input", capture_output=True, timeout=2)
+                self.assertEqual((result.returncode, result.stdout, result.stderr), (0, b"{}\n", b""))
+            self.assertEqual(smoke.hook_diagnostic_probe(log, identity), {"status": "available", "counts": [
+                {"code": "state_busy", "durability": "not_committed", "count": 2}]})
+            smoke.reset_hook_diagnostics(log, identity)
+            self.assertEqual(smoke.hook_diagnostic_probe(log, identity), {"status": "available", "counts": []})
+            result = subprocess.run(["/bin/sh", "-c", command], input=b"synthetic-input", capture_output=True, timeout=2)
+            self.assertEqual(smoke.hook_diagnostic_probe(log, identity)["counts"][0]["count"], 1)
+            with self.assertRaises(smoke.FixtureFailure): smoke.prepare_diagnostic_command(tempo, log)
+            self.assertEqual(log.read_bytes().count(b"tempo hook:"), 1)
+            tempo.write_text(tempo.read_text() + "exit 7\n")
+            failed = subprocess.run(["/bin/sh", "-c", command], input=b"synthetic-input", capture_output=True, timeout=2)
+            self.assertEqual((failed.returncode, failed.stdout, failed.stderr), (7, b"{}\n", b""))
+            for bad in (root / "bad;name", root / "bad name"):
+                with self.assertRaises(smoke.FixtureFailure): smoke.prepare_diagnostic_command(bad, root / "unused")
+                self.assertFalse((root / "unused").exists())
+
+    def test_hook_diagnostics_reject_unknown_partial_oversized_or_unsafe_files_without_text(self):
+        unavailable = {"status": "unavailable", "counts": []}
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "hook-errors"
+            smoke.prepare_diagnostic_command(Path(tmp) / "tempo", log)
+            identity = log.stat()
+            held = log.open("rb")  # Keep inode allocated while testing replacements.
+            self.addCleanup(held.close)
+            self.assertEqual(smoke.hook_diagnostic_probe(log, identity), {"status": "available", "counts": []})
+            good = b"tempo hook: validation; durability=not_committed\n"
+            for data in (good + b"CANARY\n", good[:-1], b"prefix " + good, good.replace(b"validation", b"CANARY"),
+                         good.replace(b"not_committed", b"CANARY"), b"\xff\n", good * 129, b"x" * 16385):
+                log.write_bytes(data)
+                result = smoke.hook_diagnostic_probe(log, identity)
+                self.assertEqual(result, unavailable)
+                self.assertNotIn("CANARY", json.dumps(result))
+            log.write_bytes(good)
+            log.chmod(0o644)
+            self.assertEqual(smoke.hook_diagnostic_probe(log, identity), unavailable)
+            log.unlink()
+            target = Path(tmp) / "private"
+            target.write_text("CANARY")
+            log.symlink_to(target)
+            self.assertEqual(smoke.hook_diagnostic_probe(log, identity), unavailable)
+            self.assertEqual(target.read_text(), "CANARY")
+            log.unlink()
+            log.write_text("replacement-CANARY")
+            log.chmod(0o600)
+            with self.assertRaises(smoke.FixtureFailure): smoke.reset_hook_diagnostics(log, identity)
+            self.assertEqual(log.read_text(), "replacement-CANARY")
+            log.unlink(); log.mkdir()
+            self.assertEqual(smoke.hook_diagnostic_probe(log, identity), unavailable)
+            log.rmdir()
+            self.assertEqual(smoke.hook_diagnostic_probe(log, identity), unavailable)
+
+    def test_artifact_drift_probe_exports_only_fixed_match_booleans(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            baseline = {}
+            for role in ("runtime", "executable", "definitions", "configuration"):
+                path = Path(tmp) / role
+                path.write_text("synthetic " + role)
+                baseline[role] = (path, smoke.digest(path))
+            result = smoke.artifact_match_probe(baseline)
+            self.assertEqual(result, {"available": True, "runtime_matches": True, "executable_matches": True,
+                                     "definitions_matches": True, "configuration_matches": True})
+            baseline["configuration"][0].write_text("CANARY")
+            result = smoke.artifact_match_probe(baseline)
+            self.assertTrue(result["available"])
+            self.assertFalse(result["configuration_matches"])
+            self.assertNotIn("CANARY", json.dumps(result))
+            runtime = baseline["runtime"][0]
+            original_fstat = os.fstat
+            calls = 0
+            def replace_after_read(fd):
+                nonlocal calls
+                info = original_fstat(fd)
+                calls += 1
+                if calls == 2:
+                    runtime.rename(Path(tmp) / "old-runtime")
+                    runtime.write_text("replacement-CANARY")
+                return info
+            with mock.patch.object(smoke.os, "fstat", side_effect=replace_after_read):
+                replaced = smoke.artifact_match_probe(baseline)
+            self.assertFalse(replaced["available"])
+            self.assertFalse(replaced["runtime_matches"])
+            self.assertNotIn("CANARY", json.dumps(replaced))
+            with runtime.open("wb") as oversized: oversized.truncate((320 << 20) + 1)
+            self.assertFalse(smoke.artifact_match_probe(baseline)["available"])
+            runtime.unlink()
+            runtime.symlink_to(baseline["configuration"][0])
+            self.assertFalse(smoke.artifact_match_probe(baseline)["available"])
+            runtime.unlink()
+            self.assertFalse(smoke.artifact_match_probe(baseline)["available"])
+            self.assertTrue(all(type(v) is bool for v in smoke.artifact_match_probe(baseline).values()))
+
+    def test_provider_entry_count_includes_rejection_and_is_bounded(self):
+        model = self.model([])
+        model.session = None
+        for _ in range(20):
+            with self.assertRaises(smoke.FixtureFailure): model.respond(self.request())
+        self.assertEqual(model.entry_count, 16)
+        self.assertEqual(model.requests, [])
+        self.assertEqual(model.counts, {})
+
     def test_shared_host_arguments_require_embedded_execution_without_bypasses(self):
         self.assertEqual(smoke.codex_argv(Path("/synthetic/inert-runtime")),
                          ["/synthetic/inert-runtime", "--no-alt-screen", "--no-daemon"])
@@ -566,6 +678,7 @@ class HarnessTests(unittest.TestCase):
         model.session, model.turn, model.child = "session-1", None, None
         model.child_turn = None
         model.baseline = None
+        model.entry_count = 0
         model.shutdown = threading.Event()
         model.phase, model.counts, model.requests = "initial", {}, []
         return model

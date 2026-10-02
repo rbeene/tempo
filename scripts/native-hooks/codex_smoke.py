@@ -19,6 +19,7 @@ import re
 import select
 import shutil
 import signal
+import stat
 import struct
 import subprocess
 import sys
@@ -125,6 +126,93 @@ def bounded_run(argv, env, cwd, timeout=8):
             terminate_group(proc)
         finally:
             proc.stdout.close(); proc.stderr.close()
+
+
+def prepare_diagnostic_command(tempo, path):
+    require(tempo.is_absolute() and path.is_absolute() and tempo.parent == path.parent
+            and all(re.fullmatch(r"[A-Za-z0-9/_-]+", str(p)) for p in (tempo, path)), "unsafe_fixture_path")
+    command = str(tempo) + " hook codex --input-stdin 2>> " + str(path)
+    require(len(command) <= 200, "unsafe_fixture_path")
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+        finally:
+            os.close(fd)
+    except OSError:
+        raise FixtureFailure("diagnostic_setup_failed")
+    return command
+
+
+def diagnostic_file_matches(info, identity):
+    return (stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600 and info.st_uid == os.getuid()
+            and (info.st_dev, info.st_ino) == (identity.st_dev, identity.st_ino))
+
+
+def reset_hook_diagnostics(path, identity):
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            require(diagnostic_file_matches(os.fstat(fd), identity), "diagnostic_setup_failed")
+            os.ftruncate(fd, 0)
+        finally:
+            os.close(fd)
+    except OSError:
+        raise FixtureFailure("diagnostic_setup_failed")
+
+
+def hook_diagnostic_probe(path, identity):
+    unavailable = {"status": "unavailable", "counts": []}
+    codes = ("validation", "unsupported_contract", "state_corrupt", "state_busy", "local_write_unknown",
+             "clock_unavailable", "clock_conflict", "binding_unavailable", "event_conflict", "event_gap",
+             "ordering_unavailable", "profile_required", "profile_invalidated", "profile_revoked", "untracked",
+             "review_required", "source_lost", "restart_unknown", "incomplete_wait", "source_loss_while_waiting", "internal")
+    try:
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as source:
+            before = os.fstat(source.fileno())
+            if not diagnostic_file_matches(before, identity) or before.st_size > 16384: return unavailable
+            data = source.read(16385)
+            after = os.fstat(source.fileno())
+        if (not diagnostic_file_matches(os.lstat(path), identity) or len(data) > 16384
+                or len(data) != before.st_size or (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns)):
+            return unavailable
+        if data and not data.endswith(b"\n"): return unavailable
+        lines = data.decode("ascii").split("\n")[:-1] if data else []
+        if len(lines) > 128: return unavailable
+        counts = {}
+        for line in lines:
+            match = re.fullmatch(r"tempo hook: (" + "|".join(codes) + r"); durability=(not_committed|committed|unknown)", line)
+            if match is None: return unavailable
+            key = match.groups()
+            counts[key] = counts.get(key, 0) + 1
+        return {"status": "available", "counts": [{"code": code, "durability": durability, "count": count}
+                for (code, durability), count in sorted(counts.items())]}
+    except (OSError, UnicodeError):
+        return unavailable
+
+
+def artifact_match_probe(baseline):
+    result = {"available": True}
+    for role, limit in (("runtime", 320 << 20), ("executable", 256 << 20), ("definitions", 8 << 20), ("configuration", 8 << 20)):
+        result[role + "_matches"] = False
+        path, expected = baseline[role]
+        try:
+            with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as source:
+                info = os.fstat(source.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_size > limit: raise OSError()
+                hashed, size = hashlib.sha256(), 0
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    size += len(chunk)
+                    if size > limit: raise OSError()
+                    hashed.update(chunk)
+                after = os.fstat(source.fileno())
+                if size != info.st_size or (info.st_size, info.st_mtime_ns) != (after.st_size, after.st_mtime_ns): raise OSError()
+            current = os.lstat(path)
+            if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino): raise OSError()
+            result[role + "_matches"] = hashed.hexdigest() == expected
+        except OSError:
+            result["available"] = False
+    return result
 
 
 def project_receipt(value):
@@ -441,6 +529,7 @@ class Model:
         self.lock = threading.Lock()
         self.error = None
         self.counts = {}
+        self.entry_count = 0
         self.phase = "initial"
         self.child_seen = threading.Event()
         self.child_release = threading.Event()
@@ -507,6 +596,8 @@ class Model:
         self.server.shutdown(); self.server.server_close(); self.thread.join(timeout=2)
 
     def respond(self, body):
+        with self.lock:
+            self.entry_count = min(16, self.entry_count + 1)
         require(body.get("stream") is True and body.get("model") == "gpt-6.1-sol", "provider_request_contract")
         # The newest actual user message distinguishes parent/child/interrupt;
         # nested tool arguments containing the child marker don't count.
@@ -908,8 +999,9 @@ def run(args, report):
     # Copy to a short controlled path so the exact command is never TUI-truncated.
     shutil.copy2(tempo, root / "tempo")
     tempo = root / "tempo"
-    command = str(tempo) + " hook codex --input-stdin"
-    require(re.fullmatch(r"[A-Za-z0-9/_-]+ hook codex --input-stdin", command), "unsafe_fixture_path")
+    diagnostics = root / "hook-errors"
+    command = prepare_diagnostic_command(tempo, diagnostics)
+    diagnostic_identity = diagnostics.stat()
     bounded_run(["/usr/bin/git", "-c", "credential.helper=", "init", "-q", str(repo)], env, root)
     (repo / "fixture.txt").write_text(READ_RESULT + "\n")
     (repo / "AGENTS.md").write_text("Synthetic native lifecycle fixture. Read only fixture.txt. No network or writes.\n")
@@ -923,6 +1015,8 @@ def run(args, report):
     model = Model(lambda: helper_call("read"), repo, deadline)
     terminal = None
     baseline = None
+    confirmed_artifacts = None
+    measured_diagnostics = False
     try:
         hostdir = home / ".codex"
         hostdir.mkdir(mode=0o700)
@@ -948,6 +1042,10 @@ def run(args, report):
         report["profile_fingerprint"] = profile["fingerprint"]
         report["configuration_sha256"] = digest(config)
         baseline = {r["id"] for r in helper_call("read")["receipts"]}
+        confirmed_artifacts = {role: (path, digest(path)) for role, path in
+                               (("runtime", runtime), ("executable", tempo), ("definitions", definitions), ("configuration", config))}
+        reset_hook_diagnostics(diagnostics, diagnostic_identity)
+        measured_diagnostics = True
         report["stage"] = "measured_restart"
         terminal = Terminal(argv, env, repo, deadline, report.setdefault("command_input_probe", {}))
 
@@ -1009,6 +1107,10 @@ def run(args, report):
             model.close()
         report["request_counts"] = model.counts
         report["requests"] = model.requests
+        report["provider_entry_count"] = model.entry_count
+        report["hook_diagnostics"] = hook_diagnostic_probe(diagnostics, diagnostic_identity) if measured_diagnostics else {"status": "unavailable", "counts": []}
+        if confirmed_artifacts is not None:
+            report["artifact_matches"] = artifact_match_probe(confirmed_artifacts)
         if baseline is not None and "receipts" not in report:
             try:
                 report["receipts"] = [project_receipt(r) for r in helper_call("read")["receipts"] if r["id"] not in baseline]
