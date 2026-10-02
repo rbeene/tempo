@@ -163,7 +163,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 						}, Unlink: a.Unlink, Repair: a.RepairBinding}
 						authActions := uiAuthActions(d)
 						capture := &ui.ActivityActions{Status: a.Status, Review: a.Review, Preview: a.Preview, Resolve: a.Resolve, Interrupt: a.Interrupt}
-						err = uiResultError(ui.Run(session.Context(), session, a, ui.Options{Views: views, Links: links, Activity: capture, Auth: authActions, Hooks: uiHookActions(d), Worker: uiWorkerActions(d), Sync: uiSyncActions(d, a), Setup: uiSetupActions(d), Diagnostics: func(readCtx context.Context, check bool) (setup.Diagnostics, error) {
+						err = uiResultError(ui.Run(session.Context(), session, a, ui.Options{Views: views, Appearance: themeService(d), Capabilities: outputCapabilities(d, out), Links: links, Activity: capture, Auth: authActions, Hooks: uiHookActions(d), Worker: uiWorkerActions(d), Sync: uiSyncActions(d, a), Setup: uiSetupActions(d), Diagnostics: func(readCtx context.Context, check bool) (setup.Diagnostics, error) {
 							service, err := setupService(d)
 							if err != nil {
 								return setup.Diagnostics{}, err
@@ -216,21 +216,27 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 				presentationFailed = true
 			}
 		}
+		e := safeError(err)
 		var ended *terminal.ExitError
-		if errors.As(err, &ended) {
+		if errors.As(err, &ended) && !e.Uncertain {
 			if ended.Code == 1 {
-				fmt.Fprintln(errOut, "tempo: terminal: terminal input or output failed")
+				if jsonMode {
+					fmt.Fprintln(errOut, "tempo: terminal: terminal input or output failed")
+				} else {
+					output := presentation(ctx, d, errOut, errOut)
+					output.line(terminal.RoleError, "tempo: terminal: terminal input or output failed")
+					_ = output.close() // This branch already reports terminal I/O failure.
+				}
 			}
 			return ended.Code
 		}
-		e := safeError(err)
 		if len(completed) > 0 {
 			if e.Details == nil {
 				e.Details = map[string]any{}
 			}
 			e.Details["completed_steps"] = completed
 		}
-		if errors.Is(err, context.Canceled) || e.Code == "network" {
+		if !e.Uncertain && (errors.Is(err, context.Canceled) || e.Code == "network") {
 			var cause *terminal.ExitError
 			if errors.As(context.Cause(ctx), &cause) {
 				return cause.Code
@@ -239,9 +245,13 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		if jsonMode {
 			_ = json.NewEncoder(errOut).Encode(map[string]any{"schema_version": 1, "error": e})
 		} else {
-			p := presentation(ctx, d, errOut, errOut)
-			p.line(terminal.RoleError, fmt.Sprintf("tempo: %s: %s", e.Code, e.Message))
-			if p.close() != nil {
+			output := presentation(ctx, d, errOut, errOut)
+			output.line(terminal.RoleError, fmt.Sprintf("tempo: %s: %s", e.Code, e.Message))
+			var appearance *themes.Error
+			if errors.As(err, &appearance) && appearance.Code == "local_write_unknown" {
+				printThemeRecovery(&output, appearance, p)
+			}
+			if output.close() != nil {
 				presentationFailed = true
 			}
 		}

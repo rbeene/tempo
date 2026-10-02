@@ -34,6 +34,9 @@ func (m *Model) Render(styler terminal.Styler) []string {
 	if m.columns < 40 || m.rows < 8 {
 		add(terminal.RoleWarning, "Terminal too small")
 		add(terminal.RoleMuted, "Resize to 40x8")
+		if m.appearanceWarning != "" {
+			add(terminal.RoleWarning, m.appearanceWarning)
+		}
 		if m.stale {
 			add(terminal.RoleWarning, "Stale: "+m.reason)
 		}
@@ -42,6 +45,9 @@ func (m *Model) Render(styler terminal.Styler) []string {
 	}
 	add(terminal.RoleAccent, "TEMPO  /  LOCAL ACTIVITY")
 	add(terminal.RoleBorder, strings.Repeat("─", width))
+	if m.appearanceWarning != "" {
+		add(terminal.RoleWarning, m.appearanceWarning)
+	}
 	if m.stale {
 		add(terminal.RoleWarning, "Stale · "+m.reason)
 	} else {
@@ -94,9 +100,9 @@ func (m *Model) Render(styler terminal.Styler) []string {
 	}
 	add(terminal.RoleInfo, "Sync "+syncState+"  ·  Worker "+worker)
 	if width < 60 {
-		add(terminal.RoleKey, "? Help  ↑/↓ Select  r Refresh  q Quit")
+		add(terminal.RoleKey, "A Appearance  ? Help  ↑/↓  q Quit")
 	} else {
-		add(terminal.RoleKey, "? Help  a Auth  l Links  h Hooks  s Sync  w Worker  q Quit")
+		add(terminal.RoleKey, "A Appearance  ? Help  q Quit  a Auth  l Links  h Hooks  s Sync  w Worker")
 	}
 	return lines
 }

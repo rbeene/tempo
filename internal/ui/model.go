@@ -14,14 +14,15 @@ type TimerKey struct{ ComputerID, AccountID, ProjectID string }
 // Model retains read-only observations and presentation state. It has no clock,
 // service, filesystem, or network access. Pending actions keep their own inputs.
 type Model struct {
-	snapshot      activity.ActivitySnapshot
-	observed      bool
-	sequence      uint64
-	revision      uint64
-	selected      int
-	columns, rows int
-	stale         bool
-	reason        string
+	snapshot          activity.ActivitySnapshot
+	observed          bool
+	sequence          uint64
+	revision          uint64
+	selected          int
+	columns, rows     int
+	stale             bool
+	reason            string
+	appearanceWarning string
 }
 
 func NewModel(columns, rows int) *Model { return &Model{columns: columns, rows: rows} }

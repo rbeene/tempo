@@ -39,6 +39,22 @@ nonempty `NO_COLOR`, unknown/dumb terminal or redirected destination disables
 styling. Machine JSON and schema bypass appearance lookup and remain uncolored.
 See [theme-palettes.md](theme-palettes.md) for sources and color adaptations.
 
+In `tempo ui`, bare `tempo`, or eligible `activity status --watch`, press **A**
+for Appearance. Type to search or use arrows to preview all four palettes; the
+initial candidate is the saved choice. Enter opens confirmation, and applying
+uses the preference revision observed when that draft began. Escape or No makes
+no write and rereads the current saved palette, including another CLI writer's
+selection. A stale draft requires a fresh choice and confirmation.
+
+An uncertain save shows its original request ID and exact retry inputs. Backing
+out retains that outcome; reopening A offers the same request rather than a new
+intent. Explicit same-ID retry checks durability, then displays the current saved
+palette even if another writer changed it later. A read of current preferences
+does not acknowledge an uncertain write. Unreadable preferences use terminal
+default with a safe warning; explicit Appearance actions surface the error and
+preserve the file. Setup/link pickers, text labels and confirmations share the
+saved palette; hidden secret values never reach presentation styling.
+
 ## Authentication and configuration
 
 | Command | Behavior |
@@ -135,7 +151,7 @@ The complete generated interface is [cli-schema.json](cli-schema.json). `make sc
 
 ## Agent activity interface
 
-The [agent activity contract](agent-contracts.md) and [operation catalog](agent-operations.json) define `tempo link [PROJECT_ID]`, local `activity` status/recovery, setup, hooks, worker, sync and themes for the agent timing epic. They also define equal CLI/UI access, searchable arrow-key pickers and forced finite JSON output. `activity status` and `activity event --input-stdin` are now shipped as described below. Explicit linking, link inspection/mutation and local recovery are also shipped. Guided setup, project/task pickers and finite doctor diagnostics are shipped. Automatic sync and the optional worker are shipped below. Native hook management is available below. The activity dashboard provides timers, details, links, activity recovery, secure authentication, reviewed hook installation, worker controls, diagnostics and the shared guided Setup wizard. Sync controls provide configuration, bounded upload passes, reconciliation, reviewed resolution and pause/resume. Finite theme commands are available below; dashboard Appearance integration follows #17. The generated schema describes available commands. `timer …` retains its Harvest meaning; `activity …` describes local computer activity.
+The [agent activity contract](agent-contracts.md) and [operation catalog](agent-operations.json) define `tempo link [PROJECT_ID]`, local `activity` status/recovery, setup, hooks, worker, sync and themes for the agent timing epic. They also define equal CLI/UI access, searchable arrow-key pickers and forced finite JSON output. `activity status` and `activity event --input-stdin` are now shipped as described below. Explicit linking, link inspection/mutation and local recovery are also shipped. Guided setup, project/task pickers and finite doctor diagnostics are shipped. Automatic sync and the optional worker are shipped below. Native hook management is available below. The activity dashboard provides timers, details, links, activity recovery, secure authentication, reviewed hook installation, worker controls, diagnostics and the shared guided Setup wizard. Sync controls provide configuration, bounded upload passes, reconciliation, reviewed resolution and pause/resume. Finite theme commands and dashboard Appearance controls are available below. The generated schema describes available commands. `timer …` retains its Harvest meaning; `activity …` describes local computer activity.
 
 ## Local agent activity
 

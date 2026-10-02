@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 
 	"golang.org/x/term"
@@ -13,6 +14,10 @@ import (
 	"github.com/rbeene/tempo/internal/terminal"
 	"github.com/rbeene/tempo/internal/themes"
 )
+
+// Match the preference service's canonical UUID shape, including caller-supplied
+// versions. Generated UI IDs remain v4; other valid versions retain replay IDs.
+var themeReplayIdentity = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 // prose is used only for human presentation. JSON encoders never receive it.
 type prose struct {
@@ -146,4 +151,34 @@ func printThemes(p *prose, data any) {
 		p.line(terminal.RoleInfo, "Preference revision: "+*result.EntityRevision+"; transaction: "+result.SnapshotRevision)
 		p.line(terminal.RoleMuted, "Request: "+result.RequestID+"; reread themes show for current selection")
 	}
+}
+
+func printThemeRecovery(output *prose, outcome *themes.Error, command parsed) {
+	id, _ := outcome.Details["request_id"].(string)
+	if !themeReplayIdentity.MatchString(id) {
+		return
+	}
+	output.line(terminal.RoleWarning, "Appearance durability is unknown. Request ID: "+id)
+	candidate, _ := outcome.Details["theme"].(string)
+	revision, _ := outcome.Details["if_revision"].(string)
+	if candidate == "" {
+		switch command.command.Name {
+		case "themes set":
+			if len(command.args) == 1 {
+				candidate = command.args[0]
+			}
+		case "themes reset":
+			candidate = "terminal-default"
+		}
+		revision = command.flags["if-revision"]
+	}
+	if _, err := themes.Lookup(candidate); err != nil {
+		return
+	}
+	retry := "Retry exactly: tempo themes set " + candidate
+	if revision != "" {
+		retry += " --if-revision " + revision
+	}
+	retry += " --request-id " + id
+	output.line(terminal.RoleKey, retry)
 }

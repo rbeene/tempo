@@ -1,6 +1,6 @@
 # Theme palette sources and color policy
 
-This documents the palette foundation for the planned theme controls. The
+This documents the built-in palettes and terminal color policy. The
 generated CLI schema remains the authority for currently available commands.
 
 The embedded catalog contains Terminal default, Tokyo Night, Gruvbox (Material

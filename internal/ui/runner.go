@@ -64,6 +64,7 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 	service := &workerController{}
 	uploads := &syncController{}
 	wizard := &setupController{}
+	appearance := newAppearanceFlow(options.Appearance, options.Capabilities)
 	type flowResult struct {
 		name  string
 		style terminal.Styler
@@ -167,6 +168,10 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 						if uploads.pending != nil {
 							id = uploads.pending.id()
 						}
+					case "appearance":
+						if appearance.pending != nil {
+							id = appearance.pending.RequestID
+						}
 					case "setup":
 						id = setupRequestID(outcome)
 					}
@@ -189,6 +194,23 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 		return err
 	}
 	model := NewModel(columns, rows)
+	refreshAppearance := func() {
+		if options.Appearance == nil {
+			return
+		}
+		observed, readErr := currentAppearance(ctx, options.Appearance, options.Capabilities)
+		if readErr != nil {
+			options.Styler, _ = themes.NewStyler("terminal-default", options.Capabilities)
+			model.appearanceWarning = "Appearance unavailable; using terminal default"
+			return
+		}
+		options.Styler = observed
+		model.appearanceWarning = ""
+		if retained["appearance"] != nil {
+			model.appearanceWarning = "Appearance outcome unknown; A retries the exact request"
+		}
+	}
+	refreshAppearance()
 	draw := func() error {
 		outputCtx, end := context.WithTimeout(ctx, 250*time.Millisecond)
 		defer end()
@@ -332,6 +354,17 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 			if result.name == "hooks" && hooks.pending == nil || result.name == "worker" && service.pending == nil || result.name == "sync" && uploads.pending == nil {
 				request()
 			}
+			if result.name == "appearance" {
+				// Pure saved metadata refresh does not acknowledge durability or
+				// alter the retained mutation outcome or its pending identity.
+				refreshAppearance()
+				if ctx.Err() != nil {
+					return context.Cause(ctx)
+				}
+				if result.err != nil && !unknownOutcome(result.err) && !appearanceCancelled(result.err) {
+					return result.err
+				}
+			}
 			flowBusy = false
 			endFlow = nil
 			if modal != nil {
@@ -429,6 +462,13 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 				startView(timerDetails)
 			case "text":
 				switch event.Text {
+				case "A":
+					startFlow("appearance", func(flowCtx context.Context) (terminal.Styler, error) {
+						if options.Appearance == nil {
+							return nil, bridge.View(flowCtx, "Appearance", "Appearance unavailable.")
+						}
+						return appearance.run(flowCtx, bridge)
+					})
 				case "q":
 					return nil
 				case "r":

@@ -8,6 +8,7 @@ import (
 	"github.com/rbeene/tempo/internal/auth"
 	"github.com/rbeene/tempo/internal/harvest"
 	"github.com/rbeene/tempo/internal/hookstate"
+	"github.com/rbeene/tempo/internal/themes"
 	"github.com/rbeene/tempo/internal/worker"
 )
 
@@ -17,7 +18,8 @@ func unknownOutcome(err error) bool {
 	var remote *harvest.Error
 	var hooks *hookstate.Error
 	var service *worker.Error
-	return errors.As(err, &a) && a.Uncertain || errors.As(err, &credential) && credential.Uncertain || errors.As(err, &remote) && remote.Uncertain || errors.As(err, &hooks) && hooks.Uncertain || errors.As(err, &service) && service.Uncertain
+	var appearance *themes.Error
+	return errors.As(err, &appearance) && appearance.Uncertain || errors.As(err, &a) && a.Uncertain || errors.As(err, &credential) && credential.Uncertain || errors.As(err, &remote) && remote.Uncertain || errors.As(err, &hooks) && hooks.Uncertain || errors.As(err, &service) && service.Uncertain
 }
 
 func primaryOutcome(retained map[string]error) error {
