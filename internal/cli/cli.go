@@ -138,6 +138,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 					if openErr != nil {
 						err = openErr
 					} else {
+						errOut = &uiDiagnosticWriter{writer: errOut}
 						a := activityService(d)
 						views := &ui.ReadViews{Links: a.ListBindings, Sync: a.SyncStatus, Setup: func(readCtx context.Context) (setup.Status, error) {
 							service, err := setupService(d)

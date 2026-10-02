@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"regexp"
+	"time"
 
 	"github.com/rbeene/tempo/internal/activity"
 	"github.com/rbeene/tempo/internal/auth"
@@ -15,6 +17,22 @@ import (
 )
 
 var uiRequestIdentity = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// The report budget begins after Close, at the first plain diagnostic. Every
+// retained outcome and the final human error share that one bounded budget.
+type uiDiagnosticWriter struct {
+	writer   io.Writer
+	deadline time.Time
+}
+
+func (w *uiDiagnosticWriter) Write(data []byte) (int, error) {
+	if w.deadline.IsZero() {
+		w.deadline = time.Now().Add(250 * time.Millisecond)
+	}
+	ctx, end := context.WithDeadline(context.Background(), w.deadline)
+	defer end()
+	return terminal.WriteDiagnostic(ctx, w.writer, data)
+}
 
 func uiAuthReport(w io.Writer, operation string, result auth.Result, err error) {
 	switch operation {

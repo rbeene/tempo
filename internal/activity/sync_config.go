@@ -92,7 +92,7 @@ func validateSyncConfig(in SyncConfigureInput) error {
 	if in.AccountID == "" || in.Mode == "" || in.DurationPolicy == "" || in.IfRevision == "" {
 		return syncRequired("account_id", "mode", "duration_policy", "if_revision")
 	}
-	if !identity.Valid(in.AccountID) {
+	if !identity.Valid(in.AccountID) || in.UserID != "" && !identity.Valid(in.UserID) {
 		return failure("validation")
 	}
 	if _, ok := counter(in.IfRevision); !ok {
@@ -143,6 +143,9 @@ func (s *Service) SyncConfigure(ctx context.Context, in SyncConfigureInput, d Sy
 	u, e := syncIdentity(ctx, p, in.AccountID)
 	if e != nil {
 		return SyncConfigurationResult{}, e
+	}
+	if in.UserID != "" && bindingID(u) != in.UserID {
+		return SyncConfigurationResult{}, failure("identity_conflict")
 	}
 	key := syncConfigKey(in.AccountID, bindingID(u))
 	var result SyncConfigurationResult
