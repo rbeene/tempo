@@ -627,7 +627,81 @@ def startup_trust_probe(screen):
             "continue_choice_present": "3. Continue without trusting (hooks won't run)" in lines}
 
 
-def normal_trust(terminal, repo, command, trusted_events, probe=None, startup_probe=None):
+def review_transition_probe(screen):
+    startup = startup_trust_probe(screen)
+    selected = [line.strip() for line in screen.splitlines() if line.strip().startswith("›")]
+    def browser_row(event):
+        return len(selected) == 1 and "Issues" not in screen and bool(re.search(
+            r"›\s+" + event + r"\s+1\s+0\s+1\s", screen))
+    return {"complete_startup_modal": not startup["workspace_title_present"] and all(startup[key] for key in
+                ("hooks_review_title_present", "exact_count_present", "review_choice_present", "trust_all_choice_present", "continue_choice_present")),
+            "selected_review_row": len(selected) == 1 and bool(re.fullmatch(r"›\s+1\. Review hooks", selected[0])),
+            "selected_continue_row": len(selected) == 1 and bool(re.fullmatch(r"›\s+3\. Continue without trusting \(hooks won't run\)", selected[0])),
+            "inventory_caption_present": "Lifecycle hooks from config and enabled plugins." in screen,
+            "inventory_first_row": browser_row("PreToolUse"),
+            "inventory_last_row": browser_row("Interrupt"),
+            "model_label_present": startup["model_label_present"],
+            "workspace_title_present": startup["workspace_title_present"]}
+
+
+def navigation_ack(terminal, screen, probe, origin, acknowledged, category, key=b"\x1b[F", project=review_transition_probe):
+    require(key in (b"\x1b[F", b"\x1b[B", b"\x1b[A"), "invalid_navigation_key")
+    probe.clear()
+    probe.update(project(screen))
+    def observe(value):
+        probe.clear()
+        probe.update(project(value))
+        return acknowledged(probe)
+    # Only idempotent navigation is retried. Each resend requires the same
+    # complete original screen; confirmation/shortcut actions are never retried.
+    for _ in range(2):
+        require(origin(probe), category)
+        terminal.send(key)
+        try:
+            return terminal.until(observe, category, seconds=2)
+        except FixtureFailure as exc:
+            if str(exc) != category:
+                raise
+    raise FixtureFailure(category)
+
+
+def review_input_ack(terminal, screen, probe):
+    navigation_ack(terminal, screen, probe,
+                       lambda p: p["complete_startup_modal"] and p["selected_review_row"],
+                       lambda p: p["complete_startup_modal"] and p["selected_continue_row"],
+                       "startup_review_input_unavailable")
+    terminal.send(b"1")
+
+
+def browser_input_ack(terminal, screen, probe):
+    navigation_ack(terminal, screen, probe,
+                       lambda p: p["inventory_caption_present"] and p["inventory_first_row"],
+                       lambda p: p["inventory_caption_present"] and p["inventory_last_row"],
+                       "browser_input_unavailable")
+
+
+def workspace_input_probe(screen, repo):
+    probe = workspace_trust_probe(screen, repo)
+    selected = [line.strip() for line in screen.splitlines() if line.strip().startswith("›")]
+    probe["selected_trust_row"] = len(selected) == 1 and bool(re.fullmatch(r"›\s+1\. Trust and continue", selected[0]))
+    probe["selected_quit_row"] = len(selected) == 1 and bool(re.fullmatch(r"›\s+2\. Quit", selected[0]))
+    return probe
+
+
+def workspace_input_ack(terminal, screen, repo, probe):
+    def complete(p):
+        return all(p[key] for key in ("title_present", "exact_path_line_present", "trust_choice_present", "quit_choice_present")) and not p["alternate_root_warning_present"]
+    project = lambda value: workspace_input_probe(value, repo)
+    quit_screen = navigation_ack(terminal, screen, probe,
+        lambda p: complete(p) and p["selected_trust_row"], lambda p: complete(p) and p["selected_quit_row"],
+        "workspace_input_down_unavailable", b"\x1b[B", project)
+    navigation_ack(terminal, quit_screen, probe,
+        lambda p: complete(p) and p["selected_quit_row"], lambda p: complete(p) and p["selected_trust_row"],
+        "workspace_input_up_unavailable", b"\x1b[A", project)
+    terminal.send(b"\r")
+
+
+def normal_trust(terminal, repo, command, trusted_events, probe=None, startup_probe=None, input_probes=None):
     if probe is None:
         probe = {}
     probe.clear()
@@ -636,15 +710,21 @@ def normal_trust(terminal, repo, command, trusted_events, probe=None, startup_pr
         startup_probe = {}
     startup_probe.clear()
     startup_probe.update(startup_trust_probe(""))
+    if input_probes is None:
+        input_probes = {}
+    input_probes.clear()
+    input_probes.update({"workspace": workspace_input_probe("", repo), "startup": review_transition_probe(""), "browser": review_transition_probe("")})
 
     def startup_ready(screen):
         startup_probe.clear()
         startup_probe.update(startup_trust_probe(screen))
+        input_probes["startup"].clear()
+        input_probes["startup"].update(review_transition_probe(screen))
         if startup_probe["workspace_title_present"]:
             return False
         if startup_probe["hooks_review_title_present"]:
             return all(startup_probe[key] for key in ("exact_count_present", "review_choice_present",
-                       "trust_all_choice_present", "continue_choice_present"))
+                       "trust_all_choice_present", "continue_choice_present")) and input_probes["startup"]["selected_review_row"]
         return startup_probe["model_label_present"]
 
     def observe_until(predicate, category):
@@ -652,28 +732,37 @@ def normal_trust(terminal, repo, command, trusted_events, probe=None, startup_pr
             # Replace each observation; never union stale evidence or retain text.
             probe.clear()
             probe.update(workspace_trust_probe(screen, repo))
+            input_probes["workspace"].clear()
+            input_probes["workspace"].update(workspace_input_probe(screen, repo))
             return predicate(screen)
         return terminal.until(observed, category)
 
     initial = observe_until(lambda s: "Trust this folder?" in s or "gpt-6.1-sol" in s or "Hooks need review" in s, "startup_ui_unavailable")
+    startup_screen = initial
     if "Trust this folder?" in initial:
         # A PTY read can end halfway through a redraw. Wait for the complete
         # exact folder/choice display before taking the normal trust action.
-        observe_until(lambda s: "Trust this folder?" in s
+        workspace_screen = observe_until(lambda s: "Trust this folder?" in s
                        and str(repo) in [line.strip() for line in s.splitlines()]
                        and "Trust and continue" in s and "Quit" in s
-                       and "Trusting will apply to the repository root:" not in s,
+                       and "Trusting will apply to the repository root:" not in s
+                       and workspace_input_probe(s, repo)["selected_trust_row"],
                        "workspace_trust_mismatch")
-        terminal.send(b"\r")
-        terminal.until(startup_ready, "workspace_trust_failed")
+        workspace_input_ack(terminal, workspace_screen, repo, input_probes["workspace"])
+        startup_screen = terminal.until(startup_ready, "workspace_trust_failed")
     elif not startup_ready(initial):
-        terminal.until(startup_ready, "startup_hooks_review_unavailable")
+        startup_screen = terminal.until(startup_ready, "startup_hooks_review_unavailable")
     if startup_probe["hooks_review_title_present"]:
         # Pinned normal UI shortcut 1 opens Review hooks; it grants no trust.
-        terminal.send(b"1")
+        review_input_ack(terminal, startup_screen, input_probes["startup"])
     else:
         terminal.command("/hooks")
-    terminal.until(lambda s: "Lifecycle hooks from config and enabled plugins." in s, "hooks_ui_unavailable")
+    def browser_ready(screen):
+        input_probes["browser"].clear()
+        input_probes["browser"].update(review_transition_probe(screen))
+        return input_probes["browser"]["inventory_caption_present"] and input_probes["browser"]["inventory_first_row"]
+    browser_screen = terminal.until(browser_ready, "hooks_ui_unavailable")
+    browser_input_ack(terminal, browser_screen, input_probes["browser"])
     # Home selects first pinned event. Inspect inventory counts including all
     # zero-handler events before any trust action.
     terminal.send(b"\x1b[H")
@@ -776,7 +865,7 @@ def run(args, report):
         report["trusted_events"] = []
         terminal = Terminal(argv, env, repo, deadline)
         normal_trust(terminal, repo, command, report["trusted_events"], report.setdefault("workspace_trust_probe", {}),
-                     report.setdefault("startup_trust_probe", {}))
+                     report.setdefault("startup_trust_probe", {}), report.setdefault("input_probes", {}))
         terminal.close(); terminal = None
         require(not model.requests and model.error is None, "unexpected_pretrust_inference")
         report["stage"] = "production_policy_confirmation"

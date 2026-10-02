@@ -18,6 +18,17 @@ smoke = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(smoke)
 
 
+def workspace_frames(path="/tmp/exact-project"):
+    first = "Trust this folder?\n" + path + "\n› 1. Trust and continue\n2. Quit"
+    last = first.replace("› 1.", "1.").replace("2. Quit", "› 2. Quit")
+    return [first, last, first]
+
+
+def browser_frames():
+    caption = "Lifecycle hooks from config and enabled plugins.\n"
+    return [caption + "› PreToolUse 1 0 1 \n", caption + "› Interrupt 1 0 1 \n"]
+
+
 class HarnessTests(unittest.TestCase):
     def test_shared_host_arguments_require_embedded_execution_without_bypasses(self):
         self.assertEqual(smoke.codex_argv(Path("/synthetic/inert-runtime")),
@@ -77,7 +88,7 @@ class HarnessTests(unittest.TestCase):
         class ReachedNextRow(Exception): pass
         class Terminal:
             def __init__(self, rows):
-                self.screens = iter(["gpt-6.1-sol", "Lifecycle hooks from config and enabled plugins.", *rows])
+                self.screens = iter(["gpt-6.1-sol", *browser_frames(), *rows])
                 self.sent = []
             def until(self, predicate, category, **_):
                 for screen in self.screens:
@@ -91,12 +102,12 @@ class HarnessTests(unittest.TestCase):
             good = Terminal(["› PreToolUse ", "› PreToolUse 1 0 1 \n"])
             with self.assertRaises(ReachedNextRow):
                 smoke.normal_trust(good, Path("/tmp/project"), "unused", [])
-            self.assertEqual(good.sent, [b"\x1b[H", b"\x1b[B"])
+            self.assertEqual(good.sent, [b"\x1b[F", b"\x1b[H", b"\x1b[B"])
             for row in ("› PreToolUse ", "› PreToolUse 2 0 2 \n", "› PreToolUse 1 0 1 \nIssues"):
                 bad = Terminal([row])
                 with self.assertRaises(smoke.FixtureFailure):
                     smoke.normal_trust(bad, Path("/tmp/project"), "unused", [])
-                self.assertEqual(bad.sent, [b"\x1b[H"])
+                self.assertEqual(bad.sent, [b"\x1b[F", b"\x1b[H"])
 
     def test_details_wait_for_entire_validated_definition_before_trust(self):
         class ReachedTrust(Exception): pass
@@ -104,7 +115,7 @@ class HarnessTests(unittest.TestCase):
         full = "PreToolUse hooks\n› [!] Hook 1 · new\nEvent: PreToolUse\nSource: User - ~/.codex/hooks.json\nCommand: " + command + "\nMode: Sync\nTimeout: 2s\nTrust: New hook - review required\nt trust · esc back"
         class Terminal:
             def __init__(self, details):
-                self.screens = iter(["gpt-6.1-sol", "Lifecycle hooks from config and enabled plugins.",
+                self.screens = iter(["gpt-6.1-sol", *browser_frames(),
                                      "› PreToolUse 1 0 1 \n", "› PreToolUse 1 0 1 \n", *details])
                 self.sent = []
             def until(self, predicate, category, **_):
@@ -162,7 +173,7 @@ class HarnessTests(unittest.TestCase):
             pass
         class Terminal:
             def __init__(self, path):
-                self.screens = iter(["Trust this folder?", "Trust this folder?\n" + path + "\nTrust and continue\nQuit", "gpt-6.1-sol"])
+                self.screens = iter(["Trust this folder?", workspace_frames(path)[0].replace("› ", ""), *workspace_frames(path), "gpt-6.1-sol"])
                 self.sent = []
             def until(self, predicate, category, **_):
                 for screen in self.screens:
@@ -175,7 +186,7 @@ class HarnessTests(unittest.TestCase):
         terminal = Terminal("/tmp/exact-project")
         with self.assertRaises(ReachedHooks):
             smoke.normal_trust(terminal, Path("/tmp/exact-project"), "unused", [])
-        self.assertEqual(terminal.sent, [b"\r"])
+        self.assertEqual(terminal.sent, [b"\x1b[B", b"\x1b[A", b"\r"])
         self.assertEqual(terminal.asserted_command, "/hooks")
         for path in ("/tmp/different-project", "/tmp/exact-project-other"):
             wrong = Terminal(path)
@@ -242,7 +253,7 @@ class HarnessTests(unittest.TestCase):
         full = title + "\n9 hooks are new or changed." + choices
         class Terminal:
             def __init__(self, review):
-                self.screens = iter(["Trust this folder?", "Trust this folder?\n/tmp/exact-project\nTrust and continue\nQuit", *review])
+                self.screens = iter(["Trust this folder?", *workspace_frames(), *review])
                 self.sent = []
             def until(self, predicate, category, **_):
                 if category == "hook_inventory_navigation": raise ReachedInventory()
@@ -251,21 +262,23 @@ class HarnessTests(unittest.TestCase):
                 raise smoke.FixtureFailure(category)
             def send(self, value): self.sent.append(value)
             def command(self, _): raise AssertionError("must not type /hooks into startup modal")
-        good = Terminal([title, full, "Lifecycle hooks from config and enabled plugins."])
+        last = full.replace("› 1.", "1.").replace("3. Continue", "› 3. Continue")
+        good = Terminal([title, full.replace("› ", ""), full, last, *browser_frames()])
         with self.assertRaises(ReachedInventory):
             smoke.normal_trust(good, Path("/tmp/exact-project"), "unused", [])
-        self.assertEqual(good.sent, [b"\r", b"1", b"\x1b[H"])
-        for invalid in (title, full.replace("9 hooks", "19 hooks"), full.replace("9 hooks", "8 hooks"), full.replace("2. Trust all and continue", "")):
+        self.assertEqual(good.sent, [b"\x1b[B", b"\x1b[A", b"\r", b"\x1b[F", b"1", b"\x1b[F", b"\x1b[H"])
+        for invalid in (title, full.replace("9 hooks", "19 hooks"), full.replace("9 hooks", "8 hooks"), full.replace("2. Trust all and continue", ""),
+                        full.replace("› ", ""), full + "\n› 3. Continue without trusting (hooks won't run)"):
             with self.subTest(invalid=invalid):
                 bad = Terminal([invalid + "\ngpt-6.1-sol"])
                 with self.assertRaises(smoke.FixtureFailure):
                     smoke.normal_trust(bad, Path("/tmp/exact-project"), "unused", [])
-                self.assertEqual(bad.sent, [b"\r"])
+                self.assertEqual(bad.sent, [b"\x1b[B", b"\x1b[A", b"\r"])
         cleared = Terminal([title + "\n19 hooks are new or changed.", ""])
         evidence = {"untrusted_old_text": "SECRET"}
         with self.assertRaises(smoke.FixtureFailure):
             smoke.normal_trust(cleared, Path("/tmp/exact-project"), "unused", [], {}, evidence)
-        self.assertEqual(cleared.sent, [b"\r"])
+        self.assertEqual(cleared.sent, [b"\x1b[B", b"\x1b[A", b"\r"])
         self.assertEqual(evidence, smoke.startup_trust_probe(""))
 
     def test_startup_probe_has_only_fixed_booleans_and_exact_count(self):
@@ -275,6 +288,104 @@ class HarnessTests(unittest.TestCase):
                                 "review_choice_present": True, "trust_all_choice_present": False,
                                 "continue_choice_present": False})
         self.assertFalse(any(smoke.startup_trust_probe("").values()))
+
+    def test_review_navigation_acknowledges_input_before_single_review_shortcut(self):
+        prompt = "Hooks need review\n9 hooks are new or changed.\n› 1. Review hooks\n2. Trust all and continue\n3. Continue without trusting (hooks won't run)"
+        acknowledged = prompt.replace("› 1.", "1.").replace("3. Continue", "› 3. Continue")
+        class Terminal:
+            def __init__(self, outcomes): self.outcomes, self.sent = iter(outcomes), []
+            def send(self, value): self.sent.append(value)
+            def until(self, predicate, category, **_):
+                if predicate(next(self.outcomes)): return "unused"
+                raise smoke.FixtureFailure(category)
+        # First idempotent navigation is consumed by the pinned post-draw drain.
+        good = Terminal([prompt, acknowledged])
+        evidence = {}
+        smoke.review_input_ack(good, prompt, evidence)
+        self.assertEqual(good.sent, [b"\x1b[F", b"\x1b[F", b"1"])
+        self.assertTrue(evidence["selected_continue_row"])
+        for outcomes, sends in (([prompt, prompt], 2), (["gpt-6.1-sol"], 1), ([acknowledged + "\n› 1. Review hooks"], 1)):
+            bad = Terminal(outcomes)
+            with self.assertRaises(smoke.FixtureFailure): smoke.review_input_ack(bad, prompt, {})
+            self.assertEqual(bad.sent, [b"\x1b[F"] * sends)
+
+    def test_review_transition_projection_is_finite_and_replaces_unknown_text(self):
+        probe = smoke.review_transition_probe("PRIVATE /path\ngpt-6.1-sol")
+        self.assertEqual(probe, {"complete_startup_modal": False, "selected_review_row": False,
+                                "selected_continue_row": False, "inventory_caption_present": False,
+                                "inventory_first_row": False, "inventory_last_row": False,
+                                "model_label_present": True, "workspace_title_present": False})
+
+    def test_normal_trust_requires_ack_at_each_initial_input_boundary(self):
+        class ReachedInventory(Exception): pass
+        review = "Hooks need review\n9 hooks are new or changed.\n› 1. Review hooks\n2. Trust all and continue\n3. Continue without trusting (hooks won't run)"
+        review_last = review.replace("› 1.", "1.").replace("3. Continue", "› 3. Continue")
+        class Terminal:
+            def __init__(self, start, depart=False):
+                self.phase = start if start != "browser" else "composer"
+                self.screen = {"workspace": workspace_frames()[0], "startup": review, "browser": "gpt-6.1-sol"}[start]
+                self.start, self.depart, self.sent, self.counts = start, depart, [], {}
+                self.workspace_ack = False
+            def until(self, predicate, category, **_):
+                if predicate(self.screen): return self.screen
+                raise smoke.FixtureFailure(category)
+            def command(self, value):
+                assert self.phase == "composer" and value == "/hooks"
+                self.phase, self.screen = "browser", browser_frames()[0]
+            def send(self, key):
+                self.sent.append(key)
+                if key in (b"\x1b[B", b"\x1b[F"):
+                    self.counts[self.phase] = self.counts.get(self.phase, 0) + 1
+                    if self.depart and self.phase == self.start:
+                        self.screen = "Unexpected private screen"
+                        return
+                    if self.counts[self.phase] == 1: return  # Actual post-draw drain.
+                    self.screen = {"workspace": workspace_frames()[1], "startup": review_last, "browser": browser_frames()[1]}[self.phase]
+                elif key == b"\x1b[A":
+                    assert self.phase == "workspace" and self.screen == workspace_frames()[1]
+                    self.screen, self.workspace_ack = workspace_frames()[0], True
+                elif key == b"\r":
+                    assert self.workspace_ack, "workspace confirmation before input acknowledgment"
+                    self.phase, self.screen = "startup", review
+                elif key == b"1":
+                    assert self.screen == review_last, "Review shortcut before input acknowledgment"
+                    self.phase, self.screen = "browser", browser_frames()[0]
+                elif key == b"\x1b[H":
+                    assert self.screen == browser_frames()[1], "inventory navigation before input acknowledgment"
+                    raise ReachedInventory()
+                else:
+                    raise AssertionError("unexpected action")
+        for start in ("workspace", "startup", "browser"):
+            with self.subTest(start=start):
+                good = Terminal(start)
+                with self.assertRaises(ReachedInventory):
+                    smoke.normal_trust(good, Path("/tmp/exact-project"), "unused", [])
+                self.assertTrue(all(count == 2 for count in good.counts.values()))
+                self.assertLessEqual(good.sent.count(b"\r"), 1)
+                self.assertLessEqual(good.sent.count(b"1"), 1)
+                bad = Terminal(start, depart=True)
+                probes = {"old": "PRIVATE"}
+                with self.assertRaises(smoke.FixtureFailure):
+                    smoke.normal_trust(bad, Path("/tmp/exact-project"), "unused", [], None, None, probes)
+                self.assertEqual(len(bad.sent), 1)
+                self.assertNotIn("PRIVATE", json.dumps(probes))
+
+    def test_input_origin_timeout_preserves_last_finite_observation(self):
+        review = "Hooks need review\n9 hooks are new or changed.\n1. Review hooks\n2. Trust all and continue\n3. Continue without trusting (hooks won't run)"
+        class Terminal:
+            def __init__(self, screen): self.screen, self.sent = screen, []
+            def until(self, predicate, category, **_):
+                if predicate(self.screen): return self.screen
+                raise smoke.FixtureFailure(category)
+            def send(self, value): self.sent.append(value)
+        for stage, screen, expected in (("workspace", workspace_frames()[0].replace("› ", ""), smoke.workspace_input_probe(workspace_frames()[0].replace("› ", ""), Path("/tmp/exact-project"))),
+                                        ("startup", review, smoke.review_transition_probe(review))):
+            with self.subTest(stage=stage):
+                terminal, probes = Terminal(screen), {}
+                with self.assertRaises(smoke.FixtureFailure):
+                    smoke.normal_trust(terminal, Path("/tmp/exact-project"), "unused", [], None, None, probes)
+                self.assertEqual(terminal.sent, [])
+                self.assertEqual(probes[stage], expected)
 
     def test_receipt_projection_cannot_export_raw_payload_or_unknown_status(self):
         receipt = self.receipt("SessionStart")
