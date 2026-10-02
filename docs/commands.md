@@ -96,3 +96,7 @@ tempo timer status --json --non-interactive
 ```
 
 The complete generated interface is [cli-schema.json](cli-schema.json). `make schema` regenerates it, and CI rejects schema drift.
+
+## Planned agent activity interface
+
+The [agent activity contract](agent-contracts.md) and [planned operation catalog](agent-operations.json) define `tempo link [PROJECT_ID]`, local `activity` status/recovery, setup, hooks, worker, sync and themes for the agent timing epic. They also define equal CLI/UI access, searchable arrow-key pickers and forced finite JSON output. These commands are not implemented by this specification change. The generated schema above continues to describe available commands. `timer …` retains its Harvest meaning; future `activity …` commands describe local computer activity.

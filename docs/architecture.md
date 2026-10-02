@@ -25,3 +25,7 @@ Ordinary create always supplies completed duration or a complete timestamp pair.
 ## Verification and infrastructure
 
 Public PR verification uses one ephemeral GitHub-hosted Ubuntu job, read-only token and no matrix. The former private-repository Titan CI workflow is disabled. The dedicated Titan service is disabled/stopped; editable workflow conditions are not an isolation boundary. Each push to `main` triggers one hosted macOS build followed by one hosted Ubuntu build/publish job. The workflow automatically chooses a stable version, tags the triggering commit after validation, and publishes the complete release. No release job depends on Titan. See [distribution.md](distribution.md). Both platforms pin Go 1.27.1 and GoReleaser 2.18.2. No AWS resources are involved.
+
+## Planned local agent activity
+
+The [agent activity contract](agent-contracts.md) specifies the next implementation slices: one local union timer per computer/account/project, durable actor history and uncertainty, immutable attribution, and shared CLI/UI actions. Its [operation catalog](agent-operations.json) and [acceptance vectors](agent-acceptance.json) are design contracts, not shipped features. They preserve the existing Harvest provider and direct time/timer commands. The planned independent sync worker and interactive lifetimes apply only when those features ship; the current executable behavior described above is unchanged.
