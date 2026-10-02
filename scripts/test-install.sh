@@ -164,5 +164,72 @@ pathlib.Path(out).write_bytes(src.read_bytes())
                 self.assertNotEqual(p.returncode,0,p.stdout+p.stderr)
                 self.assertFalse(self.log.exists(),'unsupported platform started download')
 
+    def test_release_archive_with_notices_installs_only_binary_after_validation(self):
+        import shutil
+        members=[('tempo','file'),('README.md','file'),
+                 ('THIRD_PARTY_NOTICES.md','file'),('docs/commands.md','file')]
+        self.make_assets(members=members)
+        archive=self.assets/'tempo_1.2.3_darwin_arm64.tar.gz'
+        with tarfile.open(archive) as tar:
+            self.assertEqual(tar.getnames(),[name for name,_ in members])
+            self.assertTrue(all(member.isfile() for member in tar))
+        checksum=(self.assets/'checksums-darwin.txt').read_text().split()[0]
+        self.assertEqual(checksum,hashlib.sha256(archive.read_bytes()).hexdigest())
+        old=self.bin/'tempo';old.write_bytes(b'old trusted binary');old.chmod(0o755)
+        self.env.update(QA_REAL_TAR=shutil.which('tar',path=os.environ['PATH']),
+                        QA_OLD_BINARY=str(old),QA_TAR_LOG=str(self.root/'tar.jsonl'))
+        self.command('tar', '''#!/usr/bin/env python3
+import json,os,pathlib,sys
+a=sys.argv[1:]
+if pathlib.Path(os.environ['QA_OLD_BINARY']).read_bytes()!=b'old trusted binary':
+    sys.stderr.write('QA: replaced old binary before archive validation completed\\n');sys.exit(97)
+with open(os.environ['QA_TAR_LOG'],'a') as f:f.write(json.dumps(a)+'\\n')
+if any('x' in arg for arg in a if arg.startswith('-')) and (len(a)!=3 or a[0]!='-xOzf' or a[2]!='tempo'):
+    sys.stderr.write('QA: extraction must stream only tempo\\n');sys.exit(98)
+os.execv(os.environ['QA_REAL_TAR'],[os.environ['QA_REAL_TAR'],*a])
+''')
+        p=self.run_installer()
+        self.assert_no_execution()
+        if p.returncode:
+            self.assertEqual(old.read_bytes(),b'old trusted binary','rejected release replaced existing binary')
+        self.assertEqual(p.returncode,0,p.stdout+p.stderr)
+        self.assertEqual(old.read_bytes(),self.payload)
+        self.assertTrue(os.access(old,os.X_OK))
+        self.assertEqual(sorted(path.name for path in self.bin.iterdir()),['tempo'])
+        self.assertEqual(list((self.root/'tmp').iterdir()),[],'installer left downloaded or extracted files')
+        self.assertEqual(sorted(path.name for path in self.home.iterdir()),[])
+        tar_calls=[json.loads(line) for line in (self.root/'tar.jsonl').read_text().splitlines()]
+        self.assertEqual([args[0] for args in tar_calls],['-tzf','-tvzf','-xOzf'])
+        self.assertEqual([args[-1] for args in tar_calls[1:]],['tempo','tempo'])
+        self.assert_no_execution()
+
+    def test_notice_lookalikes_and_nested_paths_are_rejected(self):
+        for notice in ['THIRD_PARTY_NOTICESXmd','third_party_notices.md',
+                       'THIRD_PARTY_NOTICES.md.bak','THIRD_PARTY_NOTICES.md/child',
+                       './THIRD_PARTY_NOTICES.md','docs/THIRD_PARTY_NOTICES.md',
+                       'folder/THIRD_PARTY_NOTICES.md']:
+            with self.subTest(notice=notice):
+                self.make_assets(members=[('tempo','file'),('README.md','file'),
+                                          ('docs/commands.md','file'),(notice,'file')])
+                self.assert_rejected_preserves_old()
+                self.assertEqual(sorted(path.name for path in self.bin.iterdir()),['tempo'])
+
+    def test_release_archive_with_notices_preserves_checksum_guards(self):
+        for checksum in ['corrupt','missing','duplicate','conflicting']:
+            with self.subTest(checksum=checksum):
+                self.make_assets(members=[('tempo','file'),('README.md','file'),
+                                          ('THIRD_PARTY_NOTICES.md','file'),('docs/commands.md','file')],
+                                 checksum=checksum)
+                self.assert_rejected_preserves_old()
+
+    def test_release_archive_with_notices_requires_one_regular_tempo(self):
+        for executable in [[('tempo','symlink')],[('tempo','hardlink')],[('tempo','dir')],
+                           [('tempo','file'),('tempo','file')],[],[('folder/tempo','file')]]:
+            with self.subTest(executable=executable):
+                self.make_assets(members=executable+[('README.md','file'),
+                                                     ('THIRD_PARTY_NOTICES.md','file'),('docs/commands.md','file')])
+                self.assert_rejected_preserves_old()
+                self.assertFalse((self.root/'outside').exists())
+
 if __name__=='__main__':unittest.main(verbosity=2)
 PY

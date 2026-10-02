@@ -45,7 +45,7 @@ else actual=$(shasum -a 256 "$tmp/archive.tar.gz" | awk '{print $1}'); fi
 tar -tzf "$tmp/archive.tar.gz" > "$tmp/members" || fail 'invalid archive'
 [ "$(grep -c '^tempo$' "$tmp/members" || true)" = 1 ] || fail 'archive must contain exactly one top-level tempo file'
 if grep -Eq '(^/|(^|/)\.\.(/|$))' "$tmp/members"; then fail 'unsafe archive path'; fi
-if grep -Ev '^(tempo|README\.md|docs/|docs/commands\.md)$' "$tmp/members" >/dev/null; then fail 'unexpected archive member'; fi
+if grep -Ev '^(tempo|README\.md|THIRD_PARTY_NOTICES\.md|docs/|docs/commands\.md)$' "$tmp/members" >/dev/null; then fail 'unexpected archive member'; fi
 tar -tvzf "$tmp/archive.tar.gz" tempo > "$tmp/type" || fail 'cannot inspect executable'
 [ "$(wc -l < "$tmp/type" | tr -d ' ')" = 1 ] || fail 'duplicate executable'
 grep -q '^-' "$tmp/type" || fail 'executable must be a regular file'
