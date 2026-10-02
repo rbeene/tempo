@@ -222,15 +222,38 @@ def agent_error_category(content):
         ('permission', ("Agent type 'tempo-fixture-child' has been denied by permission rule ",
                         "Agent type 'tempo-fixture-child' is unavailable because every tool it may use is denied",
                         'Permission to use Agent has been denied', 'Tool permission request failed',
+                        "Claude requested permissions to use Agent, but you haven't granted it yet.",
                         'Agent tool requires permission to spawn subagents.')),
         ('executor_unavailable', ('Agent: launching needs the executor (call.runEngine)',)),
         ('depth_limit', ('Subagent nesting limit reached (depth ',)),
         ('concurrency_limit', ('Concurrent subagent limit reached.',)),
         ('background_unavailable', ('In-process teammates cannot spawn background agents',)),
+        ('input_validation', ('InputValidationError:',)),
+        ('hook_stopped', ('Execution stopped by PreToolUse hook', 'Subagent spawn denied by a plugin:',)),
+        ('cancelled', ('Cancelled: Claude ended the conversation', 'Streaming fallback - tool execution discarded')),
+        ('diskless_output', ('Task output has no file in a diskless session',)),
+        ('cwd_unavailable', ('A subagent cannot be started from here in this session.',)),
     )
     for category, fragments in categories:
         if any(fragment in text for fragment in fragments):
             return 'agent_tool_error_' + category
+    # Bun exception messages and these prelaunch member names are present in the
+    # pinned artifact. Only fixed labels leave this function, never captures.
+    if any(fragment in text for fragment in ('Cannot read properties', 'Cannot destructure property',
+                                              'undefined is not an object', 'null is not an object',
+                                              ' is not a function')):
+        for member, category in (('taskRegistry', 'task_registry'), ('toolCatalog', 'tool_catalog'),
+                                 ('agentLifecycle', 'agent_lifecycle'), ('getSystemPrompt', 'system_prompt'),
+                                 ('withProject', 'project_context'), ('sessionScratch', 'session_scratch')):
+            if member in text:
+                return 'agent_tool_error_runtime_type_' + category
+        return 'agent_tool_error_runtime_type_other'
+    if "Can't find variable:" in text or ' is not defined' in text:
+        return 'agent_tool_error_runtime_reference'
+    if re.search(r'\b(?:ENOENT|EACCES|EPERM|EROFS|ENOTDIR|ELOOP)\b', text):
+        return 'agent_tool_error_filesystem'
+    if 'Error calling tool (Agent):' in text:
+        return 'agent_tool_error_dispatch_exception'
     return 'agent_tool_error_unclassified'
 
 

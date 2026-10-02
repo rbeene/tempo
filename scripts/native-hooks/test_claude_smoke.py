@@ -244,6 +244,34 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(str(failure.exception),'agent_tool_error_unclassified')
         self.assertEqual(model.phase,'agent');self.assertEqual(model.counts,{'parent':2,'child':1})
 
+    def test_shared_dispatch_errors_have_bounded_fixed_diagnostics(self):
+        cases=[("Claude requested permissions to use Agent, but you haven't granted it yet.",'permission'),
+               ('InputValidationError: private-canary','input_validation'),
+               ('Execution stopped by PreToolUse hook: private-canary','hook_stopped'),
+               ('Cancelled: Claude ended the conversation','cancelled'),
+               ('Task output has no file in a diskless session','diskless_output'),
+               ('A subagent cannot be started from here in this session.','cwd_unavailable'),
+               ('Cannot read properties of undefined (reading taskRegistry)','runtime_type_task_registry'),
+               ('undefined is not an object (evaluating e.options.toolCatalog)','runtime_type_tool_catalog'),
+               ('e.agentLifecycle.markTypeInvoked is not a function','runtime_type_agent_lifecycle'),
+               ('s.getSystemPrompt is not a function','runtime_type_system_prompt'),
+               ('e.session.withProject is not a function','runtime_type_project_context'),
+               ("Cannot destructure property 'sessionScratch' from null or undefined value",'runtime_type_session_scratch'),
+               ('private-canary is not a function','runtime_type_other'),
+               ("Can't find variable: private-canary",'runtime_reference'),
+               ('private-canary is not defined','runtime_reference'),
+               ('ENOENT: no such file or directory, open private-canary','filesystem'),
+               ('EACCES: permission denied, open private-canary','filesystem'),
+               ('Error calling tool (Agent): private-canary','dispatch_exception'),
+               ('private-canary contains XENOENTZ and a taskRegistry mention','unclassified')]
+        for text,category in cases:
+            with self.subTest(category=category),self.assertRaises(smoke.FixtureFailure) as failure:
+                smoke.require_tool_result(request(results=[dict(result('tempo-agent',text+' private-canary'),is_error=True)]),'tempo-agent')
+            self.assertEqual(str(failure.exception),'agent_tool_error_'+category)
+        # The aggregate text cap must apply before recognizing any fragment.
+        oversized=[{'type':'text','text':cases[0][0]}]+[{'type':'text','text':'x'*200}]*127
+        self.assertEqual(smoke.agent_error_category(oversized),'agent_tool_error_unclassified')
+
     def test_initial_response_requires_unique_accepted_native_start_and_prompt(self):
         base=[receipt('SessionStart'),receipt('UserPromptSubmit')]
         for rows in ([],base[:1],base[1:],base+[dict(base[0],id='second')],base+[dict(base[1],turn_id='other')],
@@ -385,7 +413,9 @@ class ProcessTests(unittest.TestCase):
 
     def test_main_exports_agent_failure_category_without_raw_result_or_canary(self):
         for text,category in [('private-canary','agent_tool_error_unclassified'),
-                              ('Permission to use Agent has been denied: private-canary','agent_tool_error_permission')]:
+                              ('Permission to use Agent has been denied: private-canary','agent_tool_error_permission'),
+                              ('private-canary is not a function','agent_tool_error_runtime_type_other'),
+                              ('ENOENT private-canary','agent_tool_error_filesystem')]:
             with tempfile.TemporaryDirectory() as d:
                 evidence=Path(d)/'evidence.json'
                 def failure(args,report):
