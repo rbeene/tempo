@@ -325,9 +325,22 @@ class Screen:
             raise FixtureFailure("unsupported_terminal_csi_" + kind)
 
 
+def command_input_probe(screen, value):
+    text = screen.text()
+    row = "".join(screen.grid[screen.row]).rstrip()
+    exact = re.fullmatch(r"[ ]*[›»] +" + re.escape(value), row) is not None
+    lines = [line.strip() for line in text.splitlines()]
+    return {"is_quit": value == "/quit", "model_label_present": "gpt-6.1-sol" in text,
+            "modal_present": any(title in text for title in ("Trust this folder?", "Hooks need review",
+                "Lifecycle hooks from config and enabled plugins.")) or any(event + " hooks" in lines for event in EVENT_ORDER),
+            "cursor_row_exact_echo": exact, "cursor_at_echo_end": exact and screen.col == len(row),
+            "enter_sent": False}
+
+
 class Terminal:
-    def __init__(self, argv, env, cwd, deadline):
+    def __init__(self, argv, env, cwd, deadline, input_probe=None):
         self.deadline = deadline
+        self.input_probe = {} if input_probe is None else input_probe
         self.screen = Screen()
         self.master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", self.screen.rows, self.screen.cols, 0, 0))
@@ -366,7 +379,19 @@ class Terminal:
         raise FixtureFailure(code)
 
     def command(self, value):
-        self.send(value.encode() + b"\r")
+        # Normal bracketed paste clears the host's paste-burst Enter window.
+        # A cursor-local whole-row echo excludes history and slash popup text.
+        self.input_probe.clear()
+        self.input_probe.update(command_input_probe(Screen(), value))
+        self.send(b"\x1b[200~" + value.encode() + b"\x1b[201~")
+        def echoed(_):
+            self.input_probe.clear()
+            self.input_probe.update(command_input_probe(self.screen, value))
+            return (self.input_probe["model_label_present"] and not self.input_probe["modal_present"]
+                    and self.input_probe["cursor_row_exact_echo"] and self.input_probe["cursor_at_echo_end"])
+        self.until(echoed, "command_echo_unavailable", seconds=5)
+        self.send(b"\r")
+        self.input_probe["enter_sent"] = True
 
     def close(self):
         terminate_group(self.proc)
@@ -887,7 +912,7 @@ def run(args, report):
         argv = codex_argv(runtime)
         report["stage"] = "normal_trust_ui"
         report["trusted_events"] = []
-        terminal = Terminal(argv, env, repo, deadline)
+        terminal = Terminal(argv, env, repo, deadline, report.setdefault("command_input_probe", {}))
         normal_trust(terminal, repo, command, report["trusted_events"], report.setdefault("workspace_trust_probe", {}),
                      report.setdefault("startup_trust_probe", {}), report.setdefault("input_probes", {}))
         terminal.close(); terminal = None
@@ -898,7 +923,7 @@ def run(args, report):
         report["configuration_sha256"] = digest(config)
         baseline = {r["id"] for r in helper_call("read")["receipts"]}
         report["stage"] = "measured_restart"
-        terminal = Terminal(argv, env, repo, deadline)
+        terminal = Terminal(argv, env, repo, deadline, report.setdefault("command_input_probe", {}))
 
         def wait_snapshot(predicate, category, seconds=20):
             result = None

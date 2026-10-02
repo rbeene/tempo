@@ -30,6 +30,67 @@ def browser_frames():
 
 
 class HarnessTests(unittest.TestCase):
+    def test_command_pastes_then_waits_for_cursor_local_echo_before_single_enter(self):
+        for value in ("/quit", "/hooks", smoke.PARENT_PROMPT, smoke.INTERRUPT_PROMPT):
+            for glyph in ("›", "»"):
+                with self.subTest(value=value, glyph=glyph):
+                    terminal = smoke.Terminal.__new__(smoke.Terminal)
+                    terminal.input_probe = {}
+                    terminal.send = mock.Mock()
+                    row = "  " + glyph + " " + value
+                    frames = [("gpt-6.1-sol\n" + row + "\n› empty", 2, 7),
+                              ("gpt-6.1-sol\n" + row[:-1], 1, len(row)-1),
+                              ("gpt-6.1-sol\n" + row, 1, 0),
+                              ("gpt-6.1-sol\n" + row, 1, len(row))]
+                    def until(predicate, category, seconds):
+                        self.assertEqual(seconds, 5)
+                        self.assertEqual(terminal.send.call_args_list,
+                                         [mock.call(b"\x1b[200~" + value.encode() + b"\x1b[201~")])
+                        for index, (text, cursor_row, cursor_col) in enumerate(frames):
+                            terminal.screen = smoke.Screen()
+                            terminal.screen.feed(text.replace("\n", "\r\n").encode())
+                            terminal.screen.row, terminal.screen.col = cursor_row, cursor_col
+                            ready = predicate(terminal.screen.text())
+                            self.assertEqual(ready, index == len(frames)-1)
+                            if ready: return text
+                        raise smoke.FixtureFailure(category)
+                    terminal.until = until
+                    terminal.command(value)
+                    self.assertEqual(terminal.send.call_args_list,
+                                     [mock.call(b"\x1b[200~" + value.encode() + b"\x1b[201~"), mock.call(b"\r")])
+                    self.assertTrue(terminal.input_probe["enter_sent"])
+                    self.assertTrue(terminal.input_probe["cursor_at_echo_end"])
+
+    def test_command_never_submits_partial_historical_popup_or_modal_echo(self):
+        value = "/quit"
+        cases = [("gpt-6.1-sol\n› /qui", 1, 6),
+                 ("gpt-6.1-sol\n› /quit\n› empty", 2, 7),
+                 ("gpt-6.1-sol\n› /quit  exit Codex", 1, 19),
+                 ("gpt-6.1-sol\n› /quit", 1, 0),
+                 ("› /quit", 0, 7)]
+        for title in ("Trust this folder?", "Hooks need review", "Lifecycle hooks from config and enabled plugins.", "Stop hooks"):
+            cases.append(("gpt-6.1-sol\n" + title + "\n› /quit", 2, 7))
+        for text, row, col in cases:
+            with self.subTest(text=text):
+                terminal = smoke.Terminal.__new__(smoke.Terminal)
+                terminal.input_probe = {"secret": "CANARY"}
+                terminal.send = mock.Mock()
+                def until(predicate, category, seconds):
+                    terminal.screen = smoke.Screen()
+                    terminal.screen.feed((text + "\r\nCANARY").replace("\n", "\r\n").encode())
+                    terminal.screen.row, terminal.screen.col = row, col
+                    self.assertFalse(predicate(terminal.screen.text()))
+                    raise smoke.FixtureFailure(category)
+                terminal.until = until
+                with self.assertRaisesRegex(smoke.FixtureFailure, "command_echo_unavailable"):
+                    terminal.command(value)
+                self.assertEqual(terminal.send.call_args_list, [mock.call(b"\x1b[200~" + value.encode() + b"\x1b[201~")])
+                self.assertEqual(set(terminal.input_probe), {"is_quit", "model_label_present", "modal_present",
+                    "cursor_row_exact_echo", "cursor_at_echo_end", "enter_sent"})
+                self.assertTrue(all(type(v) is bool for v in terminal.input_probe.values()))
+                self.assertNotIn("CANARY", json.dumps(terminal.input_probe))
+                self.assertFalse(terminal.input_probe["enter_sent"])
+
     def test_shared_host_arguments_require_embedded_execution_without_bypasses(self):
         self.assertEqual(smoke.codex_argv(Path("/synthetic/inert-runtime")),
                          ["/synthetic/inert-runtime", "--no-alt-screen", "--no-daemon"])
