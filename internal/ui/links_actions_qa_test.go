@@ -287,6 +287,16 @@ func TestQAUILinksDuplicateKeysDoNotDispatchConcurrentActions(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("confirmed action never dispatched")
 	}
+	// Acknowledged mutation is blocked; discard earlier confirmation frames so
+	// the historical frame below acknowledges the queued resize, before release.
+	draining := true
+	for draining {
+		select {
+		case <-x.screen.frames:
+		default:
+			draining = false
+		}
+	}
 	qaLinkEnter(x)
 	qaLinkEnter(x)
 	qaLinkKey(x, "l")
