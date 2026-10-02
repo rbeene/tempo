@@ -52,7 +52,7 @@ func executeSync(ctx context.Context, p parsed, d Dependencies) (any, error) {
 		}
 		return result, err
 	case "sync configure":
-		result, err := s.SyncConfigure(ctx, activity.SyncConfigureInput{AccountID: f["account"], Mode: f["mode"], DurationPolicy: f["duration-policy"], Clock: f["clock"], IfRevision: f["if-revision"], RequestID: id, Confirmed: f["yes"] == "true"}, deps)
+		result, err := s.SyncConfigure(ctx, activity.SyncConfigureInput{AccountID: f["account"], UserID: f["user"], Mode: f["mode"], DurationPolicy: f["duration-policy"], Clock: f["clock"], IfRevision: f["if-revision"], RequestID: id, Confirmed: f["yes"] == "true"}, deps)
 		if err == nil {
 			notifyWorker(ctx, d, worker.Recheck)
 		}

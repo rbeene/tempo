@@ -28,7 +28,7 @@ var commands = []Command{
 	{"worker uninstall", "Remove the owned user service and retain local history; requires --yes", "", map[string]string{"request-id": "uuid"}, true},
 	{"worker run", "Run the foreground worker until stopped or signaled; output flags retain this lifetime", "", nil, true},
 	{"sync status", "Inspect saved sync configuration, outbox and exact/planned/confirmed totals", "", nil, false},
-	{"sync configure", "Declare verified account tracking mode and representation policy; requires revision and --yes", "", map[string]string{"mode": "string", "duration-policy": "string", "clock": "string", "if-revision": "counter", "request-id": "uuid"}, true},
+	{"sync configure", "Declare verified account tracking mode and representation policy; requires revision and --yes", "", map[string]string{"mode": "string", "duration-policy": "string", "clock": "string", "if-revision": "counter", "request-id": "uuid", "user": "id"}, true},
 	{"sync now", "Run a bounded durable sync pass; unknown writes are never retried", "", map[string]string{"limit": "counter", "request-id": "uuid"}, true},
 	{"sync reconcile", "Read Harvest to reconcile unique saved entry markers", "[UUID]", map[string]string{"limit": "counter", "request-id": "uuid"}, true},
 	{"sync pause", "Pause uploads locally without stopping capture", "", map[string]string{"request-id": "uuid"}, true},

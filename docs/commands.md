@@ -200,6 +200,12 @@ tempo sync status --json
 Revision `0` creates consent for the freshly verified account/current-user pair;
 editing uses that pair's current revision from status. Configuration never changes
 the default account, credentials, captured attribution, or the enabled flag.
+Optional `--user ID` freezes an already reviewed current-user identity: if the
+credential now verifies a different user, configuration fails with
+`identity_conflict` before writing, even when the new user's revision is equal.
+A presentation can supply this guard after verifying the pair. Omission
+preserves the existing finite CLI behavior and historical request fingerprints;
+exact saved request replay still precedes credential or provider discovery.
 Only a specifically classified Company `403` permits the declaration fallback;
 invalid, inactive, conflicting or unavailable identity/mode evidence blocks writes.
 Ordinary sync commands always use saved account identity and reject `--account`.

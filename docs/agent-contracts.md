@@ -115,7 +115,9 @@ Only finalizable closed intervals become `queued` outbox items; open or unresolv
 Startup converts orphaned `submitting` to `unknown`, never back to `queued`. Reconciliation reads only, verifies exact current user/account and immutable interval/correlation fields, and accepts exactly one conclusive matching entry. Zero or multiple matches remain visible and blocked. A manual `sync resolve --entry ID` re-reads/verifies the selected owned entry before attachment; merely supplying an ID does not bypass matching. No “retry unknown” command in v1: lack of a read match does not prove the original write failed. Existing manual Harvest commands remain available with their own explicit uncertainty contract; they do not silently repair the outbox. Do not claim upstream exactly-once delivery without an idempotency guarantee. Stopping/pausing synchronization is independent of capture.
 
 Explicit account/current-user mode and representation consent is saved through
-`sync.configure`; no migration silently grants rounding consent. Only Company403
+`sync.configure`; no migration silently grants rounding consent. An optional expected
+current-user guard rejects changed verified identity before configuration writes,
+without changing historical fingerprints when omitted or bypassing saved replay. Only Company403
 permits declared-mode fallback. Duration policy is exact or explicitly nearest
 hundredth hour; timestamp mode is exact with declared clock and verified timezone.
 All daily parts preflight before any write. Missing confirmed amounts are null;

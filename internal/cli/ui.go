@@ -133,7 +133,15 @@ func uiResultError(err error) error {
 	var remote *harvest.Error
 	var hooks *hookstate.Error
 	var service *worker.Error
-	if errors.As(err, &remote) || errors.As(err, &hooks) || errors.As(err, &service) || errors.Is(err, auth.ErrNotFound) || errors.Is(err, auth.ErrPersistenceUnavailable) {
+	if errors.As(err, &service) {
+		if service.Uncertain {
+			copy := *service
+			copy.Message = "local worker control outcome or durability is unknown; preserve the exact intent and inspect worker status"
+			return &copy
+		}
+		return err
+	}
+	if errors.As(err, &remote) || errors.As(err, &hooks) || errors.Is(err, auth.ErrNotFound) || errors.Is(err, auth.ErrPersistenceUnavailable) {
 		return err
 	}
 	var ended *terminal.ExitError
