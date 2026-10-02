@@ -7,6 +7,7 @@ import (
 	"github.com/rbeene/tempo/internal/harvest"
 	"github.com/rbeene/tempo/internal/identity"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 )
@@ -36,7 +37,7 @@ func bindingObject(o harvest.Object, key string) harvest.Object {
 	return v
 }
 func validTimezone(v string) bool {
-	if !safeIdentifier(v, 128) || v == "Local" || strings.Contains(v, "\\") || strings.Contains(v, "..") || strings.HasPrefix(v, "/") {
+	if !safeIdentifier(v, 128) || path.Clean(v) != v || v == "Local" || strings.Contains(v, "\\") || strings.Contains(v, "..") || strings.HasPrefix(v, "/") {
 		return false
 	}
 	_, err := time.LoadLocation(v)

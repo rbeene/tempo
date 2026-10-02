@@ -148,6 +148,8 @@ func TestQABindingValidationNeverInitializesState(t *testing.T) {
 		{"missing-project", "input_required", func(i *LinkInput, _ *qaLinkProvider) { i.ProjectID = "" }},
 		{"missing-timezone", "input_required", func(i *LinkInput, _ *qaLinkProvider) { i.Timezone = "" }},
 		{"machine-timezone", "validation", func(i *LinkInput, _ *qaLinkProvider) { i.Timezone = "Local" }},
+		{"timezone-double-slash", "validation", func(i *LinkInput, _ *qaLinkProvider) { i.Timezone = "America//New_York" }},
+		{"timezone-dot-alias", "validation", func(i *LinkInput, _ *qaLinkProvider) { i.Timezone = "America/./New_York" }},
 		{"initial-revision-without-binding", "revision_conflict", func(i *LinkInput, _ *qaLinkProvider) { i.IfRevision = "1" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -306,6 +308,8 @@ func TestQABindingAttachedActorsBlockMutationButAllowIdenticalLink(t *testing.T)
 				t.Fatalf("attached identical link rejected/changed: %+v %v", same, err)
 			}
 			_, err = s.Unlink(context.Background(), UnlinkInput{BindingID: linked.Binding.ID, IfRevision: linked.Binding.Revision, RequestID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", Confirmed: true})
+			qaCode(t, err, "binding_in_use")
+			_, err = s.RepairBinding(context.Background(), RepairBindingInput{BindingID: linked.Binding.ID, Path: t.TempDir(), IfRevision: linked.Binding.Revision, RequestID: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", Confirmed: true})
 			qaCode(t, err, "binding_in_use")
 			in.Timezone = "America/New_York"
 			in.RequestID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
@@ -696,5 +700,57 @@ func TestQABindingUnlinkedRealChildLocationInheritsParent(t *testing.T) {
 		if actor.BindingID != linked.Binding.ID || actor.Attribution != linked.Binding.Attribution {
 			t.Fatalf("child attributed independently: %+v", actor)
 		}
+	}
+}
+
+func TestQABindingCommitRechecksRevisionAfterRemotePreflight(t *testing.T) {
+	s, _ := qaLinkService(t)
+	in := qaLinkInput(t)
+	first, err := s.Link(context.Background(), in, qaLinkDeps(t, qaNewLinkProvider(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed := in
+	changed.IfRevision = first.Binding.Revision
+	changed.Timezone = "America/New_York"
+	changed.RequestID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	p := qaNewLinkProvider(t)
+	p.beforeList = func() {
+		other := changed
+		other.Timezone = "Europe/London"
+		other.RequestID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+		if _, err := s.Link(context.Background(), other, qaLinkDeps(t, qaNewLinkProvider(t))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err = s.Link(context.Background(), changed, qaLinkDeps(t, p))
+	qaCode(t, err, "revision_conflict")
+	current, err := s.ShowBinding(context.Background(), ShowBindingInput{BindingID: first.Binding.ID})
+	if err != nil || current.Bindings[0].Attribution.Timezone != "Europe/London" {
+		t.Fatalf("concurrent revision overwritten: %+v %v", current, err)
+	}
+}
+func TestQABindingDirectoryAncestorBecomingGitRejectsIDOnlyIngress(t *testing.T) {
+	h := qaNew(t)
+	h.service = New(Options{Path: h.path, Clock: ClockFunc(func() (ClockSample, error) { return h.sample, h.clockErr })})
+	ancestor := t.TempDir()
+	child := filepath.Join(ancestor, "child")
+	if err := os.Mkdir(child, 0700); err != nil {
+		t.Fatal(err)
+	}
+	in := qaLinkInput(t)
+	in.Path = child
+	linked, err := h.service.Link(context.Background(), in, qaLinkDeps(t, qaNewLinkProvider(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	computer := *h.snapshot().ComputerID
+	qaGit(t, ancestor, "init")
+	event := qaEvent("ancestor-boundary", "1", "1", "work", linked.Binding.ID)
+	event.Actor.ComputerID = computer
+	_, err = h.service.Ingest(context.Background(), event)
+	qaCode(t, err, "binding_unavailable")
+	if len(h.snapshot().Actors) != 0 {
+		t.Fatal("new repository scope admitted inherited directory actor")
 	}
 }

@@ -237,3 +237,30 @@ func TestQABindingGitPointerDriftDuringValidationCannotCommit(t *testing.T) {
 	qaCode(t, err, "binding_unavailable")
 	qaAbsentLinkState(t, path)
 }
+
+func TestQABindingDiscoveryRejectsUnsafeRepositoryScopes(t *testing.T) {
+	t.Run("bare", func(t *testing.T) {
+		root := t.TempDir()
+		qaGit(t, root, "init", "--bare")
+		_, err := DiscoverLocation(context.Background(), root)
+		qaCode(t, err, "binding_unavailable")
+	})
+	t.Run("core-worktree-outside-cwd", func(t *testing.T) {
+		root := t.TempDir()
+		elsewhere := t.TempDir()
+		qaGit(t, root, "init")
+		qaGit(t, root, "config", "--local", "core.worktree", elsewhere)
+		_, err := DiscoverLocation(context.Background(), root)
+		qaCode(t, err, "binding_unavailable")
+	})
+	t.Run("newline-path", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "line\nbreak")
+		if err := os.Mkdir(root, 0700); err != nil {
+			t.Fatal(err)
+		}
+		_, err := DiscoverLocation(context.Background(), root)
+		if err == nil {
+			t.Fatal("newline path accepted into line-oriented Git discovery")
+		}
+	})
+}

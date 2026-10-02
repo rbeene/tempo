@@ -7,7 +7,6 @@ import (
 	"math"
 	"path/filepath"
 	"strings"
-	"time"
 	"unicode"
 
 	"github.com/rbeene/tempo/internal/identity"
@@ -29,11 +28,10 @@ func validKey(k ActorKey) bool {
 }
 func validRef(r ActorRef) bool { n, ok := counter(r.Generation); return validKey(r.Key) && ok && n > 0 }
 func validAttribution(a Attribution) bool {
-	if !identity.Valid(a.AccountID) || !identity.Valid(a.UserID) || !identity.Valid(a.ProjectID) || !identity.Valid(a.TaskID) || !safeIdentifier(a.Timezone, 128) || a.Timezone == "Local" {
+	if !identity.Valid(a.AccountID) || !identity.Valid(a.UserID) || !identity.Valid(a.ProjectID) || !identity.Valid(a.TaskID) || !validTimezone(a.Timezone) {
 		return false
 	}
-	_, err := time.LoadLocation(a.Timezone)
-	return err == nil
+	return true
 }
 func validateEvent(e Event) error {
 	if e.ContractVersion != 1 {

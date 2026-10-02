@@ -181,7 +181,6 @@
       ],
       "result": "BindingResult",
       "effect": "remote_read_local_mutation",
-      "ui": "Links; Add/Edit searchable project and task pickers",
       "notes": "Explicit project required; no picker is shipped. Missing task uses a still-active saved choice or sole active task; missing timezone uses a saved choice for this account/project. Unresolved choices return input_required. Path defaults cwd. No user override. Omitted revision means create-only or identical no-op."
     },
     {
@@ -191,8 +190,7 @@
       "input": {},
       "required": [],
       "result": "BindingList",
-      "effect": "local_read",
-      "ui": "Links list"
+      "effect": "local_read"
     },
     {
       "id": "bindings.show",
@@ -207,7 +205,6 @@
       "required": [],
       "result": "BindingList",
       "effect": "local_read",
-      "ui": "Link details",
       "notes": "ID and path mutually exclusive; defaults cwd. Exactly one binding returned or not_found."
     },
     {
@@ -228,7 +225,6 @@
       ],
       "result": "MutationResult",
       "effect": "local_mutation",
-      "ui": "Links; Remove with confirmation",
       "notes": "Requires --yes; rejects attached working/waiting/stale generations. Historical snapshots persist."
     },
     {
@@ -252,7 +248,6 @@
       ],
       "result": "BindingResult",
       "effect": "local_mutation",
-      "ui": "Links; Repair moved repository",
       "notes": "Explicit locator replacement only; same attribution, --yes, no attached generation, no conflicting locator. No remote/name-based guessing."
     }
   ],

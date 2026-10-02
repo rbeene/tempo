@@ -74,16 +74,16 @@ Failure with `--json`, stderr (stdout empty):
 | Exit | Codes / meaning |
 |---|---|
 | 0 | success |
-| 1 | internal, config, keychain |
-| 2 | usage, validation |
+| 1 | internal, config, keychain, state_corrupt, clock_unavailable |
+| 2 | usage, validation, input_required, invalid_transition, unsupported_contract |
 | 3 | auth |
 | 4 | forbidden |
-| 5 | not_found |
-| 6 | conflict, confirmation_required |
+| 5 | not_found, binding_unavailable |
+| 6 | conflict, confirmation_required, attribution_conflict, binding_in_use, revision_conflict, request_conflict, event_conflict, event_gap, clock_conflict, state_busy |
 | 7 | network, api, rate_limit, response |
-| 8 | uncertain_write |
+| 8 | uncertain_write, local_write_unknown |
 
-`retryable` describes a read/rejection that may succeed later; it does not authorize blindly repeating a mutation. Exit 8 always requires read-only reconciliation. Upstream validation bodies are deliberately suppressed because they may echo sensitive input. Check the supplied IDs, project/task assignment, account mode and fields.
+`retryable` describes a read/rejection that may succeed later; it does not authorize blindly repeating a mutation. Remote `uncertain_write` requires read-only reconciliation. For local `local_write_unknown`, inspect local state and retry only the exact same request/event identity, as described below. Upstream validation bodies are deliberately suppressed because they may echo sensitive input. Check the supplied IDs, project/task assignment, account mode and fields.
 
 Examples for an agent (substitute actual discovered IDs):
 
