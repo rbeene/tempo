@@ -214,9 +214,16 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 	draw := func() error {
 		outputCtx, end := context.WithTimeout(ctx, 250*time.Millisecond)
 		defer end()
-		frame := model.Render(options.Styler)
+		style := options.Styler
 		if modal != nil {
-			frame = modal.Render(options.Styler)
+			style = modal.styler(style)
+		}
+		if owner, ok := screen.(interface{ SetStyler(terminal.Styler) }); ok {
+			owner.SetStyler(style)
+		}
+		frame := model.Render(style)
+		if modal != nil {
+			frame = modal.Render(style)
 		}
 		if err := screen.Draw(outputCtx, frame); err != nil {
 			if ctx.Err() != nil && errors.Is(err, context.Canceled) {

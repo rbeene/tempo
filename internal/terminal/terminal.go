@@ -47,8 +47,8 @@ type Session struct {
 	styled                      bool
 }
 
-// SetStyler configures semantic spans for finite prompts owned by this session.
-// Call before presenting prompts, on their sole presentation goroutine.
+// SetStyler configures finite prompt spans and the next dashboard frame's base.
+// Call before presentation, on the session's sole presentation goroutine.
 func (s *Session) SetStyler(style Styler) { s.styler = style }
 
 func (s *Session) paint(role Role, text string) string {
