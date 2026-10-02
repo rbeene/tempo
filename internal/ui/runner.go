@@ -55,6 +55,8 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 	links := &linkController{}
 	capture := &activityController{}
 	credential := &authController{}
+	hooks := &hookController{}
+	service := &workerController{}
 	type flowResult struct {
 		name  string
 		style terminal.Styler
@@ -135,6 +137,14 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 					case "activity":
 						if capture.pending != nil {
 							id = capture.id()
+						}
+					case "hooks":
+						if hooks.pending != nil {
+							id = hooks.pending.id()
+						}
+					case "worker":
+						if service.pending != nil {
+							id = service.pending.request.RequestID
 						}
 					}
 				}
@@ -290,6 +300,9 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 			if result.name == "activity" && capture.pending == nil {
 				request()
 			}
+			if result.name == "hooks" && hooks.pending == nil || result.name == "worker" && service.pending == nil {
+				request()
+			}
 			flowBusy = false
 			endFlow = nil
 			if modal != nil {
@@ -410,6 +423,18 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 				case "a":
 					startFlow("auth", func(flowCtx context.Context) (terminal.Styler, error) {
 						return nil, credential.run(flowCtx, bridge, options.Auth)
+					})
+				case "h":
+					startFlow("hooks", func(flowCtx context.Context) (terminal.Styler, error) {
+						return nil, hooks.run(flowCtx, bridge, options.Hooks)
+					})
+				case "w":
+					startFlow("worker", func(flowCtx context.Context) (terminal.Styler, error) {
+						return nil, service.run(flowCtx, bridge, options.Worker)
+					})
+				case "d":
+					startFlow("diagnostics", func(flowCtx context.Context) (terminal.Styler, error) {
+						return nil, showDiagnostics(flowCtx, bridge, options.Diagnostics)
 					})
 				}
 				continue

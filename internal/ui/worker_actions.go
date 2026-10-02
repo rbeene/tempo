@@ -35,7 +35,7 @@ func (c *workerController) run(ctx context.Context, p *promptBridge, actions *Wo
 	if actions == nil {
 		return p.View(ctx, "Worker controls", "Worker controls unavailable.")
 	}
-	op, err := p.Choose(ctx, "Worker controls", []terminal.Choice{{ID: "status", Label: "Read-only worker status"}, {ID: "install", Label: "Install user service without starting"}, {ID: "start", Label: "Start worker and enable login startup"}, {ID: "stop", Label: "Stop worker and disable login startup"}, {ID: "uninstall", Label: "Remove owned user service"}, {ID: "back", Label: "Back"}})
+	op, err := p.Choose(ctx, "Worker controls", []terminal.Choice{{ID: "status", Label: "Read-only worker status"}, {ID: "install", Label: "Install user service"}, {ID: "start", Label: "Start worker and enable login startup"}, {ID: "stop", Label: "Stop worker and disable login startup"}, {ID: "uninstall", Label: "Remove owned user service"}, {ID: "back", Label: "Back"}})
 	if err != nil || op == "back" {
 		return err
 	}

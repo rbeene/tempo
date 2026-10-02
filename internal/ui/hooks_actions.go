@@ -41,7 +41,7 @@ func (c *hookController) run(ctx context.Context, p *promptBridge, actions *Hook
 	}
 	op, err := p.Choose(ctx, "Hooks and capture", []terminal.Choice{
 		{ID: "status", Label: "Inspect hook status"}, {ID: "verify", Label: "Verify current evidence"},
-		{ID: "preview", Label: "Preview installation changes"}, {ID: "install", Label: "Install hooks and skill"},
+		{ID: "preview", Label: "Review proposed changes"}, {ID: "install", Label: "Install hooks and skill"},
 		{ID: "repair", Label: "Repair owned installation"}, {ID: "uninstall", Label: "Uninstall owned resources"},
 		{ID: "confirm-profile", Label: "Confirm reviewed capture declaration"}, {ID: "revoke-profile", Label: "Revoke capture declaration"},
 		{ID: "back", Label: "Back"},
