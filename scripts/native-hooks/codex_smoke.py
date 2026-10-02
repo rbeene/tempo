@@ -721,6 +721,8 @@ cli_auth_credentials_store = "ephemeral"
 web_search = "disabled"
 sandbox_mode = "read-only"
 approval_policy = "on-request"
+[tui]
+show_tooltips = false
 [analytics]
 enabled = false
 [otel]

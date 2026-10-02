@@ -12,6 +12,7 @@ import threading
 from unittest import mock
 import json
 import time
+import tomllib
 
 spec = importlib.util.spec_from_file_location("codex_smoke", Path(__file__).with_name("codex_smoke.py"))
 smoke = importlib.util.module_from_spec(spec)
@@ -30,6 +31,14 @@ def browser_frames():
 
 
 class HarnessTests(unittest.TestCase):
+    def test_fixture_config_disables_persisted_startup_tooltips_without_trust_seeding(self):
+        config = tomllib.loads(smoke.config_text(43210))
+        self.assertEqual(config.get("tui"), {"show_tooltips": False})
+        self.assertNotIn("projects", config)
+        self.assertNotIn("hooks", config)
+        self.assertEqual(config["model"], "gpt-6.1-sol")
+        self.assertEqual(config["model_providers"]["tempo_ci"]["base_url"], "http://127.0.0.1:43210/codex/v1")
+
     def test_command_pastes_then_waits_for_cursor_local_echo_before_single_enter(self):
         for value in ("/quit", "/hooks", smoke.PARENT_PROMPT, smoke.INTERRUPT_PROMPT):
             for glyph in ("›", "»"):
