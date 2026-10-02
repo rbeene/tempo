@@ -3,6 +3,7 @@ package activity
 import (
 	"encoding/hex"
 	"reflect"
+	"sort"
 )
 
 func validBinding(b BindingSnapshot) bool {
@@ -132,14 +133,17 @@ func validState(st *state) bool {
 		}
 	}
 	intervals := map[string]Interval{}
+	supportsBySegment := map[string]int{}
+	rangesByTimer := map[string][]timeRange{}
 	for _, in := range st.Intervals {
-		if !validUUID(in.ID) || !validUUID(in.ComputerID) || !validAttribution(in.Attribution) || !in.End.After(in.Start) || len(in.SegmentIDs) == 0 {
+		if !validUUID(in.ID) || in.ComputerID != st.ComputerID || !validAttribution(in.Attribution) || !in.End.After(in.Start) || len(in.SegmentIDs) == 0 {
 			return false
 		}
 		if _, ok := intervals[in.ID]; ok {
 			return false
 		}
 		intervals[in.ID] = in
+		rangesByTimer[timerKey(in.ComputerID, in.Attribution)] = append(rangesByTimer[timerKey(in.ComputerID, in.Attribution)], timeRange{start: in.Start, end: in.End})
 		var supports []timeRange
 		n, ok := counter(in.DurationNS)
 		if !ok || n == 0 || n != uint64(in.End.Sub(in.Start)) {
@@ -152,12 +156,36 @@ func validState(st *state) bool {
 				return false
 			}
 			ids[id] = true
+			supportsBySegment[id]++
+			if supportsBySegment[id] > 1 {
+				return false
+			}
 			supports = append(supports, timeRange{start: seg.Start, end: seg.Confirmed})
 		}
 		merged := mergeRanges(supports)
 		if len(merged) != 1 || !merged[0].start.Equal(in.Start) || !merged[0].end.Equal(in.End) {
 			return false
 		}
+	}
+	for id, seg := range st.Segments {
+		if seg.Finalized {
+			if supportsBySegment[id] != 1 {
+				return false
+			}
+		} else if supportsBySegment[id] != 0 {
+			return false
+		}
+	}
+	for _, ranges := range rangesByTimer {
+		sort.Slice(ranges, func(i, j int) bool { return ranges[i].start.Before(ranges[j].start) })
+		for i := 1; i < len(ranges); i++ {
+			if ranges[i].start.Before(ranges[i-1].end) {
+				return false
+			}
+		}
+	}
+	if len(st.UncertaintyEvidence) != len(st.Uncertainties) {
+		return false
 	}
 	if len(st.Outbox) != len(st.Intervals) {
 		return false

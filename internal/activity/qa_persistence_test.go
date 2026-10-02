@@ -360,7 +360,7 @@ func TestQAActivityLockReplacementBeforeCommitPreservesOriginalState(t *testing.
 }
 
 func TestQAActivityCorruptHistoryReferencesPreserveEvidence(t *testing.T) {
-	for _, kind := range []string{"negative-duration", "missing-supporting-segment", "outbox-interval-mismatch", "noncanonical-actor-sequence"} {
+	for _, kind := range []string{"negative-duration", "missing-supporting-segment", "outbox-interval-mismatch", "noncanonical-actor-sequence", "finalized-segment-without-output", "duplicate-interval-support", "foreign-interval-computer"} {
 		t.Run(kind, func(t *testing.T) {
 			h := qaNew(t)
 			h.seed()
@@ -387,6 +387,42 @@ func TestQAActivityCorruptHistoryReferencesPreserveEvidence(t *testing.T) {
 				for _, v := range st["actors"].(map[string]any) {
 					v.(map[string]any)["sequence"] = "02"
 				}
+			case "finalized-segment-without-output":
+				st["intervals"] = []any{}
+				st["outbox"] = map[string]any{}
+			case "duplicate-interval-support":
+				original := st["intervals"].([]any)[0]
+				encoded, err := json.Marshal(original)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var cloned map[string]any
+				if err := json.Unmarshal(encoded, &cloned); err != nil {
+					t.Fatal(err)
+				}
+				id := "99999999-9999-4999-8999-999999999999"
+				cloned["id"] = id
+				st["intervals"] = append(st["intervals"].([]any), cloned)
+				var item map[string]any
+				for _, v := range st["outbox"].(map[string]any) {
+					encoded, err = json.Marshal(v)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err = json.Unmarshal(encoded, &item); err != nil {
+						t.Fatal(err)
+					}
+					break
+				}
+				item["id"] = "88888888-8888-4888-8888-888888888888"
+				item["interval"] = cloned
+				item["correlation"] = "tempo:" + id
+				st["outbox"].(map[string]any)[id] = item
+			case "foreign-interval-computer":
+				st["intervals"].([]any)[0].(map[string]any)["computer_id"] = "99999999-9999-4999-8999-999999999999"
+				for _, v := range st["outbox"].(map[string]any) {
+					v.(map[string]any)["interval"].(map[string]any)["computer_id"] = "99999999-9999-4999-8999-999999999999"
+				}
 			}
 			corrupt, err := json.Marshal(st)
 			if err != nil {
@@ -406,5 +442,44 @@ func TestQAActivityCorruptHistoryReferencesPreserveEvidence(t *testing.T) {
 				t.Fatal("invalid history was repaired or overwritten by read")
 			}
 		})
+	}
+}
+
+func TestQAActivityConcurrentStateReplacementCannotBeOverwritten(t *testing.T) {
+	for _, initiallyExists := range []bool{true, false} {
+		for _, changed := range []bool{true, false} {
+			t.Run(fmt.Sprintf("initially-exists-%t/changed-%t", initiallyExists, changed), func(t *testing.T) {
+				h := qaNew(t)
+				if initiallyExists {
+					h.seed()
+				}
+				replacement := []byte(`{"schema_version":2,"private_evidence":"preserve concurrent replacement"}`)
+				err := h.service.store.update(context.Background(), func(st *state) (bool, error) {
+					if !initiallyExists {
+						st.ComputerID = qaComputer
+						for id, b := range h.bindings {
+							st.Bindings[id] = b
+						}
+					}
+					delete(st.Bindings, qaBindingB)
+					tmp := h.path + ".external-replacement"
+					if err := os.WriteFile(tmp, replacement, 0600); err != nil {
+						return false, err
+					}
+					if err := os.Rename(tmp, h.path); err != nil {
+						return false, err
+					}
+					return changed, nil
+				})
+				qaCode(t, err, "state_corrupt")
+				after, readErr := os.ReadFile(h.path)
+				if readErr != nil {
+					t.Fatal(readErr)
+				}
+				if !bytes.Equal(after, replacement) {
+					t.Fatalf("pending transaction overwrote newer/corrupt replacement: %q", after)
+				}
+			})
+		}
 	}
 }

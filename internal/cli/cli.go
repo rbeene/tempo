@@ -273,11 +273,13 @@ func execute(ctx context.Context, p parsed, in io.Reader, d Dependencies) (any, 
 		eventCtx, cancel := context.WithTimeout(ctx, time.Second)
 		defer cancel()
 		if f, ok := in.(*os.File); ok {
-			if deadline, ok := eventCtx.Deadline(); ok {
-				if f.SetReadDeadline(deadline) == nil {
-					defer f.SetReadDeadline(time.Time{})
-				}
+			deadline, _ := eventCtx.Deadline()
+			reader, cleanup, err := deadlineActivityFile(f, deadline)
+			if err != nil {
+				return nil, problem("validation", "cannot safely apply activity input deadline")
 			}
+			defer cleanup()
+			in = reader
 		}
 		event, err := activity.DecodeEvent(in)
 		if err != nil {

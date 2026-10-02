@@ -5,8 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -138,5 +141,55 @@ func TestQAActivityCLIForcingDoesNotInterpretHarvestNoteAsCommand(t *testing.T) 
 	}
 	if _, ok := data["id"]; !ok {
 		t.Fatalf("ordinary Harvest result missing: %s", r.out)
+	}
+}
+
+// A subprocess is essential: os.Pipe in-process has pollable descriptors, while
+// inherited stdin may not support SetReadDeadline.
+func TestQAActivityCLIInheritedStdinHasFiniteDeadline(t *testing.T) {
+	root := t.TempDir()
+	binary := filepath.Join(root, "tempo")
+	build := exec.Command(filepath.Join(runtime.GOROOT(), "bin", "go"), "build", "-o", binary, "../../cmd/tempo")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build: %v: %s", err, output)
+	}
+	for _, input := range []string{`{"contract_version":`, qaEventJSON} {
+		t.Run(fmt.Sprintf("input-bytes-%d", len(input)), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			path := filepath.Join(t.TempDir(), "absent", "activity.json")
+			cmd := exec.CommandContext(ctx, binary, "activity", "event", "--input-stdin", "--non-interactive")
+			cmd.Env = append(os.Environ(), "HARVEST_TOKEN=", "HARVEST_ACCOUNT_ID=", "TEMPO_STATE="+path, "TEMPO_CONFIG="+filepath.Join(root, "unused-config"))
+			var out, stderr bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &out, &stderr
+			pipe, err := cmd.StdinPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer pipe.Close()
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := pipe.Write([]byte(input)); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- cmd.Wait() }()
+			select {
+			case err := <-done:
+				var exitErr *exec.ExitError
+				if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
+					t.Fatalf("expected bounded validation error: %v out=%q err=%q", err, out.String(), stderr.String())
+				}
+				envelope(t, result{code: exitErr.ExitCode(), out: out.String(), err: stderr.String()}, 2, "validation")
+			case <-time.After(2500 * time.Millisecond):
+				cancel()
+				<-done
+				t.Fatalf("inherited stdin remained blocked beyond 2.5s; internal operation budget is 1s")
+			}
+			if _, err := os.Stat(filepath.Dir(path)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("deadline path mutated local state: %v", err)
+			}
+		})
 	}
 }

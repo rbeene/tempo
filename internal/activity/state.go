@@ -73,3 +73,19 @@ func failure(code string) *Error {
 	}
 	return &Error{Code: code, Message: m, Retryable: code == "state_busy", Uncertain: code == "local_write_unknown"}
 }
+
+func attributionConflict(a, b Attribution) *Error {
+	fields := []string{}
+	if a.UserID != b.UserID {
+		fields = append(fields, "user_id")
+	}
+	if a.TaskID != b.TaskID {
+		fields = append(fields, "task_id")
+	}
+	if a.Timezone != b.Timezone {
+		fields = append(fields, "timezone")
+	}
+	e := failure("attribution_conflict")
+	e.Details = map[string]any{"fields": fields}
+	return e
+}

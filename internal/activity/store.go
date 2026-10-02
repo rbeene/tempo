@@ -110,14 +110,29 @@ func secureDirectory(dir string, create bool) (*os.Root, os.FileInfo, error) {
 }
 
 type lockedStore struct {
-	root    *os.Root
-	lock    *os.File
-	dir     string
-	dirInfo os.FileInfo
-	name    string
+	root        *os.Root
+	lock        *os.File
+	dir         string
+	dirInfo     os.FileInfo
+	name        string
+	stateInfo   os.FileInfo
+	stateExists bool
 }
 
 func (l *lockedStore) close() { unlockFile(l.lock); l.lock.Close(); l.root.Close() }
+func (l *lockedStore) verifyState() error {
+	current, err := l.root.Lstat(l.name)
+	if !l.stateExists {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return failure("state_corrupt")
+	}
+	if err != nil || !privateInfo(current, false) || !os.SameFile(l.stateInfo, current) || current.Size() != l.stateInfo.Size() || !current.ModTime().Equal(l.stateInfo.ModTime()) {
+		return failure("state_corrupt")
+	}
+	return nil
+}
 func (l *lockedStore) verify() error {
 	fi, e := os.Lstat(l.dir)
 	if e != nil || fi.Mode()&os.ModeSymlink != 0 || !os.SameFile(fi, l.dirInfo) {
@@ -166,6 +181,13 @@ func (s *fileStore) acquire(ctx context.Context, create bool) (*lockedStore, boo
 	if err != nil {
 		root.Close()
 		return nil, false, failure("state_corrupt")
+	}
+	if create && !exists {
+		if lock.Sync() != nil {
+			lock.Close()
+			root.Close()
+			return nil, false, failure("local_write_unknown")
+		}
 	}
 	li, err := lock.Stat()
 	if err != nil || !privateInfo(li, false) {
@@ -221,6 +243,8 @@ func failureFrom(err error) error {
 func decodeState(l *lockedStore) (*state, bool, error) {
 	f, err := openNoFollow(l.root, l.name, os.O_RDONLY, 0)
 	if errors.Is(err, os.ErrNotExist) {
+		l.stateExists = false
+		l.stateInfo = nil
 		return emptyState(), false, nil
 	}
 	if err != nil {
@@ -231,6 +255,8 @@ func decodeState(l *lockedStore) (*state, bool, error) {
 	if err != nil || !privateInfo(fi, false) || fi.Size() > maxStateBytes {
 		return nil, false, failure("state_corrupt")
 	}
+	l.stateExists = true
+	l.stateInfo = fi
 	b, err := io.ReadAll(io.LimitReader(f, maxStateBytes+1))
 	if err != nil || len(b) > maxStateBytes || !strictJSON(b) || !exactJSONFields(b, reflect.TypeOf(state{})) {
 		return nil, false, failure("state_corrupt")
@@ -252,12 +278,20 @@ func (s *fileStore) read(ctx context.Context) (*state, bool, error) {
 	return decodeState(l)
 }
 func (s *fileStore) syncVisible(l *lockedStore) error {
+	if err := l.verifyState(); err != nil {
+		return err
+	}
 	if err := l.verify(); err != nil {
 		return err
 	}
 	f, err := openNoFollow(l.root, l.name, os.O_RDONLY, 0)
 	if err != nil {
 		return failure("local_write_unknown")
+	}
+	actual, statErr := f.Stat()
+	if statErr != nil || !os.SameFile(l.stateInfo, actual) {
+		f.Close()
+		return failure("state_corrupt")
 	}
 	err = f.Sync()
 	f.Close()
@@ -296,10 +330,13 @@ func (s *fileStore) update(ctx context.Context, fn func(*state) (bool, error)) e
 		return err
 	}
 	if !changed {
+		if err := l.verify(); err != nil {
+			return err
+		}
 		if exists {
 			return s.syncVisible(l)
 		}
-		return nil
+		return l.verifyState()
 	}
 	if n, ok := counter(st.Revision); !ok || n == ^uint64(0) {
 		return failure("validation")
@@ -309,8 +346,11 @@ func (s *fileStore) update(ctx context.Context, fn func(*state) (bool, error)) e
 		return failure("validation")
 	}
 	b, err := json.Marshal(st)
-	if err != nil || len(b) > maxStateBytes {
+	if err != nil {
 		return failure("validation")
+	}
+	if len(b) > maxStateBytes {
+		return &Error{Code: "validation", Message: "local activity state capacity reached; preserve the existing state for review"}
 	}
 	if ctx.Err() != nil {
 		return failure("state_busy")
@@ -331,6 +371,10 @@ func (s *fileStore) update(ctx context.Context, fn func(*state) (bool, error)) e
 	if err == nil {
 		err = f.Sync()
 	}
+	tempInfo, statErr := f.Stat()
+	if err == nil {
+		err = statErr
+	}
 	closeErr := f.Close()
 	if err == nil {
 		err = closeErr
@@ -347,10 +391,18 @@ func (s *fileStore) update(ctx context.Context, fn func(*state) (bool, error)) e
 	if s.fault("rename") != nil {
 		return failure("state_corrupt")
 	}
+	if err := l.verifyState(); err != nil {
+		return err
+	}
 	if l.root.Rename(tmp, l.name) != nil {
 		return failure("local_write_unknown")
 	}
-	return s.syncVisible(l)
+	l.stateInfo = tempInfo
+	l.stateExists = true
+	if s.syncVisible(l) != nil {
+		return failure("local_write_unknown")
+	}
+	return nil
 }
 
 // JSON's default decoder accepts duplicate keys and malformed UTF-8. Reject

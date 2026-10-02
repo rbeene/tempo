@@ -637,3 +637,103 @@ func TestQAActivityObservedClockLossQuarantinesEveryOpenProject(t *testing.T) {
 		}
 	}
 }
+
+func TestQAActivityRejectedStaleObservationCannotCapUnknownTail(t *testing.T) {
+	h := qaNew(t)
+	h.seed()
+	h.ingest(0, qaEvent("A", "1", "1", "work", qaBindingA))
+	h.ingest(10, qaEvent("A", "1", "2", "observe_work", ""))
+	h.at(20)
+	h.clockErr = errors.New("synthetic clock loss")
+	_, err := h.service.Ingest(context.Background(), qaEvent("A", "1", "3", "finish", ""))
+	qaCode(t, err, "clock_unavailable")
+	h.at(30)
+	before := h.snapshot()
+	if len(before.Uncertainties) != 1 || before.Uncertainties[0].UpperBound != nil {
+		t.Fatalf("fixture missing unbounded uncertainty: %+v", before.Uncertainties)
+	}
+	_, err = h.service.Ingest(context.Background(), qaEvent("A", "1", "3", "observe_work", ""))
+	qaCode(t, err, "invalid_transition")
+	h.restart()
+	after := h.snapshot()
+	if len(after.Uncertainties) != 1 || after.Uncertainties[0].ID != before.Uncertainties[0].ID || after.Uncertainties[0].UpperBound != nil {
+		t.Fatalf("rejected observation constrained possible working tail: %+v", after.Uncertainties)
+	}
+	if len(after.Actors) != 1 || after.Actors[0].Sequence != "2" {
+		t.Fatalf("rejected observation advanced accepted sequence: %+v", after.Actors)
+	}
+	h.ingest(60, qaEvent("A", "1", "3", "finish", ""))
+	s := h.snapshot()
+	qaIntervals(t, s, nil)
+	if len(s.Uncertainties) != 1 || s.Uncertainties[0].State != "unresolved" || s.Uncertainties[0].UpperBound == nil || !s.Uncertainties[0].UpperBound.Equal(qaEpochStart.Add(60*time.Second)) {
+		t.Fatalf("valid finish lost legitimate recovery bound: %+v", s.Uncertainties)
+	}
+}
+
+func TestQAActivitySequenceGapStillQuarantinesGlobalClockLoss(t *testing.T) {
+	h := qaNew(t)
+	h.seed()
+	h.ingest(0, qaEvent("A", "1", "1", "work", qaBindingA))
+	h.ingest(5, qaEvent("B", "1", "1", "work", qaBindingB))
+	h.ingest(10, qaEvent("A", "1", "2", "observe_work", ""))
+	h.at(15)
+	h.clockErr = errors.New("synthetic machine clock loss at sequence gap")
+	_, err := h.service.Ingest(context.Background(), qaEvent("A", "1", "4", "work", ""))
+	qaCode(t, err, "event_gap")
+	h.at(20)
+	h.restart()
+	s := h.snapshot()
+	if len(s.Uncertainties) != 2 {
+		t.Fatalf("gap branch bypassed global clock quarantine: %+v", s.Uncertainties)
+	}
+	for _, a := range s.Actors {
+		if a.Ref.Key.AgentID == "A" && (a.Sequence != "2" || a.Health != "order_blocked") {
+			t.Fatalf("gap consumed event or failed to order-block: %+v", a)
+		}
+	}
+	h.ingest(20, qaEvent("B", "1", "2", "finish", ""))
+	s = h.snapshot()
+	qaIntervals(t, s, nil)
+	found := false
+	for _, u := range s.Uncertainties {
+		if u.Actor.Key.AgentID == "B" {
+			found = true
+			if u.State != "unresolved" || u.UpperBound == nil || !u.UpperBound.Equal(qaEpochStart.Add(20*time.Second)) {
+				t.Fatalf("B tail became billable after rejected A gap: %+v", u)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("B clock uncertainty disappeared")
+	}
+}
+
+func TestQAActivityUnlinkedChildCWDInheritsLiveParent(t *testing.T) {
+	h := qaNew(t)
+	h.seed()
+	parent := qaEvent("P", "1", "1", "work", qaBindingA)
+	h.ingest(0, parent)
+	child := qaEvent("A", "1", "1", "work", "")
+	child.CWD = "/unlinked/child-working-directory"
+	child.Parent = &ActorRef{Key: parent.Actor, Generation: "1"}
+	r := h.ingest(5, child)
+	if r.Disposition != "applied" {
+		t.Fatalf("unlinked CWD suppressed valid parent inheritance: %+v", r)
+	}
+	s := h.snapshot()
+	found := false
+	for _, a := range s.Actors {
+		if a.Ref.Key.AgentID == "A" {
+			found = true
+			if a.BindingID != qaBindingA || a.Attribution != h.bindings[qaBindingA].Attribution {
+				t.Fatalf("child did not capture exact parent snapshot: %+v", a)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("inherited child missing")
+	}
+	h.ingest(10, qaEvent("P", "1", "2", "finish", ""))
+	h.ingest(20, qaEvent("A", "1", "2", "finish", ""))
+	qaIntervals(t, h.snapshot(), [][2]int64{{0, 20}})
+}

@@ -76,7 +76,7 @@ func (s *Service) resolveInitial(ctx context.Context, st *state, e Event) (Bindi
 			return b, true, nil
 		}
 	}
-	if e.BindingID != "" || e.CWD != "" {
+	if e.BindingID != "" {
 		return BindingSnapshot{}, false, nil
 	}
 	if e.Parent != nil {
@@ -138,6 +138,7 @@ func (s *Service) reduce(ctx context.Context, st *state, e Event) (EventResult, 
 		}
 		if seq != last+1 {
 			sample, _ := s.sample()
+			quarantineClock(st, sample)
 			quarantine(st, a, "event_gap", sample)
 			a.Health = "order_blocked"
 			a.Revision = bump(a.Revision)
@@ -175,7 +176,7 @@ func (s *Service) reduce(ctx context.Context, st *state, e Event) (EventResult, 
 		}
 		for _, other := range st.Bindings {
 			if timerKey(st.ComputerID, other.Attribution) == timerKey(st.ComputerID, b.Attribution) && other.Attribution != b.Attribution {
-				return result, false, failure("attribution_conflict")
+				return result, false, attributionConflict(other.Attribution, b.Attribution)
 			}
 		}
 	}
@@ -208,6 +209,9 @@ func (s *Service) reduce(ctx context.Context, st *state, e Event) (EventResult, 
 		st.Actors[actorKey(e.Actor)] = a
 	} else {
 		stale := a.Health != "continuous"
+		if e.Kind == "observe_work" && (a.State != "working" || stale) {
+			return result, clockChanged, failure("invalid_transition")
+		}
 		if stale {
 			if err := capUncertainties(st, a, sample); err != nil {
 				return result, true, err
@@ -215,9 +219,6 @@ func (s *Service) reduce(ctx context.Context, st *state, e Event) (EventResult, 
 		}
 		switch e.Kind {
 		case "observe_work":
-			if a.State != "working" || stale {
-				return result, clockChanged || stale, failure("invalid_transition")
-			}
 			if err := confirmSegment(st, a, sample, key, false); err != nil {
 				return result, clockChanged, err
 			}
@@ -270,7 +271,7 @@ func openSegment(st *state, a *Actor, sample ClockSample, event string) error {
 	}
 	for _, u := range st.Uncertainties {
 		if u.State == "unresolved" && timerKey(u.Actor.Key.ComputerID, u.Attribution) == timerKey(a.Ref.Key.ComputerID, a.Attribution) && u.Attribution != a.Attribution && (u.UpperBound == nil || !start.After(*u.UpperBound)) {
-			return failure("attribution_conflict")
+			return attributionConflict(u.Attribution, a.Attribution)
 		}
 	}
 	id := newID()
