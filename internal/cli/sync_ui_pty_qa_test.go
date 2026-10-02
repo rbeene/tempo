@@ -98,6 +98,10 @@ func qaCLISyncFixture(t *testing.T, root string, report func(string, string)) (*
 	}}
 	b, e := local.Link(context.Background(), activity.LinkInput{Path: project, AccountID: "11", ProjectID: "100", TaskID: "200", Timezone: "UTC", RequestID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}, deps)
 	if e != nil {
+		var problem *activity.Error
+		if errors.As(e, &problem) {
+			t.Fatalf("synthetic Link seed: %v (code %s)", e, problem.Code)
+		}
 		t.Fatalf("synthetic Link seed: %v", e)
 	}
 	snap, e := local.Status(context.Background())
@@ -320,12 +324,31 @@ func TestQASyncCLIActualTerminalComposition(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	git, e := exec.LookPath("git")
+	if e != nil {
+		t.Fatal("real Git required for synthetic Link discovery")
+	}
+	if !filepath.IsAbs(git) {
+		git, e = filepath.Abs(git)
+		if e != nil {
+			t.Fatal("could not resolve fixture Git path")
+		}
+	}
+	fixturePATH := filepath.Dir(git) + string(os.PathListSeparator) + "/usr/bin:/bin"
 	for _, mode := range []string{"lazy-back", "lazy-status", "pause", "configure", "unknown-eof", "unknown-ctrlc", "unknown-sigterm", "notify-configure", "notify-resume", "notify-configure-error", "notify-pause"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 9*time.Second)
 			defer cancel()
-			cmd := exec.CommandContext(ctx, python, "-c", qaCLISyncScript, os.Args[0], mode, t.TempDir())
-			cmd.Env = []string{"PATH=/usr/bin:/bin"}
+			root := t.TempDir()
+			if e := os.Chmod(root, 0700); e != nil {
+				t.Fatal(e)
+			}
+			tmp := filepath.Join(root, "tmp")
+			if e := os.Mkdir(tmp, 0700); e != nil {
+				t.Fatal(e)
+			}
+			cmd := exec.CommandContext(ctx, python, "-c", qaCLISyncScript, os.Args[0], mode, root)
+			cmd.Env = []string{"PATH=" + fixturePATH, "TMPDIR=" + tmp}
 			if b, e := cmd.CombinedOutput(); e != nil {
 				t.Fatalf("actual Sync CLI%s: %v\n%s", mode, e, b)
 			}
@@ -336,7 +359,7 @@ func TestQASyncCLIActualTerminalComposition(t *testing.T) {
 const qaCLISyncScript = `
 import os,sys,pty,termios,subprocess,select,time,fcntl,struct,json,signal,re
 binary,mode,root=sys.argv[1:];master,slave=pty.openpty();fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',24,120,0,0));before=termios.tcgetattr(slave);flags=fcntl.fcntl(slave,fcntl.F_GETFL);r,w=os.pipe()
-env={'PATH':'/usr/bin:/bin','GORACE':'atexit_sleep_ms=0','TEMPO_QA_CLI_SYNC_MODE':mode,'TEMPO_QA_CLI_SYNC_ROOT':root,'TEMPO_QA_CLI_SYNC_FD':str(w)}
+env={'PATH':os.environ['PATH'],'TMPDIR':os.environ['TMPDIR'],'GORACE':'atexit_sleep_ms=0','TEMPO_QA_CLI_SYNC_MODE':mode,'TEMPO_QA_CLI_SYNC_ROOT':root,'TEMPO_QA_CLI_SYNC_FD':str(w)}
 p=subprocess.Popen([binary,'-test.run=^TestQASyncCLIActualTerminalChild$'],stdin=slave,stdout=slave,stderr=slave,env=env,pass_fds=(w,),preexec_fn=os.setpgrp);os.close(w);transcript=b'';pending=b'';reports=[]
 def poll(timeout=.01):
  global transcript,pending
