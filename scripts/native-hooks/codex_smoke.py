@@ -36,6 +36,13 @@ EVENT_ORDER = ("PreToolUse", "PermissionRequest", "PostToolUse", "PreCompact", "
                "SessionStart", "SessionEnd", "UserPromptSubmit", "SubagentStart", "SubagentStop", "Stop", "Interrupt")
 MODEL = "tempo-ci-fixture"
 PARENT_PROMPT = "tempo-native-parent-case"
+TITLE_PROMPT = ("Generate a concise, single-line task title of at most 36 characters and under five words where possible. "
+                "Start with an imperative verb. Capitalize only the first word unless the user's language, proper nouns, acronyms, or code terms require otherwise. "
+                "Preserve ticket references exactly. Write in the user's language. Do not use quotes, markdown, or trailing punctuation. Do not answer the request."
+                "\n\nUser prompt:\n" + PARENT_PROMPT)
+TITLE_FORMAT = {"type": "json_schema", "strict": True, "name": "codex_output_schema", "schema": {
+    "type": "object", "properties": {"title": {"type": "string", "minLength": 1, "maxLength": 36}},
+    "required": ["title"], "additionalProperties": False}}
 CHILD_PROMPT = "tempo-native-child-case"
 INTERRUPT_PROMPT = "tempo-native-interrupt-case"
 READ_RESULT = "tempo-fixture-read-ok"
@@ -565,6 +572,7 @@ class Model:
         self.error = None
         self.counts = {}
         self.entry_count = 0
+        self.title_count = 0
         self.read_probe = read_result_probe({})
         self.phase = "initial"
         self.child_seen = threading.Event()
@@ -639,6 +647,18 @@ class Model:
         # nested tool arguments containing the child marker don't count.
         users = [item for item in body.get("input", []) if item.get("role") == "user"]
         require(bool(users), "provider_user_missing")
+        output_format = (body.get("text") or {}).get("format")
+        if output_format is not None or body.get("tools") == [] or users[-1].get("content") == [{"type": "input_text", "text": TITLE_PROMPT}]:
+            # The TUI's separate ephemeral title thread has no tools or hooks.
+            # It must never be mistaken for a primary lifecycle continuation.
+            require(body.get("tools") == [] and output_format == TITLE_FORMAT
+                    and output_format.get("strict") is True
+                    and users[-1].get("content") == [{"type": "input_text", "text": TITLE_PROMPT}], "auxiliary_title_contract")
+            with self.lock:
+                require(not self.shutdown.is_set() and self.baseline is not None, "auxiliary_title_unarmed")
+                require(self.title_count == 0, "duplicate_auxiliary_title")
+                self.title_count += 1
+                return message_item('{"title":"Verify native hooks"}'), "title1", None
         text = json.dumps(users[-1].get("content"))
         if INTERRUPT_PROMPT in text: category = "interrupt"
         elif CHILD_PROMPT in text: category = "child"
@@ -1147,6 +1167,7 @@ def run(args, report):
         report["request_counts"] = model.counts
         report["requests"] = model.requests
         report["provider_entry_count"] = model.entry_count
+        report["auxiliary_title_count"] = model.title_count
         report["read_result_probe"] = model.read_probe
         report["hook_diagnostics"] = hook_diagnostic_probe(diagnostics, diagnostic_identity) if measured_diagnostics else {"status": "unavailable", "counts": []}
         if confirmed_artifacts is not None:

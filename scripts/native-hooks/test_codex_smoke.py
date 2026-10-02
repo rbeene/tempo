@@ -741,6 +741,7 @@ class HarnessTests(unittest.TestCase):
         model.child_turn = None
         model.baseline = None
         model.entry_count = 0
+        model.title_count = 0
         model.shutdown = threading.Event()
         model.phase, model.counts, model.requests = "initial", {}, []
         return model
@@ -749,6 +750,49 @@ class HarnessTests(unittest.TestCase):
         return {"model": "tempo-ci-fixture", "stream": True, "input": [{"role": "user", "content": [{"text": marker}]}],
                 "tools": [{"type": "function", "name": "exec_command", "parameters": {"properties": {"cmd": {}, "workdir": {}, "max_output_tokens": {}}, "required": ["cmd"]}},
                           {"type": "function", "name": "spawn_agent", "parameters": {"properties": {"message": {}}, "required": ["message"]}}]}
+
+    def title_request(self):
+        prompt = ("Generate a concise, single-line task title of at most 36 characters and under five words where possible. "
+                  "Start with an imperative verb. Capitalize only the first word unless the user's language, proper nouns, acronyms, or code terms require otherwise. "
+                  "Preserve ticket references exactly. Write in the user's language. Do not use quotes, markdown, or trailing punctuation. Do not answer the request."
+                  "\n\nUser prompt:\n" + smoke.PARENT_PROMPT)
+        return {"model": "tempo-ci-fixture", "stream": True, "tools": [],
+                "input": [{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+                "text": {"format": {"type": "json_schema", "strict": True, "name": "codex_output_schema", "schema": {
+                    "type": "object", "properties": {"title": {"type": "string", "minLength": 1, "maxLength": 36}},
+                    "required": ["title"], "additionalProperties": False}}}}
+
+    def test_auxiliary_title_does_not_advance_primary_lifecycle_in_either_order(self):
+        receipts = [self.receipt("SessionStart"), self.receipt("UserPromptSubmit")]
+        for primary_first in (False, True):
+            model = self.model(receipts)
+            model.session, model.baseline = None, frozenset()
+            if primary_first: model.respond(self.request())
+            before = (model.session, model.turn, model.phase, copy.deepcopy(model.counts), list(model.requests))
+            item, category, hold = model.respond(self.title_request())
+            self.assertEqual((category, hold, item["type"]), ("title1", None, "message"))
+            self.assertEqual(json.loads(item["content"][0]["text"]), {"title": "Verify native hooks"})
+            self.assertEqual((model.session, model.turn, model.phase, model.counts, model.requests), before)
+            self.assertEqual(model.title_count, 1)
+            if not primary_first: self.assertEqual(model.respond(self.request())[0]["call_id"], "tempo-read")
+            with self.assertRaises(smoke.FixtureFailure): model.respond(self.title_request())
+            self.assertEqual(model.title_count, 1)
+
+    def test_auxiliary_title_rejects_unarmed_and_contract_lookalikes(self):
+        original = self.title_request()
+        cases = [copy.deepcopy(original) for _ in range(6)]
+        cases[0]["input"][0]["content"][0]["text"] += " PRIVATE"
+        cases[1]["tools"] = self.request()["tools"]
+        cases[2]["text"]["format"]["schema"]["properties"]["title"]["maxLength"] = 37
+        cases[3]["text"]["format"]["strict"] = False
+        cases[4]["input"][0]["content"][0]["type"] = "output_text"
+        cases[5].pop("text")
+        cases[5]["tools"] = self.request()["tools"]
+        for body, baseline in [*( (body, frozenset()) for body in cases), (original, None)]:
+            model = self.model([self.receipt("SessionStart"), self.receipt("UserPromptSubmit")])
+            model.baseline = baseline
+            with self.assertRaises(smoke.FixtureFailure): model.respond(body)
+            self.assertEqual((model.title_count, model.counts, model.requests, model.phase), (0, {}, [], "initial"))
 
     def test_first_provider_response_binds_only_postbaseline_native_session_and_prompt(self):
         old = self.receipt("SessionStart", id="old-start", session_id="old-session")
