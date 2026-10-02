@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/rbeene/tempo/internal/activity"
+	"github.com/rbeene/tempo/internal/auth"
 	"github.com/rbeene/tempo/internal/terminal"
 )
 
@@ -30,6 +31,12 @@ type Options struct {
 	Views    *ReadViews
 	Links    *LinkActions
 	Activity *ActivityActions
+	Auth     *AuthActions
+	// Outcome callbacks run only after owned work joins and Close has attempted
+	// terminal restoration. They must report safe shared observations only.
+	OnAuthResult         func(string, auth.Result, error)
+	OnRetainedOutcome    func(string, error)
+	OnRestorationFailure func()
 	// Refresh is an optional testable refresh source. Nil uses a one-second
 	// ticker; closing an injected channel disables further scheduled refreshes.
 	Refresh <-chan time.Time
