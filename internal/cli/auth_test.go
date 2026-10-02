@@ -41,7 +41,7 @@ func TestQALoginCancellationUnblocksTokenInput(t *testing.T) {
 	done := make(chan int, 1)
 	path := filepath.Join(t.TempDir(), "config.json")
 	go func() {
-		done <- cli.Run(ctx, []string{"auth", "login", "--token-stdin", "--json"}, input, &out, &stderr, cli.Dependencies{Store: s, ConfigPath: path, Getenv: func(string) string { return "" }, NewProvider: func(string, string) harvest.Provider { return a }})
+		done <- qaLegacyRun(t, ctx, []string{"auth", "login", "--token-stdin", "--json"}, input, &out, &stderr, cli.Dependencies{Store: s, ConfigPath: path, Getenv: func(string) string { return "" }, NewProvider: func(string, string) harvest.Provider { return a }})
 	}()
 	select {
 	case <-input.entered:
@@ -80,7 +80,7 @@ func TestQALogoutRecoversFromInvalidConfigAndEnvironment(t *testing.T) {
 			s := &fakeStore{}
 			a := &fakeAPI{}
 			var out, stderr bytes.Buffer
-			code := cli.Run(context.Background(), []string{"auth", "logout", "--yes", "--json"}, strings.NewReader(""), &out, &stderr, cli.Dependencies{Store: s, ConfigPath: path, Getenv: func(k string) string {
+			code := qaLegacyRun(t, context.Background(), []string{"auth", "logout", "--yes", "--json"}, strings.NewReader(""), &out, &stderr, cli.Dependencies{Store: s, ConfigPath: path, Getenv: func(k string) string {
 				if k == "HARVEST_ACCOUNT_ID" {
 					return tc.account
 				}
@@ -109,7 +109,7 @@ func TestQALoginPostRenameSaveFailureRestoresBeforeChangingToken(t *testing.T) {
 			a := &fakeAPI{}
 			var out, stderr bytes.Buffer
 			saves := []string{}
-			code := cli.Run(context.Background(), []string{"auth", "login", "--token-stdin", "--account", "11", "--json"}, strings.NewReader("synthetic-secret"), &out, &stderr, cli.Dependencies{Store: s, ConfigPath: path, Getenv: func(string) string { return "" }, NewProvider: func(string, string) harvest.Provider { return a }, SaveConfig: func(p string, cfg auth.Config) error {
+			code := qaLegacyRun(t, context.Background(), []string{"auth", "login", "--token-stdin", "--account", "11", "--json"}, strings.NewReader("synthetic-secret"), &out, &stderr, cli.Dependencies{Store: s, ConfigPath: path, Getenv: func(string) string { return "" }, NewProvider: func(string, string) harvest.Provider { return a }, SaveConfig: func(p string, cfg auth.Config) error {
 				saves = append(saves, cfg.Account)
 				if len(saves) == 1 {
 					if err := auth.Save(p, cfg); err != nil {

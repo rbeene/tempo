@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"github.com/rbeene/tempo/internal/harvest"
 	"github.com/rbeene/tempo/internal/identity"
-	"net/url"
 	"path"
 	"strings"
 	"time"
@@ -98,71 +97,24 @@ func assignedAttribution(ctx context.Context, in LinkInput, d LinkDependencies, 
 	if api == nil {
 		return Attribution{}, failure("auth")
 	}
-	accounts, err := api.Accounts(ctx)
+	catalog, err := DiscoverAssignments(ctx, account, api)
 	if err != nil {
 		return Attribution{}, err
 	}
-	found := false
-	for _, a := range accounts {
-		if bindingID(a) == account && a["product"] == "harvest" {
-			found = true
+	uid := catalog.UserID
+	var selected *AssignedProject
+	for i := range catalog.Projects {
+		if catalog.Projects[i].ID == in.ProjectID {
+			selected = &catalog.Projects[i]
+			break
 		}
 	}
-	if !found {
-		return Attribution{}, failure("forbidden")
-	}
-	user, err := api.Get(ctx, "/users/me")
-	if err != nil {
-		return Attribution{}, err
-	}
-	uid := bindingID(user)
-	if !identity.Valid(uid) {
-		return Attribution{}, failure("response")
-	}
-	if active, ok := user["is_active"].(bool); !ok {
-		return Attribution{}, failure("response")
-	} else if !active {
-		return Attribution{}, failure("forbidden")
-	}
-	assignments, err := api.List(ctx, "/users/me/project_assignments", url.Values{})
-	if err != nil {
-		return Attribution{}, err
-	}
-	var selected harvest.Object
-	for _, a := range assignments {
-		project := bindingObject(a, "project")
-		pid := bindingID(project)
-		if !identity.Valid(pid) {
-			return Attribution{}, failure("response")
-		}
-		if pid == in.ProjectID {
-			if selected != nil {
-				return Attribution{}, failure("response")
-			}
-			selected = a
-		}
-	}
-	if selected == nil || selected["is_active"] != true || bindingObject(selected, "project")["is_active"] == false {
+	if selected == nil {
 		return Attribution{}, failure("validation")
 	}
-	tasks, ok := selected["task_assignments"].([]any)
-	if !ok {
-		return Attribution{}, failure("response")
-	}
 	activeTasks := map[string]bool{}
-	for _, raw := range tasks {
-		row, ok := raw.(map[string]any)
-		if !ok {
-			return Attribution{}, failure("response")
-		}
-		task := bindingObject(row, "task")
-		tid := bindingID(task)
-		if !identity.Valid(tid) {
-			return Attribution{}, failure("response")
-		}
-		if row["is_active"] == true && task["is_active"] != false {
-			activeTasks[tid] = true
-		}
+	for _, task := range selected.Tasks {
+		activeTasks[task.ID] = true
 	}
 	if in.TaskID == "" && saved != nil && saved.Attribution.AccountID == account && saved.Attribution.ProjectID == in.ProjectID && activeTasks[saved.Attribution.TaskID] {
 		in.TaskID = saved.Attribution.TaskID

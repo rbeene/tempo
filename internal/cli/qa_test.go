@@ -112,7 +112,7 @@ func run(t *testing.T, a *fakeAPI, args ...string) result {
 		}
 		return a
 	}}
-	code := cli.Run(context.Background(), args, strings.NewReader(""), &out, &stderr, d)
+	code := qaLegacyRun(t, context.Background(), args, strings.NewReader(""), &out, &stderr, d)
 	return result{code, out.String(), stderr.String(), s, a, n}
 }
 func envelope(t *testing.T, r result, want int, code string) {
@@ -368,7 +368,7 @@ func TestQAAuthLoginValidatesBeforeStorage(t *testing.T) {
 			if tc.account != "" {
 				args = append(args, "--account", tc.account)
 			}
-			code := cli.Run(context.Background(), args, strings.NewReader(" synthetic-secret\n"), &out, &errOut, cli.Dependencies{Store: s, ConfigPath: path, Getenv: func(string) string { return "" }, NewProvider: func(token, account string) harvest.Provider {
+			code := qaLegacyRun(t, context.Background(), args, strings.NewReader(" synthetic-secret\n"), &out, &errOut, cli.Dependencies{Store: s, ConfigPath: path, Getenv: func(string) string { return "" }, NewProvider: func(token, account string) harvest.Provider {
 				if token != "synthetic-secret" || account != "" {
 					t.Error("login provider input not trimmed/isolated")
 				}
@@ -410,7 +410,7 @@ func TestQAEnvironmentTokenOverridesStoreAndAccountPrecedence(t *testing.T) {
 				args = append(args, "--account", "44")
 				want = "44"
 			}
-			code := cli.Run(context.Background(), args, strings.NewReader(""), &out, &stderr, cli.Dependencies{Store: s, ConfigPath: path, Getenv: func(k string) string {
+			code := qaLegacyRun(t, context.Background(), args, strings.NewReader(""), &out, &stderr, cli.Dependencies{Store: s, ConfigPath: path, Getenv: func(k string) string {
 				if k == "HARVEST_TOKEN" {
 					return "synthetic-env"
 				}

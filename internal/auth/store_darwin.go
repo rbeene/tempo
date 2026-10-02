@@ -9,12 +9,15 @@ package auth
 #include <stdlib.h>
 #include <string.h>
 
+static int tempo_no_ui = 0;
+static OSStatus tempo_disable_ui(void) { OSStatus s=SecKeychainSetUserInteractionAllowed(false); if(s==errSecSuccess) tempo_no_ui=1; return s; }
 static CFMutableDictionaryRef tempo_query(void) {
  CFMutableDictionaryRef q = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
  CFDictionarySetValue(q,kSecClass,kSecClassGenericPassword);
  CFDictionarySetValue(q,kSecAttrService,CFSTR("io.beene.tempo"));
  CFDictionarySetValue(q,kSecAttrAccount,CFSTR("harvest-token"));
  CFDictionarySetValue(q,kSecAttrSynchronizable,kCFBooleanFalse);
+ if(tempo_no_ui) CFDictionarySetValue(q,kSecUseAuthenticationUI,kSecUseAuthenticationUIFail);
  return q;
 }
 static OSStatus tempo_get(void **out, CFIndex *length) {
@@ -96,6 +99,30 @@ func (keychainStore) Delete() error {
 	status := C.tempo_delete()
 	if status != C.errSecSuccess && status != C.errSecItemNotFound {
 		return keychainError(status)
+	}
+	return nil
+}
+
+// These are used only by the owned helper; NewStore itself never changes policy.
+func NativeSupported() bool { return true }
+func noninteractiveStore() (Store, error) {
+	if C.tempo_disable_ui() != C.errSecSuccess {
+		return nil, issue("keychain", unchanged())
+	}
+	return boundedNativeStore{keychainStore{}}, nil
+}
+
+type boundedNativeStore struct{ keychainStore }
+
+func (s boundedNativeStore) Set(t string) error {
+	if e := s.keychainStore.Set(t); e != nil {
+		return issue("credential_write_unknown", Effects{"unknown", "unchanged"})
+	}
+	return nil
+}
+func (s boundedNativeStore) Delete() error {
+	if e := s.keychainStore.Delete(); e != nil {
+		return issue("credential_write_unknown", Effects{"unknown", "unchanged"})
 	}
 	return nil
 }

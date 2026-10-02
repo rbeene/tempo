@@ -15,18 +15,23 @@ import (
 	"github.com/rbeene/tempo/internal/activity"
 	"github.com/rbeene/tempo/internal/auth"
 	"github.com/rbeene/tempo/internal/harvest"
+	"github.com/rbeene/tempo/internal/setup"
+	"github.com/rbeene/tempo/internal/terminal"
 )
 
 var Version = "dev"
 
 type Dependencies struct {
-	Activity    *activity.Service
-	Store       auth.Store
-	ConfigPath  string
-	Getenv      func(string) string
-	NewProvider func(token, account string) harvest.Provider
-	Now         func() time.Time
-	SaveConfig  func(string, auth.Config) error
+	Auth             *auth.Service
+	Prompter         terminal.Prompter
+	TerminalEligible func(io.Reader, io.Writer) bool
+	Activity         *activity.Service
+	Store            auth.Store
+	ConfigPath       string
+	Getenv           func(string) string
+	NewProvider      func(token, account string) harvest.Provider
+	Now              func() time.Time
+	SaveConfig       func(string, auth.Config) error
 }
 type cliError struct {
 	Code      string         `json:"code"`
@@ -46,6 +51,17 @@ func safeError(err error) *cliError {
 	var ae *activity.Error
 	if errors.As(err, &ae) {
 		return &cliError{Code: ae.Code, Message: ae.Message, Retryable: ae.Retryable, Uncertain: ae.Uncertain, Details: ae.Details}
+	}
+	var authErr *auth.Error
+	if errors.As(err, &authErr) {
+		details := map[string]any{"effects": authErr.Effects}
+		if len(authErr.RequiredFields) > 0 {
+			details["required_fields"] = authErr.RequiredFields
+		}
+		return &cliError{Code: authErr.Code, Message: authErr.Message, Retryable: authErr.Retryable, Uncertain: authErr.Uncertain, Details: details}
+	}
+	if errors.Is(err, auth.ErrNotFound) {
+		return &cliError{Code: "auth", Message: "no token configured; connect securely or use HARVEST_TOKEN"}
 	}
 	var he *harvest.Error
 	if errors.As(err, &he) {
@@ -67,7 +83,7 @@ func exitCode(code string) int {
 		return 6
 	case "network", "api", "rate_limit", "response":
 		return 7
-	case "uncertain_write", "local_write_unknown":
+	case "uncertain_write", "local_write_unknown", "credential_write_unknown":
 		return 8
 	default:
 		return 1
@@ -77,7 +93,11 @@ func exitCode(code string) int {
 // Run never exits the process. Dependencies permit tests without personal config,
 // OS credential access or real API requests. Writes are explicit commands only.
 func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer, d Dependencies) int {
-	jsonMode := wantsJSON(args) || wantsLocalJSON(args)
+	eligible := terminal.Eligible
+	if d.TerminalEligible != nil {
+		eligible = d.TerminalEligible
+	}
+	jsonMode := wantsJSON(args) || wantsLocalJSON(args, !eligible(in, out))
 	p, err := parse(args)
 	if (strings.HasPrefix(p.command.Name, "activity ") || linkCommand(p.command.Name)) && p.flags["non-interactive"] == "true" {
 		jsonMode = true
@@ -92,11 +112,53 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		}
 		err = validate(&p, d.Now())
 		if err == nil {
-			data, err = execute(ctx, p, in, d)
+			if guidedCommand(p.command.Name) {
+				interactive := eligible(in, out) && p.flags["json"] != "true" && p.flags["non-interactive"] != "true"
+				if !interactive {
+					jsonMode = true
+				}
+				data, err = executeGuided(ctx, p, in, out, d, interactive)
+			} else if sharedAuthCommand(p.command.Name) {
+				data, err = executeAuth(ctx, p, in, d)
+			} else {
+				data, err = execute(ctx, p, in, d)
+			}
 		}
 	}
 	if err != nil {
+		completed := []setup.Step{}
+		if status, ok := data.(setup.Status); ok {
+			for _, step := range status.Steps {
+				if step.State == "complete" {
+					completed = append(completed, step)
+				}
+			}
+		}
+		if len(completed) > 0 && !jsonMode {
+			for _, step := range completed {
+				fmt.Fprintf(errOut, "tempo: completed %s: %s\n", step.Action, step.SafeMessage)
+			}
+		}
+		var ended *terminal.ExitError
+		if errors.As(err, &ended) {
+			if ended.Code == 1 {
+				fmt.Fprintln(errOut, "tempo: terminal: terminal input or output failed")
+			}
+			return ended.Code
+		}
 		e := safeError(err)
+		if len(completed) > 0 {
+			if e.Details == nil {
+				e.Details = map[string]any{}
+			}
+			e.Details["completed_steps"] = completed
+		}
+		if errors.Is(err, context.Canceled) || e.Code == "network" {
+			var cause *terminal.ExitError
+			if errors.As(context.Cause(ctx), &cause) {
+				return cause.Code
+			}
+		}
 		if jsonMode {
 			_ = json.NewEncoder(errOut).Encode(map[string]any{"schema_version": 1, "error": e})
 		} else {
@@ -142,7 +204,7 @@ func printHelp(w io.Writer) {
 			fmt.Fprintln(w)
 		}
 	}
-	fmt.Fprintln(w, "\nUse tempo schema for types, result envelopes, exit codes and environment inputs.\nDestructive commands require --yes. No command prompts for secrets.\nLogin: obtain a personal token at https://id.getharvest.com/developers and pass it via stdin.\nSee docs/commands.md for examples and safe secret input.")
+	fmt.Fprintln(w, "\nUse tempo schema for types, result envelopes, exit codes and environment inputs.\nDestructive commands require --yes. Eligible interactive setup offers hidden secret input.\nUse --json or --non-interactive to disable prompts.\nLogin: obtain a personal token at https://id.getharvest.com/developers and pass it via stdin.\nSee docs/commands.md for examples and safe secret input.")
 }
 
 func validate(p *parsed, now time.Time) error {
@@ -188,10 +250,6 @@ func validate(p *parsed, now time.Time) error {
 		}
 	}
 	switch n {
-	case "link":
-		if len(p.args) == 0 {
-			return &activity.Error{Code: "input_required", Message: "an explicit project ID is required", Details: map[string]any{"required_fields": []string{"project_id"}}}
-		}
 	case "links show":
 		if len(p.args) > 0 && f["path"] != "" {
 			return problem("validation", "use binding ID or --path, not both")
@@ -263,14 +321,12 @@ func validate(p *parsed, now time.Time) error {
 }
 
 type session struct {
-	ctx                    context.Context
-	p                      parsed
-	d                      Dependencies
-	config                 auth.Config
-	path                   string
-	token, source, account string
-	api                    harvest.Provider
-	user                   string
+	ctx     context.Context
+	p       parsed
+	d       Dependencies
+	account string
+	api     harvest.Provider
+	user    string
 }
 
 func execute(ctx context.Context, p parsed, in io.Reader, d Dependencies) (any, error) {
@@ -328,26 +384,11 @@ func execute(ctx context.Context, p parsed, in io.Reader, d Dependencies) (any, 
 			}
 		}
 	}
-	if d.SaveConfig == nil {
-		d.SaveConfig = auth.Save
-	}
-	if p.command.Name == "auth logout" {
-		if d.Store == nil {
-			d.Store = auth.NewStore()
-		}
-		if e := d.Store.Delete(); e != nil && !errors.Is(e, auth.ErrNotFound) {
-			return nil, problem("keychain", "could not remove saved token")
-		}
-		if e := d.SaveConfig(path, auth.Config{}); e != nil {
-			return nil, problem("config", "saved token removed, but account configuration could not be cleared")
-		}
-		return map[string]any{"logged_out": true, "environment_token_present": d.Getenv("HARVEST_TOKEN") != "", "note": "logout removes local storage only; unset HARVEST_TOKEN separately and revoke tokens in Harvest if needed"}, nil
-	}
 	cfg, err := auth.Load(path)
 	if err != nil {
 		return nil, problem("config", "cannot read configuration; inspect TEMPO_CONFIG and account_id")
 	}
-	s := &session{ctx: ctx, p: p, d: d, config: cfg, path: path}
+	s := &session{ctx: ctx, p: p, d: d}
 	s.account = p.flags["account"]
 	if s.account == "" {
 		s.account = d.Getenv("HARVEST_ACCOUNT_ID")
@@ -361,111 +402,14 @@ func execute(ctx context.Context, p parsed, in io.Reader, d Dependencies) (any, 
 	if p.command.Name == "config show" {
 		return map[string]any{"path": path, "saved_account_id": cfg.Account, "account_id": s.account, "token_stored_in_config": false}, nil
 	}
-	if s.d.Store == nil {
-		s.d.Store = auth.NewStore()
-	}
-	if s.d.NewProvider == nil {
-		s.d.NewProvider = func(token, account string) harvest.Provider { return harvest.New(token, account) }
-	}
-	if p.command.Name == "auth login" {
-		return s.login(in)
-	}
-
-	s.token, s.source, err = auth.ResolveToken(s.d.Store, d.Getenv)
+	s.api, err = authService(d).Provider(ctx, s.account)
 	if err != nil {
-		if p.command.Name == "auth status" && errors.Is(err, auth.ErrNotFound) {
-			return map[string]any{"authenticated": false, "account_id": s.account, "source": "none"}, nil
-		}
-		if errors.Is(err, auth.ErrNotFound) {
-			return nil, problem("auth", "no token configured; use auth login --token-stdin or HARVEST_TOKEN")
-		}
-		return nil, problem("keychain", "cannot access token; unlock Keychain or use HARVEST_TOKEN")
-	}
-	if p.command.Name == "auth status" && p.flags["check"] != "true" {
-		return map[string]any{"authenticated": true, "verified": false, "account_id": s.account, "source": s.source}, nil
-	}
-	s.api = s.d.NewProvider(s.token, s.account)
-	switch p.command.Name {
-	case "auth status":
-		accounts, e := s.api.Accounts(ctx)
-		if e != nil {
-			return nil, e
-		}
-		if s.account != "" && !hasAccount(accounts, s.account) {
-			return nil, problem("forbidden", "selected account is not accessible with this token")
-		}
-		return map[string]any{"authenticated": true, "verified": true, "source": s.source, "account_id": s.account, "accounts": accounts}, nil
-	case "accounts list":
-		return s.api.Accounts(ctx)
-	case "accounts use", "config set-account":
-		accounts, e := s.api.Accounts(ctx)
-		if e != nil {
-			return nil, e
-		}
-		id := p.args[0]
-		if !hasAccount(accounts, id) {
-			return nil, problem("forbidden", "requested Harvest account is not accessible")
-		}
-		if e = s.d.SaveConfig(path, auth.Config{Account: id}); e != nil {
-			return nil, problem("config", "could not save selected account")
-		}
-		return map[string]string{"account_id": id}, nil
+		return nil, err
 	}
 	if s.account == "" {
 		return nil, problem("auth", "select an account with accounts use ID, --account ID or HARVEST_ACCOUNT_ID")
 	}
 	return s.dispatch()
-}
-func (s *session) login(in io.Reader) (any, error) {
-	token, e := readToken(s.ctx, in)
-	if e != nil {
-		if s.ctx.Err() != nil {
-			return nil, problem("network", "token input canceled")
-		}
-		return nil, problem("validation", "stdin must contain one nonempty token (maximum 16 KiB)")
-	}
-	accounts, e := s.d.NewProvider(token, "").Accounts(s.ctx)
-	if e != nil {
-		return nil, e
-	}
-	selected := s.account
-	if selected == "" {
-		if len(accounts) != 1 {
-			return nil, problem("conflict", "multiple or no Harvest accounts; login again with --account ID")
-		}
-		selected = idOf(accounts[0])
-	}
-	if !hasAccount(accounts, selected) {
-		return nil, problem("forbidden", "selected Harvest account is not accessible")
-	}
-	// Prepare nonsecret configuration first; replacing the token is the final
-	// fallible step. Failed token storage restores the previous account choice.
-	if e = s.d.SaveConfig(s.path, auth.Config{Account: selected}); e != nil {
-		var saveErr *auth.SaveError
-		if errors.As(e, &saveErr) && saveErr.Replaced {
-			if restore := s.d.SaveConfig(s.path, s.config); restore != nil {
-				return nil, problem("config", "account configuration changed but could not be durably saved or restored; saved token was not changed; inspect config show")
-			}
-			return nil, problem("config", "account persistence failed; previous account restored and saved token unchanged")
-		}
-		return nil, problem("config", "could not save selected account; saved token was not changed")
-	}
-	if e = s.d.Store.Set(token); e != nil {
-		if restore := s.d.SaveConfig(s.path, s.config); restore != nil {
-			return nil, problem("config", "token storage failed and the previous account could not be restored; select the account again")
-		}
-		return nil, problem("keychain", "could not save token in secure OS storage; previous account restored")
-	}
-
-	return map[string]any{"authenticated": true, "account_id": selected, "source": "keychain", "environment_override": s.d.Getenv("HARVEST_TOKEN") != ""}, nil
-}
-func hasAccount(accounts []harvest.Object, id string) bool {
-	for _, a := range accounts {
-		if idOf(a) == id && a["product"] == "harvest" {
-			return true
-		}
-	}
-	return false
 }
 func idOf(o harvest.Object) string {
 	if o == nil {
@@ -536,7 +480,7 @@ func apiMessage(code string) string {
 		return "Harvest request failed or was canceled"
 	case "response":
 		return "Harvest returned an invalid or incomplete response"
-	case "uncertain_write", "local_write_unknown":
+	case "uncertain_write", "local_write_unknown", "credential_write_unknown":
 		return "write outcome is uncertain; inspect time list/show or timer status before retrying manually"
 	default:
 		return "Harvest could not complete the request"

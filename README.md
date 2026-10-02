@@ -30,6 +30,8 @@ Use the local hidden-input helper below if starting from a token you manually ob
 python3 -c 'import getpass; print(getpass.getpass("Harvest token: "))' | bin/tempo auth login --token-stdin --account 12345
 ```
 
+For guided setup in a terminal, run `tempo setup`. It offers hidden token input, account selection, and searchable project/task linking. `tempo link` links another directory; `tempo doctor` inspects local readiness. Add `--json` or `--non-interactive` for finite output without prompts. Hooks and automatic upload are not enabled by setup in this version.
+
 Omit `--account` only when exactly one Harvest account is accessible. Login validates access before saving into macOS Keychain. For a secret manager or automated environment, provide `HARVEST_TOKEN` and `HARVEST_ACCOUNT_ID` securely; environment values override saved credentials/account. Do not put a literal token in a shell command or commit it to a file. `--account ID` has the highest account-selection precedence.
 
 ```sh

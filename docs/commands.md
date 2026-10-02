@@ -1,6 +1,6 @@
 # Command reference
 
-All commands accept `--json`, `--account ID`, `--yes`, and `--non-interactive` before or after positional words. Commands never prompt; `--non-interactive` documents agent intent. `--help`/`-h` displays offline help. Flag values are literal strings, including notes that begin with `--`. Use `--notes=''` to clear notes. Unknown, duplicate or inapplicable options fail before credentials are accessed.
+All commands accept `--json`, `--account ID`, `--yes`, and `--non-interactive` before or after positional words. `setup` and `link` may prompt only when both stdin and stdout are terminals. `--json`, `--non-interactive`, or either redirected stream forces finite machine output with no implicit input. `--help`/`-h` displays offline help. Flag values are literal strings, including notes that begin with `--`. Use `--notes=''` to clear notes. Unknown, duplicate or inapplicable options fail before credentials are accessed.
 
 IDs must be canonical positive decimal integers without leading zeroes, within signed 64-bit range. Account precedence is command flag, `HARVEST_ACCOUNT_ID`, then saved config. Token precedence is `HARVEST_TOKEN`, then macOS Keychain. `TEMPO_CONFIG` overrides the config file path; the default is the OS user config directory under `tempo/config.json` (macOS: `~/Library/Application Support/tempo/config.json`).
 
@@ -9,7 +9,7 @@ IDs must be canonical positive decimal integers without leading zeroes, within s
 | Command | Behavior |
 |---|---|
 | `auth login --token-stdin [--account ID]` | Read one token up to 16 KiB from stdin, validate accessible accounts, save securely. With no selected account, auto-select only a single Harvest account. |
-| `auth status` | Inspect credential availability and source locally; does not verify server validity. May request OS Keychain access. |
+| `auth status` | Inspect credential availability and source locally; does not verify server validity. Uses bounded native storage access with OS prompts disabled. |
 | `auth status --check` | Verify token and selected account remotely. |
 | `auth logout --yes` | Delete saved credential and account choice. Does not revoke token or clear environment. |
 | `accounts list` | List accessible Harvest accounts, excluding Forecast. |
@@ -17,7 +17,7 @@ IDs must be canonical positive decimal integers without leading zeroes, within s
 | `config show` | Show path, saved/effective account and nonsecret metadata, without reading credentials. |
 | `config set-account ID` | Alias for account selection. |
 
-Login input is deliberately stdin-only. See README for a local hidden-input helper or supply a secret-manager pipe. Never place the token in an argument. Linux/Windows/non-cgo builds use environment authentication; login persistence returns an unsupported-store error.
+Explicit `auth login` input is deliberately stdin-only; interactive `setup` also offers hidden token entry. See README for a local hidden-input helper or supply a secret-manager pipe. Never place the token in an argument. Linux/Windows/non-cgo builds use environment authentication; login persistence returns an unsupported-store error.
 
 ## Discovery
 
@@ -81,7 +81,8 @@ Failure with `--json`, stderr (stdout empty):
 | 5 | not_found, binding_unavailable, actor_not_found, uncertainty_not_found |
 | 6 | conflict, confirmation_required, attribution_conflict, binding_in_use, revision_conflict, request_conflict, event_conflict, event_gap, clock_conflict, state_busy |
 | 7 | network, api, rate_limit, response |
-| 8 | uncertain_write, local_write_unknown |
+| 8 | uncertain_write, local_write_unknown, credential_write_unknown |
+| 130 / 143 | Ctrl-C or SIGINT / SIGTERM, unless an uncertain dispatched mutation requires exit 8 |
 
 `retryable` describes a read/rejection that may succeed later; it does not authorize blindly repeating a mutation. Remote `uncertain_write` requires read-only reconciliation. For local `local_write_unknown`, inspect local state and retry only the exact same request/event identity, as described below. Upstream validation bodies are deliberately suppressed because they may echo sensitive input. Check the supplied IDs, project/task assignment, account mode and fields.
 
@@ -99,7 +100,7 @@ The complete generated interface is [cli-schema.json](cli-schema.json). `make sc
 
 ## Planned agent activity interface
 
-The [agent activity contract](agent-contracts.md) and [planned operation catalog](agent-operations.json) define `tempo link [PROJECT_ID]`, local `activity` status/recovery, setup, hooks, worker, sync and themes for the agent timing epic. They also define equal CLI/UI access, searchable arrow-key pickers and forced finite JSON output. `activity status` and `activity event --input-stdin` are now shipped as described below. Explicit linking, link inspection/mutation and local recovery are also shipped. Setup pickers, hooks, worker, sync, themes and interactive activity views remain planned. The generated schema describes available commands. `timer …` retains its Harvest meaning; `activity …` describes local computer activity.
+The [agent activity contract](agent-contracts.md) and [planned operation catalog](agent-operations.json) define `tempo link [PROJECT_ID]`, local `activity` status/recovery, setup, hooks, worker, sync and themes for the agent timing epic. They also define equal CLI/UI access, searchable arrow-key pickers and forced finite JSON output. `activity status` and `activity event --input-stdin` are now shipped as described below. Explicit linking, link inspection/mutation and local recovery are also shipped. Guided setup, project/task pickers and finite doctor diagnostics are shipped. Hooks, worker, sync, themes and interactive activity views remain planned. The generated schema describes available commands. `timer …` retains its Harvest meaning; `activity …` describes local computer activity.
 
 ## Local agent activity
 
@@ -127,7 +128,7 @@ Working actors contribute to one union per computer/account/project; separate pr
 
 Inside Git, `link` applies to the **entire local repository and all its worktrees**. Results show `kind: "repository"` and its canonical absolute Git common-directory locator. A subdirectory or symlink resolves to that same repository; remote URL, project name and checkout basename are never identities. Separate clones, independent nested repositories and submodules require their own explicit links. In an ordinary directory, `kind: "directory"` applies to descendants: the nearest linked ancestor wins, and any Git repository boundary stops inheritance. Git discovery failures never fall back to ordinary-directory scope. Git must be installed for discovery; inherited Git path/configuration overrides are ignored.
 
-`--task` may be omitted only when the existing binding has a still-active saved task for the same account/project or exactly one active assigned task is available. `--timezone` may use a previously verified choice on that binding; there is no machine-timezone fallback. Missing project or unresolved choices return `input_required` with safe required field names. Interactive selection arrives with guided setup; current commands never prompt.
+`--task` may be omitted only when the existing binding has a still-active saved task for the same account/project or exactly one active assigned task is available. `--timezone` may use a previously verified choice on that binding; there is no machine-timezone fallback. Missing project or unresolved choices return `input_required` with safe required field names. Eligible interactive sessions resolve missing project/task/account/timezone choices and show the full target before confirmation. Explicit values skip their corresponding prompts.
 
 All local mutations accept `--request-id UUID`. The CLI generates one when omitted; automation should supply and retain it. After `local_write_unknown` (exit 8), use the same arguments and request ID from the error details: an exact replay returns the original result after checking local durability, even if the original path or saved credentials/account selection changed. Changed explicit intent with the same ID returns `request_conflict`. This is local replay, never permission to retry a Harvest write.
 
@@ -154,3 +155,13 @@ Inspect the preview before committing. It returns the original confirmed prefix,
 An end cannot precede confirmed evidence, follow subsequent resume/terminal bounds or trusted current time, or touch/overlap finalized output. Ends outside the confirmed/current/later-event bounds return `recovery_bounds`; conflicting clock evidence or finalized output returns `clock_conflict`. A stale entity revision returns `revision_conflict`. Original unknown time remains unresolved after normal finish, resume or a newer generation. Resolving an older segment does not stop newer work. Resolving the current stale segment detaches its generation; delayed callbacks cannot reopen it.
 
 Supply and retain `--request-id` for reliable automated replay. Repeating the same intent returns its original result even after restart, without resampling the clock. Changed intent with the same ID returns `request_conflict`. An interruption that discovers an unavailable clock may durably quarantine the tail and return `clock_unavailable` without detaching; inspect status and use a new reviewed request for the next action. An uncertain local commit returns `local_write_unknown` with the request ID: retry that exact request first. No automatic Harvest correction or upload occurs.
+
+## Guided setup and diagnostics
+
+`tempo setup [--path PATH] [--host codex|claude|both] [--scope user|project]` verifies authentication, offers hidden token entry and account selection when needed, and guides project linking. The host/scope choices do not install anything in this version. Every authentication save and binding change has its own confirmation. Setup reports completed steps if a later step fails or is cancelled; earlier confirmed changes remain applied. Authentication alone never reports hooks or automatic upload as ready.
+
+`tempo link [PROJECT_ID]` offers searchable active assigned projects, Up/Down selection and Enter, then resolves the task, account and IANA timezone. Type to filter; `q` is ordinary search text. Escape or EOF cancels; Ctrl-C cancels even during an API request. Saved parent-directory choices may supply defaults for a new child mapping; only an exact target mapping supplies an update revision. Repository mappings cover all Git worktrees.
+
+Finite `setup` inspects local account configuration and the target binding without reading credentials or contacting Harvest. `doctor` reports local configuration and binding-state problems plus unverified capabilities; `doctor --check` additionally checks credentials and account access. Neither command installs hooks or enables uploads.
+
+Native credential operations disable OS prompts and run with a five-second helper budget. Login, logout and account selection share a per-user lock even across different config paths. If a dispatched credential/config write has no conclusive reply, `credential_write_unknown` exits 8 with safe `details.effects`; inspect `auth status` and `config show` before an explicit replacement. Do not automatically replay the operation. A killed helper cannot guarantee an already accepted OS operation will not complete later. Unsupported secure storage is reported before interactive secret collection; use a securely supplied `HARVEST_TOKEN` instead.

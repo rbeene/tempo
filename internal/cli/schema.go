@@ -16,6 +16,8 @@ var commands = []Command{
 	{"activity preview", "Preview a recovery end or discarded tail without changes", "UUID", map[string]string{"end": "utc", "discard-tail": "bool"}, false},
 	{"activity resolve", "Resolve uncertainty; requires revision, end/discard-tail and --yes", "UUID", map[string]string{"end": "utc", "discard-tail": "bool", "if-revision": "counter", "reason": "string", "request-id": "uuid"}, true},
 	{"activity interrupt", "Detach one generation; preserve working tails for recovery", "UUID", map[string]string{"generation": "counter", "if-revision": "counter", "request-id": "uuid"}, true},
+	{"setup", "Guide secure authentication and directory/project setup", "", map[string]string{"host": "string", "scope": "string", "path": "string"}, true},
+	{"doctor", "Inspect local readiness; --check verifies credentials", "", map[string]string{"check": "bool"}, false},
 	{"link", "Link a directory or entire Git repository and all its worktrees to a project", "[ID]", map[string]string{"task": "id", "path": "string", "timezone": "string", "if-revision": "counter", "request-id": "uuid"}, true},
 	{"links list", "List local directory and repository bindings", "", nil, false},
 	{"links show", "Inspect one local binding by ID or path", "[UUID]", map[string]string{"path": "string"}, false},
@@ -55,12 +57,14 @@ var globalFlags = map[string]string{"json": "bool", "account": "id", "yes": "boo
 
 func schema() any {
 	return map[string]any{
-		"activity_contract": activity.Schema(),
-		"name":              "tempo", "schema_version": 1, "commands": commands, "global_flags": globalFlags,
+		"activity_contract":   activity.Schema(),
+		"setup_contract":      map[string]any{"contract_version": 1, "finite": "local readiness only; no credential or network access", "steps": "action,state,required_fields,safe_message", "complete": "false until all required capabilities are verified", "partial_failure": "error.details.completed_steps retains earlier completed actions"},
+		"credential_contract": map[string]any{"helper_timeout_seconds": 5, "mutation_lock_seconds": 1, "os_prompts": false, "effects": "credential: unchanged|applied|unknown; config: unchanged|saved|cleared|restored|unknown", "unknown": "exit 8; uncertain true; never retry automatically; inspect auth status and config show"},
+		"name":                "tempo", "schema_version": 1, "commands": commands, "global_flags": globalFlags,
 		"success":     map[string]any{"schema_version": 1, "data": "command result (object or array)"},
 		"error":       map[string]any{"schema_version": 1, "error": map[string]any{"code": "stable code", "message": "safe human-readable description", "retryable": false, "uncertain": false}},
-		"streams":     map[string]string{"success": "stdout", "error": "stderr", "prompts": "none; destructive actions require --yes"},
-		"exit_codes":  map[string]string{"0": "success", "1": "internal/config/keychain/state_corrupt/clock_unavailable", "2": "usage/validation/input_required/invalid_transition/recovery_bounds/unsupported_contract", "3": "auth", "4": "forbidden", "5": "not_found/binding_unavailable/actor_not_found/uncertainty_not_found", "6": "conflict/confirmation_required/attribution_conflict/binding_in_use/revision_conflict/request_conflict/event_conflict/event_gap/clock_conflict/state_busy", "7": "network/api/rate_limit/response", "8": "uncertain_write/local_write_unknown"},
+		"streams":     map[string]string{"success": "stdout", "error": "stderr", "prompts": "setup/link only when stdin and stdout are TTYs; --json or --non-interactive disables prompts"},
+		"exit_codes":  map[string]string{"0": "success", "1": "internal/config/keychain/state_corrupt/clock_unavailable", "2": "usage/validation/input_required/invalid_transition/recovery_bounds/unsupported_contract", "3": "auth", "4": "forbidden", "5": "not_found/binding_unavailable/actor_not_found/uncertainty_not_found", "6": "conflict/confirmation_required/attribution_conflict/binding_in_use/revision_conflict/request_conflict/event_conflict/event_gap/clock_conflict/state_busy", "7": "network/api/rate_limit/response", "8": "uncertain_write/local_write_unknown/credential_write_unknown", "130": "Ctrl-C/SIGINT unless dispatched mutation outcome is uncertain (exit 8)", "143": "SIGTERM unless dispatched mutation outcome is uncertain (exit 8)"},
 		"environment": []string{"HARVEST_TOKEN", "HARVEST_ACCOUNT_ID", "TEMPO_CONFIG", "TEMPO_STATE"},
 		"semantics":   map[string]string{"date": "YYYY-MM-DD, today or yesterday; relative dates use machine local timezone", "duration": "decimal hours, H:MM, or Go duration such as 1h30m; range 0..24 hours", "time": "HH:MM, same-day end strictly after start; split overnight entries", "pagination": "complete arrays; errors never emit partial success", "auth": "HARVEST_TOKEN overrides macOS Keychain; --account overrides HARVEST_ACCOUNT_ID overrides config", "retry": "GET only; never automatically replay mutations", "timer": "current user, all dates; no automatic switch; preflight is not atomic"},
 	}
