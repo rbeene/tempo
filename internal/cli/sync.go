@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/rbeene/tempo/internal/activity"
+	"github.com/rbeene/tempo/internal/worker"
 )
 
 func syncCommand(name string) bool { return strings.HasPrefix(name, "sync ") }
@@ -26,10 +27,7 @@ func validateSyncCLI(p *parsed) error {
 	return nil
 }
 func executeSync(ctx context.Context, p parsed, d Dependencies) (any, error) {
-	s := d.Activity
-	if s == nil {
-		s = activity.New(activity.Options{Path: d.Getenv("TEMPO_STATE")})
-	}
+	s := activityService(d)
 	f := p.flags
 	id := f["request-id"]
 	if id == "" && p.command.Mutation {
@@ -48,9 +46,17 @@ func executeSync(ctx context.Context, p parsed, d Dependencies) (any, error) {
 	case "sync pause":
 		return s.SyncPause(ctx, id)
 	case "sync resume":
-		return s.SyncResume(ctx, id)
+		result, err := s.SyncResume(ctx, id)
+		if err == nil {
+			notifyWorker(ctx, d, worker.Recheck)
+		}
+		return result, err
 	case "sync configure":
-		return s.SyncConfigure(ctx, activity.SyncConfigureInput{AccountID: f["account"], Mode: f["mode"], DurationPolicy: f["duration-policy"], Clock: f["clock"], IfRevision: f["if-revision"], RequestID: id, Confirmed: f["yes"] == "true"}, deps)
+		result, err := s.SyncConfigure(ctx, activity.SyncConfigureInput{AccountID: f["account"], Mode: f["mode"], DurationPolicy: f["duration-policy"], Clock: f["clock"], IfRevision: f["if-revision"], RequestID: id, Confirmed: f["yes"] == "true"}, deps)
+		if err == nil {
+			notifyWorker(ctx, d, worker.Recheck)
+		}
+		return result, err
 	case "sync now":
 		return s.SyncNow(ctx, activity.SyncRunInput{RequestID: id, Limit: limit}, deps)
 	case "sync reconcile":

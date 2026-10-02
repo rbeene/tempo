@@ -17,11 +17,13 @@ import (
 	"github.com/rbeene/tempo/internal/harvest"
 	"github.com/rbeene/tempo/internal/setup"
 	"github.com/rbeene/tempo/internal/terminal"
+	"github.com/rbeene/tempo/internal/worker"
 )
 
 var Version = "dev"
 
 type Dependencies struct {
+	Worker           *worker.Service
 	Auth             *auth.Service
 	Prompter         terminal.Prompter
 	TerminalEligible func(io.Reader, io.Writer) bool
@@ -51,6 +53,10 @@ func safeError(err error) *cliError {
 	var ae *activity.Error
 	if errors.As(err, &ae) {
 		return &cliError{Code: ae.Code, Message: ae.Message, Retryable: ae.Retryable, Uncertain: ae.Uncertain, Details: ae.Details}
+	}
+	var we *worker.Error
+	if errors.As(err, &we) {
+		return &cliError{Code: we.Code, Message: we.Message, Retryable: we.Retryable, Uncertain: we.Uncertain}
 	}
 	var authErr *auth.Error
 	if errors.As(err, &authErr) {
@@ -166,6 +172,9 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		}
 		return exitCode(e.Code)
 	}
+	if p.command.Name == "worker run" {
+		return 0
+	}
 	if jsonMode || p.command.Name == "schema" {
 		if err := json.NewEncoder(out).Encode(map[string]any{"schema_version": 1, "data": data}); err != nil {
 			return 1
@@ -210,6 +219,9 @@ func printHelp(w io.Writer) {
 func validate(p *parsed, now time.Time) error {
 	f := p.flags
 	n := p.command.Name
+	if workerCommand(n) {
+		return validateWorkerCLI(p)
+	}
 	if syncCommand(n) {
 		return validateSyncCLI(p)
 	}
@@ -333,6 +345,9 @@ type session struct {
 }
 
 func execute(ctx context.Context, p parsed, in io.Reader, d Dependencies) (any, error) {
+	if workerCommand(p.command.Name) {
+		return executeWorker(ctx, p, d)
+	}
 	if syncCommand(p.command.Name) {
 		return executeSync(ctx, p, d)
 	}
@@ -349,10 +364,7 @@ func execute(ctx context.Context, p parsed, in io.Reader, d Dependencies) (any, 
 		return executeLinks(ctx, p, d)
 	}
 	if strings.HasPrefix(p.command.Name, "activity ") {
-		service := d.Activity
-		if service == nil {
-			service = activity.New(activity.Options{Path: d.Getenv("TEMPO_STATE")})
-		}
+		service := activityService(d)
 		if recoveryCommand(p.command.Name) {
 			return executeRecovery(ctx, p, service)
 		}
@@ -377,7 +389,11 @@ func execute(ctx context.Context, p parsed, in io.Reader, d Dependencies) (any, 
 		if eventCtx.Err() != nil {
 			return nil, problem("validation", "activity event input deadline exceeded")
 		}
-		return service.Ingest(eventCtx, event)
+		result, err := service.Ingest(eventCtx, event)
+		if err == nil && (result.Disposition == "applied" || result.Disposition == "duplicate") {
+			notifyWorker(eventCtx, d, worker.Wake)
+		}
+		return result, err
 	}
 	path := d.ConfigPath
 	if path == "" {

@@ -93,8 +93,11 @@
     },
     "WorkerStatus": {
       "state": "not_installed|stopped|running|unsupported|needs_attention",
+      "installed": "bool|null",
+      "instance_mode": "foreground|managed|null",
       "last_success": "utc|null",
       "queued_count": "integer",
+      "submitting_count": "integer",
       "unknown_count": "integer",
       "failure_category": "string|null",
       "sync_enabled": "bool"

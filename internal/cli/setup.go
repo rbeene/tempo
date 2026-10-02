@@ -7,6 +7,7 @@ import (
 	"github.com/rbeene/tempo/internal/auth"
 	"github.com/rbeene/tempo/internal/setup"
 	"github.com/rbeene/tempo/internal/terminal"
+	"github.com/rbeene/tempo/internal/worker"
 	"io"
 )
 
@@ -18,10 +19,7 @@ func authService(d Dependencies) *auth.Service {
 	return auth.NewService(auth.Options{ConfigPath: d.ConfigPath, Getenv: d.Getenv, NewProvider: d.NewProvider})
 }
 func executeGuided(ctx context.Context, p parsed, in io.Reader, out io.Writer, d Dependencies, interactive bool) (result any, err error) {
-	a := d.Activity
-	if a == nil {
-		a = activity.New(activity.Options{Path: d.Getenv("TEMPO_STATE")})
-	}
+	a := activityService(d)
 	service := setup.New(setup.Options{Auth: authService(d), Activity: a})
 	if p.command.Name == "doctor" {
 		return service.Doctor(ctx, p.flags["check"] == "true")
@@ -56,7 +54,15 @@ func executeGuided(ctx context.Context, p parsed, in io.Reader, out io.Writer, d
 		if scope := p.flags["scope"]; scope != "" && scope != "user" && scope != "project" {
 			return nil, problem("validation", "scope must be user or project")
 		}
-		return service.Run(ctx, setup.Input{Host: p.flags["host"], Scope: p.flags["scope"], Path: p.flags["path"], AccountID: p.flags["account"]}, prompt)
+		status, err := service.Run(ctx, setup.Input{Host: p.flags["host"], Scope: p.flags["scope"], Path: p.flags["path"], AccountID: p.flags["account"]}, prompt)
+		for _, step := range status.Steps {
+			if step.Action == "auth.login" && step.State == "complete" {
+				// A later link failure does not undo a completed credential commit.
+				notifyWorker(ctx, d, worker.Recheck)
+				break
+			}
+		}
+		return status, err
 	}
 	id := ""
 	if len(p.args) > 0 {
@@ -95,6 +101,7 @@ func executeAuth(ctx context.Context, p parsed, in io.Reader, d Dependencies) (a
 			}
 			return nil, authCompatibilityError(e)
 		}
+		notifyWorker(ctx, d, worker.Recheck)
 		return map[string]any{"authenticated": true, "account_id": result.AccountID, "source": result.Source, "environment_override": result.EnvironmentOverride, "effects": result.Effects}, nil
 	case "auth logout":
 		r, e := s.Logout(ctx, p.flags["yes"] == "true")
@@ -120,6 +127,7 @@ func executeAuth(ctx context.Context, p parsed, in io.Reader, d Dependencies) (a
 		if e != nil {
 			return nil, e
 		}
+		notifyWorker(ctx, d, worker.Recheck)
 		return map[string]string{"account_id": r.AccountID}, nil
 	case "accounts list":
 		return s.Accounts(ctx)

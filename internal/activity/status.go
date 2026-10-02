@@ -7,6 +7,8 @@ import (
 )
 
 func (s *Service) Status(ctx context.Context) (ActivitySnapshot, error) {
+	ctx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+	defer cancel()
 	st, exists, err := s.store.read(ctx)
 	if err != nil {
 		return ActivitySnapshot{}, err
@@ -14,6 +16,7 @@ func (s *Service) Status(ctx context.Context) (ActivitySnapshot, error) {
 	sample, _ := s.sample()
 	result := ActivitySnapshot{ContractVersion: 1, SnapshotRevision: st.Revision, ObservedAt: sample.WallUTC, Projects: []ProjectActivity{}, Actors: []Actor{}, Uncertainties: []Uncertainty{}, ClosedIntervals: []Interval{}, Worker: WorkerStatus{State: "not_installed"}}
 	if !exists {
+		result.Worker = s.observedWorker(ctx, result.Worker)
 		return result, nil
 	}
 	result.ComputerID = &st.ComputerID
@@ -87,6 +90,8 @@ func (s *Service) Status(ctx context.Context) (ActivitySnapshot, error) {
 		case "queued":
 			p.QueuedCount++
 			result.Worker.QueuedCount++
+		case "submitting":
+			result.Worker.SubmittingCount++
 		case "synced":
 			p.SyncedCount++
 		case "unknown":
@@ -111,5 +116,6 @@ func (s *Service) Status(ctx context.Context) (ActivitySnapshot, error) {
 	sort.Slice(result.Actors, func(i, j int) bool { return result.Actors[i].ID < result.Actors[j].ID })
 	sort.Slice(result.Uncertainties, func(i, j int) bool { return result.Uncertainties[i].ID < result.Uncertainties[j].ID })
 	sort.Slice(result.ClosedIntervals, func(i, j int) bool { return result.ClosedIntervals[i].Start.Before(result.ClosedIntervals[j].Start) })
+	result.Worker = s.observedWorker(ctx, result.Worker)
 	return result, nil
 }

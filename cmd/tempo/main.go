@@ -36,7 +36,7 @@ func run() int {
 		case <-done:
 		}
 	}()
-	if !cli.InteractiveInvocation(os.Args[1:], os.Stdin, os.Stdout) {
+	if !cli.WorkerRunInvocation(os.Args[1:]) && !cli.InteractiveInvocation(os.Args[1:], os.Stdin, os.Stdout) {
 		var end context.CancelFunc
 		ctx, end = context.WithTimeout(ctx, 2*time.Minute)
 		defer end()

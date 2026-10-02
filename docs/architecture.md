@@ -28,7 +28,7 @@ Public PR verification uses one ephemeral GitHub-hosted Ubuntu job, read-only to
 
 ## Planned local agent activity
 
-The [agent activity contract](agent-contracts.md) specifies the next implementation slices: one local union timer per computer/account/project, durable actor history and uncertainty, immutable attribution, and shared CLI/UI actions. Its [operation catalog](agent-operations.json) and [acceptance vectors](agent-acceptance.json) are design contracts, not shipped features. They preserve the existing Harvest provider and direct time/timer commands. The finite foreground sync service/CLI and guided setup/link lifetimes are implemented; worker installation and the terminal dashboard remain planned.
+The [agent activity contract](agent-contracts.md) specifies the next implementation slices: one local union timer per computer/account/project, durable actor history and uncertainty, immutable attribution, and shared CLI/UI actions. Its [operation catalog](agent-operations.json) and [acceptance vectors](agent-acceptance.json) are design contracts, not shipped features. They preserve the existing Harvest provider and direct time/timer commands. The finite foreground sync service/CLI and guided setup/link lifetimes are implemented; the optional worker is implemented and the terminal dashboard remains planned.
 
 ## Durable local activity
 
@@ -36,7 +36,7 @@ The [agent activity contract](agent-contracts.md) specifies the next implementat
 
 The v1 store retains actor segments, accepted identity fingerprints, generation high-water state, uncertainty evidence, immutable union intervals and one queued intent per interval. A stable advisory lock serializes processes; default acquisition is bounded to 250ms and lifecycle CLI work has a one-second deadline. Writes use a private same-directory temporary file, file sync, atomic rename and directory sync. A duplicate receipt is re-synchronized before success so a prior `local_write_unknown` does not become a false durability acknowledgment. Callback failure aborts; durable quarantine followed by a lifecycle error is an explicit committed rejection. State decoding/encoding is bounded at 32MiB; reaching capacity fails safely without deleting history. Newer/corrupt state, symlink or replacement hazards, unsafe permissions and invalid references are preserved for review.
 
-Actor ranges use a shared elapsed-coordinate/UTC anchor per project attribution and continuous clock epoch, avoiding overlapping-actor drift from tolerated wall differences. macOS reads `mach_continuous_time`, `mach_absolute_time` and boot identity; Linux reads `CLOCK_BOOTTIME`, `CLOCK_MONOTONIC` and boot ID without cgo. Missing capability never falls back to wall subtraction. Sleep, epoch changes and divergent clocks quarantine unknown tails; normal silence does not. Status does not extend evidence or write health. Unresolved ranges reserve their possible time, including endpoint contact, so only disconnected safe closed union components finalize. Recovery and binding management share this engine; source bridges remain separate dependent operations. Queued output submits only through an explicit sync pass or the future worker, never during capture.
+Actor ranges use a shared elapsed-coordinate/UTC anchor per project attribution and continuous clock epoch, avoiding overlapping-actor drift from tolerated wall differences. macOS reads `mach_continuous_time`, `mach_absolute_time` and boot identity; Linux reads `CLOCK_BOOTTIME`, `CLOCK_MONOTONIC` and boot ID without cgo. Missing capability never falls back to wall subtraction. Sleep, epoch changes and divergent clocks quarantine unknown tails; normal silence does not. Status does not extend evidence or write health. Unresolved ranges reserve their possible time, including endpoint contact, so only disconnected safe closed union components finalize. Recovery and binding management share this engine; source bridges remain separate dependent operations. Queued output submits only through an explicit sync pass or the optional worker, never during capture.
 
 
 ## Local binding operations
@@ -88,3 +88,23 @@ without hiding them behind project/date/task filters. Manual attachment performs
 complete current-user marker scan. Definite rejected retry preserves the frozen
 plan, successful parts and attempt audit. Setup distinguishes capture mapping from
 explicit upload consent; no worker or terminal dashboard is installed here.
+
+
+## Automatic worker ownership
+
+`internal/worker` schedules the existing activity sync engine; it owns no second
+outbox or provider. The process-lifetime worker lock, finite sync lock and short
+control-journal lock serve different owners. Runtime pending UUIDs are durable
+before SyncNow and recover before scheduling/paused checks. Controllers never
+rewrite runtime metadata. A private Unix datagram endpoint coalesces wake hints,
+rate-limits explicit rechecks and cancels Stop independently of wake capacity.
+Read-only activity/sync/doctor views compose worker evidence after releasing the
+activity transaction, with a 250 ms budget and no manager/credential access.
+
+Service definitions are pinned to canonical state paths and exact executable and
+config paths. Typed control intents precede manager effects; same-input replay
+returns saved outcomes. Initial publication is atomic without replacement. macOS
+persistent disablement precedes publication; Linux installation reloads an
+unenabled user unit. Explicit Start enables startup, Stop disables it, and removal
+preserves local activity and replay journals. Native commands are bounded and raw
+manager diagnostics never become user-visible error messages.

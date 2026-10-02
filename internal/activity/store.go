@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/rbeene/tempo/internal/privatefs"
 	"io"
 	"os"
 	"path/filepath"
@@ -54,59 +55,14 @@ func (s *fileStore) location() (string, error) {
 // Parent permissions are never changed. Standard macOS /var and /tmp aliases are
 // canonicalized before this walk; user-supplied symlinks are not followed.
 func secureDirectory(dir string, create bool) (*os.Root, os.FileInfo, error) {
-	cur := string(filepath.Separator)
-	for _, part := range strings.Split(strings.TrimPrefix(dir, cur), string(filepath.Separator)) {
-		if part == "" {
-			continue
-		}
-		parent := cur
-		cur = filepath.Join(cur, part)
-		fi, err := os.Lstat(cur)
-		if errors.Is(err, os.ErrNotExist) && create {
-			if err = os.Mkdir(cur, 0700); err != nil && !errors.Is(err, os.ErrExist) {
-				return nil, nil, failure("state_corrupt")
-			}
-			pf, e := os.Open(parent)
-			if e != nil {
-				return nil, nil, failure("local_write_unknown")
-			}
-			e = pf.Sync()
-			pf.Close()
-			if e != nil {
-				return nil, nil, failure("local_write_unknown")
-			}
-			fi, err = os.Lstat(cur)
-		}
-		if err != nil {
-			return nil, nil, err
-		}
-		if !fi.IsDir() || fi.Mode()&os.ModeSymlink != 0 {
-			return nil, nil, failure("state_corrupt")
-		}
+	r, info, err := privatefs.OpenDirectory(dir, create)
+	if errors.Is(err, privatefs.ErrUnsafe) {
+		err = failure("state_corrupt")
 	}
-	before, err := os.Lstat(dir)
-	if err != nil {
-		return nil, nil, err
+	if errors.Is(err, privatefs.ErrDurability) {
+		err = failure("local_write_unknown")
 	}
-	if !privateInfo(before, true) {
-		return nil, nil, failure("state_corrupt")
-	}
-	root, err := os.OpenRoot(dir)
-	if err != nil {
-		return nil, nil, failure("state_corrupt")
-	}
-	f, err := root.Open(".")
-	if err != nil {
-		root.Close()
-		return nil, nil, failure("state_corrupt")
-	}
-	after, err := f.Stat()
-	f.Close()
-	if err != nil || !os.SameFile(before, after) || !privateInfo(after, true) {
-		root.Close()
-		return nil, nil, failure("state_corrupt")
-	}
-	return root, after, nil
+	return r, info, err
 }
 
 type lockedStore struct {
