@@ -639,7 +639,7 @@ class Model:
                 require(len(starts) == 1, "measured_session_ambiguous")
                 session = starts[0]["session_id"]
                 prompts = [r for r in receipts if r["kind"] == "UserPromptSubmit" and r["id"] not in self.baseline
-                           and r["session_id"] == session and accepted(r)]
+                           and r["session_id"] == session and not r["agent_id"] and accepted(r)]
                 require(len(prompts) == 1, "parent_prompt_identity")
                 require(prompts[0]["ordering"] == "supported", "prompt_barrier_missing")
                 require_prompt_barrier(receipts, session, prompts[0]["turn_id"])
@@ -654,7 +654,7 @@ class Model:
                 self.child_turn = starts[0]["turn_id"]
                 item, hold = message_item("tempo-child-complete"), "child"
             else:
-                prompts = [r for r in receipts if r["kind"] == "UserPromptSubmit" and r["session_id"] == self.session and accepted(r)]
+                prompts = [r for r in receipts if r["kind"] == "UserPromptSubmit" and r["session_id"] == self.session and not r["agent_id"] and accepted(r)]
                 if category == "parent":
                     require(len(prompts) == 1, "parent_prompt_identity")
                     self.turn = prompts[0]["turn_id"]
@@ -1126,10 +1126,7 @@ def run(args, report):
                                       "child_stop", "interrupt", "normal_session_end", "production_capture_effects"]})
         report["stage"] = "complete"
     finally:
-        try:
-            if terminal is not None: terminal.close()
-        finally:
-            model.close()
+        close_native(terminal, model, primary_failure=sys.exc_info()[0] is not None)
         report["request_counts"] = model.counts
         report["requests"] = model.requests
         report["provider_entry_count"] = model.entry_count
@@ -1145,9 +1142,19 @@ def run(args, report):
         # Never archive the generated host home, transcripts, requests or stores.
         # Runner teardown disposes of them; unexpected preexisting state is never removed.
         report["elapsed_ms"] = int((time.monotonic() - started) * 1000)
-        # All request handlers are joined by close, so no late endpoint or
-        # protocol failure can arrive after the final verdict.
+
+
+def close_native(terminal, model, primary_failure):
+    try:
+        try:
+            if terminal is not None: terminal.close()
+        finally:
+            model.close()
+        # Joined handlers cannot change the verdict after this check.
         require(model.error is None, model.error or "provider_failed")
+    except Exception:
+        if not primary_failure:
+            raise
 
 
 def main():

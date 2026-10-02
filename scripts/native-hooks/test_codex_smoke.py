@@ -892,6 +892,39 @@ class HarnessTests(unittest.TestCase):
         screen = "SessionStart hooks\n› [!] Hook 1 · new\nEvent     SessionStart\nSource    User config - ~/.codex/hooks.json\nCommand   /tmp/tempo hook codex --input-stdin\nMode      Sync\nTimeout   2s\nTrust     New hook - review required\nt trust · esc back"
         smoke.review_hook_screen(screen, "SessionStart", "/tmp/tempo hook codex --input-stdin", "~/.codex/hooks.json")
 
+    def test_root_provider_turns_exclude_native_child_prompts(self):
+        receipts = [self.receipt("SessionStart"), self.receipt("UserPromptSubmit"),
+                    self.receipt("SubagentStart", agent_id="child", turn_id="child-turn"),
+                    self.receipt("UserPromptSubmit", id="child-prompt", agent_id="child", turn_id="child-turn")]
+        model = self.model(receipts)
+        model.session, model.baseline = None, frozenset()
+        self.assertEqual(model.respond(self.request())[0]["call_id"], "tempo-plan")
+        self.assertEqual(model.turn, "turn-1")
+        model.phase = "parent-complete"
+        receipts.append(self.receipt("UserPromptSubmit", id="interrupt-prompt", turn_id="interrupt-turn"))
+        self.assertEqual(model.respond(self.request(smoke.INTERRUPT_PROMPT))[2], "interrupt")
+        self.assertEqual(model.interrupt_turn, "interrupt-turn")
+        receipts.append(self.receipt("UserPromptSubmit", id="extra-root", turn_id="other-root"))
+        with self.assertRaises(smoke.FixtureFailure): model.respond(self.request(smoke.INTERRUPT_PROMPT))
+
+    def test_native_cleanup_preserves_primary_failure_and_still_vetoes_success(self):
+        for primary in (True, False):
+            for terminal_failure in (False, True):
+                terminal, model = mock.Mock(), mock.Mock()
+                model.error = "provider_disconnected"
+                if terminal_failure: terminal.close.side_effect = smoke.FixtureFailure("terminal_cleanup_failed")
+                if primary:
+                    with self.assertRaisesRegex(smoke.FixtureFailure, "^parent_child_independence$"):
+                        try:
+                            raise smoke.FixtureFailure("parent_child_independence")
+                        finally:
+                            smoke.close_native(terminal, model, primary_failure=True)
+                else:
+                    with self.assertRaises(smoke.FixtureFailure):
+                        smoke.close_native(terminal, model, primary_failure=False)
+                terminal.close.assert_called_once()
+                model.close.assert_called_once()
+
     def test_cleanup_failure_cannot_preserve_a_passed_result(self):
         def cleanup_failure(_args, report):
             report["status"] = "passed"

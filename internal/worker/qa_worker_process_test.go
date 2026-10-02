@@ -142,7 +142,13 @@ func TestQAWorkerRunnerHelper(t *testing.T) {
 	if !strings.HasPrefix(mode, "qa-runner-") {
 		return
 	}
-	if err := os.WriteFile(marker, []byte(strconv.Itoa(os.Getpid())), 0600); err != nil {
+	// Publish readiness only after the complete PID is visible. Stat must not
+	// observe an empty marker between file creation and the payload write.
+	pending := marker + ".pending"
+	if err := os.WriteFile(pending, []byte(strconv.Itoa(os.Getpid())), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(pending, marker); err != nil {
 		t.Fatal(err)
 	}
 	switch mode {

@@ -43,7 +43,14 @@ func validateHost(e HostEvent) error {
 			return failure("validation")
 		}
 	} else if e.AgentID != "" {
-		return failure("validation")
+		switch e.Kind {
+		case "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "PreCompact", "PostCompact":
+			if !safeIdentifier(e.AgentID, 128) || !utf8.ValidString(e.AgentID) {
+				return failure("validation")
+			}
+		default:
+			return failure("validation")
+		}
 	}
 	if e.Kind == "PreToolUse" || e.Kind == "PostToolUse" {
 		if !safeIdentifier(e.ToolID, 256) || !safeIdentifier(e.ToolName, 256) {
@@ -63,7 +70,7 @@ func hostTarget(st *state, e HostEvent) *hostTurn {
 	if e.Kind == "SessionEnd" {
 		return st.HostTurns[session.RootTurn]
 	}
-	if e.Kind == "Stop" || e.Kind == "SubagentStop" || e.Kind == "Interrupt" {
+	if e.Kind == "Stop" || e.Kind == "SubagentStop" || e.Kind == "Interrupt" || (e.Kind == "UserPromptSubmit" && e.AgentID != "") {
 		candidates := historicalActors(st, e)
 		if len(candidates) == 1 {
 			return candidates[0]
@@ -83,7 +90,7 @@ func hostTarget(st *state, e HostEvent) *hostTurn {
 func toolCandidates(st *state, e HostEvent) []*hostTurn {
 	var targets []*hostTurn
 	for _, t := range st.HostTurns {
-		if t.Source == e.Source && t.SessionID == e.SessionID && t.TurnID == e.TurnID {
+		if t.Source == e.Source && t.SessionID == e.SessionID && t.TurnID == e.TurnID && (e.AgentID == "" || t.AgentID == e.AgentID) {
 			targets = append(targets, t)
 		}
 	}
@@ -95,7 +102,7 @@ func hostConflictKey(key, fingerprint string) string {
 
 func hostReceiptKey(st *state, session *hostSession, e HostEvent) string {
 	incarnation := session.ID
-	if e.Kind != "SessionStart" && e.Kind != "UserPromptSubmit" && e.Kind != "SubagentStart" {
+	if e.Kind != "SessionStart" && (e.Kind != "UserPromptSubmit" || e.AgentID != "") && e.Kind != "SubagentStart" {
 		if target := hostTarget(st, e); target != nil {
 			incarnation = target.Session
 		}
@@ -294,7 +301,7 @@ func (s *Service) reduceHost(ctx context.Context, st *state, e HostEvent, p hook
 		}
 	}
 
-	if e.Kind == "Stop" || e.Kind == "SubagentStop" || e.Kind == "Interrupt" {
+	if e.Kind == "Stop" || e.Kind == "SubagentStop" || e.Kind == "Interrupt" || (e.Kind == "UserPromptSubmit" && e.AgentID != "") {
 		candidates := historicalActors(st, e)
 		if len(candidates) > 1 {
 			for _, candidate := range candidates {
@@ -339,7 +346,7 @@ func (s *Service) reduceHost(ctx context.Context, st *state, e HostEvent, p hook
 		}
 		turn = &hostTurn{Source: e.Source, SessionID: e.SessionID, Session: session.ID, TurnID: e.TurnID, AgentID: e.AgentID, CWD: cwd, Actor: &ActorRef{Key: actor, Generation: generation}}
 		st.HostTurns[turnKey] = turn
-		if e.Kind == "UserPromptSubmit" {
+		if e.Kind == "UserPromptSubmit" && e.AgentID == "" {
 			session.RootTurn = turnKey
 		}
 		normalized = &Event{ContractVersion: 1, Actor: actor, Generation: generation, Sequence: "1", EventID: result.ID, Kind: "work", CWD: cwd}

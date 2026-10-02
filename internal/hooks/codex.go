@@ -66,6 +66,14 @@ func DecodeCodex(r io.Reader) (activity.HostEvent, error) {
 	default:
 		return bad("unsupported_contract")
 	}
+	switch e.Kind {
+	case "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "PreCompact", "PostCompact":
+		if _, present := raw["agent_id"]; present {
+			if e.AgentID, ok = text("agent_id", 128); !ok {
+				return bad("validation")
+			}
+		}
+	}
 	if e.Kind == "SubagentStart" || e.Kind == "SubagentStop" {
 		if e.AgentID, ok = text("agent_id", 128); !ok {
 			return bad("validation")

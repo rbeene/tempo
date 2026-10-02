@@ -15,7 +15,7 @@ func TestQACodexMetadataAllowlist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := activity.HostEvent{Source: "codex", SessionID: "session/one", TurnID: "turn:two", Kind: "PreToolUse", CWD: "/synthetic/project", ToolID: "tool-3", ToolName: "Bash"}
+	want := activity.HostEvent{Source: "codex", SessionID: "session/one", TurnID: "turn:two", AgentID: "root", Kind: "PreToolUse", CWD: "/synthetic/project", ToolID: "tool-3", ToolName: "Bash"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("allowlist mismatch: got %+v want %+v", got, want)
 	}
