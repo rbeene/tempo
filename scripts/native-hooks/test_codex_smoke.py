@@ -19,6 +19,10 @@ spec.loader.exec_module(smoke)
 
 
 class HarnessTests(unittest.TestCase):
+    def test_shared_host_arguments_require_embedded_execution_without_bypasses(self):
+        self.assertEqual(smoke.codex_argv(Path("/synthetic/inert-runtime")),
+                         ["/synthetic/inert-runtime", "--no-alt-screen", "--no-daemon"])
+
     def test_hosted_precondition_cannot_be_enabled_by_one_ci_flag(self):
         env = {"HOME": "/home/runner", "GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted",
                "RUNNER_OS": "Linux", "RUNNER_ARCH": "X64", "RUNNER_TEMP": "/tmp/runner"}

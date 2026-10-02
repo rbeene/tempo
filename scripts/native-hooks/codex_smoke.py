@@ -678,6 +678,12 @@ def actor_state(snapshot, receipt):
     return matches[0]["state"]
 
 
+def codex_argv(runtime):
+    # Public embedded mode keeps both launches in the owned process group;
+    # normal workspace and hook trust remain required by the host.
+    return [str(runtime), "--no-alt-screen", "--no-daemon"]
+
+
 def run(args, report):
     started = time.monotonic()
     deadline = started + 240
@@ -726,7 +732,7 @@ def run(args, report):
                        "tempo_sha256": digest(tempo), "definitions_sha256": digest(definitions),
                        "configuration_origin": "fixture_authored", "delivery_origin": "actual_codex_process",
                        "profile_basis": "operator_declared", "product_receipt_origin": "unverified"})
-        argv = [str(runtime), "--no-alt-screen"]
+        argv = codex_argv(runtime)
         report["stage"] = "normal_trust_ui"
         report["trusted_events"] = []
         terminal = Terminal(argv, env, repo, deadline)
