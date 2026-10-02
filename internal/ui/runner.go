@@ -26,9 +26,10 @@ type SnapshotReader interface {
 }
 
 type Options struct {
-	Styler terminal.Styler
-	Views  *ReadViews
-	Links  *LinkActions
+	Styler   terminal.Styler
+	Views    *ReadViews
+	Links    *LinkActions
+	Activity *ActivityActions
 	// Refresh is an optional testable refresh source. Nil uses a one-second
 	// ticker; closing an injected channel disables further scheduled refreshes.
 	Refresh <-chan time.Time
