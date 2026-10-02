@@ -188,6 +188,62 @@ class ProtocolTests(unittest.TestCase):
         bad=result('tempo-read');bad['is_error']=True
         with self.assertRaises(smoke.FixtureFailure):smoke.require_tool_result(request(results=[bad]),'tempo-read','tempo-fixture-read-ok')
 
+    def test_tool_result_failure_shapes_remain_distinct_and_fail_closed(self):
+        good=result('tempo-agent','private-canary')
+        cases=[([], 'actual_tool_result_missing'),
+               ([good,good], 'actual_tool_result_duplicate'),
+               ([dict(good,is_error='true')], 'actual_tool_result_invalid_error_flag'),
+               ([dict(good,is_error=0)], 'actual_tool_result_invalid_error_flag'),
+               ([dict(good,is_error=None)], 'actual_tool_result_invalid_error_flag'),
+               ([dict(good,is_error=True)], 'agent_tool_error_unclassified')]
+        for results,category in cases:
+            with self.subTest(category=category),self.assertRaises(smoke.FixtureFailure) as failure:
+                smoke.require_tool_result(request(results=results),'tempo-agent')
+            self.assertEqual(str(failure.exception),category)
+        for value in (good,dict(good,is_error=False)):
+            smoke.require_tool_result(request(results=[value]),'tempo-agent')
+        with self.assertRaises(smoke.FixtureFailure) as failure:
+            smoke.require_tool_result(request(results=[dict(result('tempo-read'),is_error=True)]),'tempo-read',smoke.READ_RESULT)
+        self.assertEqual(str(failure.exception),'actual_tool_result_error')
+
+    def test_agent_error_classification_exports_only_fixed_categories(self):
+        cases=[("Agent type 'tempo-fixture-child' not found. Available agents: private-canary",'type_unavailable'),
+               ("Agent type 'tempo-fixture-child' has been denied by permission rule 'private-canary'",'permission'),
+               ('Permission to use Agent has been denied: private-canary','permission'),
+               ('Tool permission request failed: private-canary','permission'),
+               ('Agent: launching needs the executor (call.runEngine)','executor_unavailable'),
+               ('Subagent nesting limit reached (depth 5 of 5). private-canary','depth_limit'),
+               ('Concurrent subagent limit reached. private-canary','concurrency_limit'),
+               ('In-process teammates cannot spawn background agents. private-canary','background_unavailable'),
+               ('private-canary','unclassified')]
+        for text,category in cases:
+            for content in (text,[{'type':'text','text':'<tool_use_error>'+text+'</tool_use_error>'}]):
+                bad=dict(result('tempo-agent'),is_error=True,content=content)
+                with self.subTest(category=category),self.assertRaises(smoke.FixtureFailure) as failure:
+                    smoke.require_tool_result(request(results=[bad]),'tempo-agent')
+                self.assertEqual(str(failure.exception),'agent_tool_error_'+category)
+                self.assertNotIn('private-canary',str(failure.exception))
+        for content in (None,{'error':'private-canary'},[{'type':'image','text':cases[0][0]}],
+                        'private-canary'*2000,[{'type':'text','text':cases[0][0]}]*129):
+            with self.assertRaises(smoke.FixtureFailure) as failure:
+                smoke.require_tool_result(request(results=[dict(result('tempo-agent'),is_error=True,content=content)]),'tempo-agent')
+            self.assertEqual(str(failure.exception),'agent_tool_error_unclassified')
+
+    def test_errored_agent_result_cannot_pass_complete_native_receipt_barriers(self):
+        rows=[receipt('SessionStart'),receipt('UserPromptSubmit')]
+        snap=snapshot(rows);model=smoke.Conversation(lambda:snap,Path('/tmp/project'))
+        model.respond(request())
+        rows.extend([receipt('PreToolUse',tool='tempo-read'),receipt('PostToolUse',tool='tempo-read')])
+        model.respond(request(results=[result('tempo-read')]))
+        rows.extend([receipt('PreToolUse',tool='tempo-agent'),receipt('PostToolUse',tool='tempo-agent')])
+        child=receipt('SubagentStart','native-child',turn='child-prompt');rows.append(child)
+        snap['actors'].append({'ref':child['actor'],'state':'working','health':'continuous'})
+        model.respond(request(smoke.CHILD_PROMPT))
+        with self.assertRaises(smoke.FixtureFailure) as failure:
+            model.respond(request(results=[dict(result('tempo-agent','private-canary'),is_error=True)]))
+        self.assertEqual(str(failure.exception),'agent_tool_error_unclassified')
+        self.assertEqual(model.phase,'agent');self.assertEqual(model.counts,{'parent':2,'child':1})
+
     def test_initial_response_requires_unique_accepted_native_start_and_prompt(self):
         base=[receipt('SessionStart'),receipt('UserPromptSubmit')]
         for rows in ([],base[:1],base[1:],base+[dict(base[0],id='second')],base+[dict(base[1],turn_id='other')],
@@ -326,6 +382,21 @@ class ProcessTests(unittest.TestCase):
                 self.assertEqual(smoke.main(),1)
             data=evidence.read_text();self.assertNotIn('private-canary',data)
             self.assertEqual(json.loads(data)['status'],'failed')
+
+    def test_main_exports_agent_failure_category_without_raw_result_or_canary(self):
+        for text,category in [('private-canary','agent_tool_error_unclassified'),
+                              ('Permission to use Agent has been denied: private-canary','agent_tool_error_permission')]:
+            with tempfile.TemporaryDirectory() as d:
+                evidence=Path(d)/'evidence.json'
+                def failure(args,report):
+                    smoke.require_tool_result(request(results=[dict(result('tempo-agent',text),is_error=True)]),'tempo-agent')
+                with mock.patch.object(smoke,'run',side_effect=failure),mock.patch.object(sys,'argv',
+                     ['claude_smoke','--tempo','inert','--helper','inert','--evidence',str(evidence)]):
+                    self.assertEqual(smoke.main(),1)
+                data=evidence.read_text()
+                self.assertNotIn('private-canary',data);self.assertNotIn('Permission to use Agent',data)
+                self.assertEqual(json.loads(data)['failure_category'],category)
+                self.assertEqual(json.loads(data)['status'],'failed')
 
     def test_cancellation_uses_cleanup_failure_path(self):
         with tempfile.TemporaryDirectory() as d:

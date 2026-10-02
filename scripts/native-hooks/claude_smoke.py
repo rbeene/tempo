@@ -200,13 +200,53 @@ def request_case(body):
     raise FixtureFailure('unexpected_provider_turn')
 
 
+def agent_error_category(content):
+    """Classify bounded error text in memory; never return text or captures.
+
+    These fixed fragments come from the pinned 2.1.286 Agent launch and tool
+    permission paths. They are diagnostic hints only, never success evidence.
+    """
+    if isinstance(content, str):
+        parts = [content]
+    elif isinstance(content, list) and len(content) <= 128:
+        parts = [v['text'] for v in content if isinstance(v, dict)
+                 and v.get('type') == 'text' and isinstance(v.get('text'), str)]
+    else:
+        return 'agent_tool_error_unclassified'
+    if sum(len(v) for v in parts) > 16384:
+        return 'agent_tool_error_unclassified'
+    text = '\n'.join(parts)
+    categories = (
+        ('type_unavailable', ("Agent type 'tempo-fixture-child' not found.",
+                              "Agent type 'tempo-fixture-child' is not offered in this session.")),
+        ('permission', ("Agent type 'tempo-fixture-child' has been denied by permission rule ",
+                        "Agent type 'tempo-fixture-child' is unavailable because every tool it may use is denied",
+                        'Permission to use Agent has been denied', 'Tool permission request failed',
+                        'Agent tool requires permission to spawn subagents.')),
+        ('executor_unavailable', ('Agent: launching needs the executor (call.runEngine)',)),
+        ('depth_limit', ('Subagent nesting limit reached (depth ',)),
+        ('concurrency_limit', ('Concurrent subagent limit reached.',)),
+        ('background_unavailable', ('In-process teammates cannot spawn background agents',)),
+    )
+    for category, fragments in categories:
+        if any(fragment in text for fragment in fragments):
+            return 'agent_tool_error_' + category
+    return 'agent_tool_error_unclassified'
+
+
 def require_tool_result(body, tool_id, marker=None):
     matches = []
     for msg in body.get('messages', []):
         if msg.get('role') != 'user' or not isinstance(msg.get('content'), list): continue
         matches.extend(v for v in msg['content'] if isinstance(v, dict) and v.get('type') == 'tool_result'
                        and v.get('tool_use_id') == tool_id)
-    require(len(matches) == 1 and matches[0].get('is_error', False) is False, 'actual_tool_result_missing')
+    require(bool(matches), 'actual_tool_result_missing')
+    require(len(matches) == 1, 'actual_tool_result_duplicate')
+    is_error = matches[0].get('is_error', False)
+    require(type(is_error) is bool, 'actual_tool_result_invalid_error_flag')
+    if is_error:
+        raise FixtureFailure(agent_error_category(matches[0].get('content'))
+                             if tool_id == 'tempo-agent' else 'actual_tool_result_error')
     if marker is not None:
         require(marker in '\n'.join(text_blocks(matches[0].get('content', []))), 'actual_read_result_missing')
 
