@@ -18,6 +18,7 @@ import (
 	"github.com/rbeene/tempo/internal/hookstate"
 	"github.com/rbeene/tempo/internal/setup"
 	"github.com/rbeene/tempo/internal/terminal"
+	"github.com/rbeene/tempo/internal/themes"
 	"github.com/rbeene/tempo/internal/ui"
 	"github.com/rbeene/tempo/internal/worker"
 )
@@ -26,6 +27,8 @@ var Version = "dev"
 
 type Dependencies struct {
 	Hooks            *hookstate.Service
+	Themes           *themes.Service
+	OutputTTY        func(io.Writer) bool
 	Worker           *worker.Service
 	Auth             *auth.Service
 	Prompter         terminal.Prompter
@@ -52,6 +55,10 @@ func safeError(err error) *cliError {
 	var ce *cliError
 	if errors.As(err, &ce) {
 		return ce
+	}
+	var te *themes.Error
+	if errors.As(err, &te) {
+		return &cliError{Code: te.Code, Message: te.Message, Retryable: te.Retryable, Uncertain: te.Uncertain, Details: te.Details}
 	}
 	var ae *activity.Error
 	if errors.As(err, &ae) {
@@ -156,7 +163,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 						}, Unlink: a.Unlink, Repair: a.RepairBinding}
 						authActions := uiAuthActions(d)
 						capture := &ui.ActivityActions{Status: a.Status, Review: a.Review, Preview: a.Preview, Resolve: a.Resolve, Interrupt: a.Interrupt}
-						err = uiResultError(ui.Run(session.Context(), session, a, ui.Options{Views: views, Links: links, Activity: capture, Auth: authActions, Hooks: uiHookActions(d), Worker: uiWorkerActions(d), Sync: uiSyncActions(d, a), Setup: uiSetupActions(d), Diagnostics: func(readCtx context.Context, check bool) (setup.Diagnostics, error) {
+						err = uiResultError(ui.Run(session.Context(), session, a, ui.Options{Views: views, Appearance: themeService(d), Capabilities: outputCapabilities(d, out), Links: links, Activity: capture, Auth: authActions, Hooks: uiHookActions(d), Worker: uiWorkerActions(d), Sync: uiSyncActions(d, a), Setup: uiSetupActions(d), Diagnostics: func(readCtx context.Context, check bool) (setup.Diagnostics, error) {
 							service, err := setupService(d)
 							if err != nil {
 								return setup.Diagnostics{}, err
@@ -191,6 +198,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		}
 	}
 	if err != nil {
+		presentationFailed := false
 		completed := []setup.Step{}
 		if status, ok := data.(setup.Status); ok {
 			for _, step := range status.Steps {
@@ -200,25 +208,35 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 			}
 		}
 		if len(completed) > 0 && !jsonMode {
+			p := presentation(ctx, d, errOut, errOut)
 			for _, step := range completed {
-				fmt.Fprintf(errOut, "tempo: completed %s: %s\n", step.Action, step.SafeMessage)
+				p.line(terminal.RoleSuccess, fmt.Sprintf("tempo: completed %s: %s", step.Action, step.SafeMessage))
+			}
+			if p.close() != nil {
+				presentationFailed = true
 			}
 		}
+		e := safeError(err)
 		var ended *terminal.ExitError
-		if errors.As(err, &ended) {
+		if errors.As(err, &ended) && !e.Uncertain {
 			if ended.Code == 1 {
-				fmt.Fprintln(errOut, "tempo: terminal: terminal input or output failed")
+				if jsonMode {
+					fmt.Fprintln(errOut, "tempo: terminal: terminal input or output failed")
+				} else {
+					output := presentation(ctx, d, errOut, errOut)
+					output.line(terminal.RoleError, "tempo: terminal: terminal input or output failed")
+					_ = output.close() // This branch already reports terminal I/O failure.
+				}
 			}
 			return ended.Code
 		}
-		e := safeError(err)
 		if len(completed) > 0 {
 			if e.Details == nil {
 				e.Details = map[string]any{}
 			}
 			e.Details["completed_steps"] = completed
 		}
-		if errors.Is(err, context.Canceled) || e.Code == "network" {
+		if !e.Uncertain && (errors.Is(err, context.Canceled) || e.Code == "network") {
 			var cause *terminal.ExitError
 			if errors.As(context.Cause(ctx), &cause) {
 				return cause.Code
@@ -227,7 +245,18 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		if jsonMode {
 			_ = json.NewEncoder(errOut).Encode(map[string]any{"schema_version": 1, "error": e})
 		} else {
-			fmt.Fprintf(errOut, "tempo: %s: %s\n", e.Code, e.Message)
+			output := presentation(ctx, d, errOut, errOut)
+			output.line(terminal.RoleError, fmt.Sprintf("tempo: %s: %s", e.Code, e.Message))
+			var appearance *themes.Error
+			if errors.As(err, &appearance) && appearance.Code == "local_write_unknown" {
+				printThemeRecovery(&output, appearance, p)
+			}
+			if output.close() != nil {
+				presentationFailed = true
+			}
+		}
+		if presentationFailed && !e.Uncertain {
+			return 1
 		}
 		return exitCode(e.Code)
 	}
@@ -241,11 +270,31 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		return 0
 	}
 	if p.command.Name == "help" {
-		printHelp(out)
+		p := presentation(ctx, d, out, errOut)
+		printHumanHelp(&p)
+		if p.close() != nil {
+			return 1
+		}
 		return 0
 	}
 	if p.command.Name == "version" {
-		fmt.Fprintln(out, "tempo "+Version)
+		p := presentation(ctx, d, out, errOut)
+		p.line(terminal.RoleAccent, "tempo "+Version)
+		if p.close() != nil {
+			return 1
+		}
+		return 0
+	}
+	if themeCommand(p.command.Name) {
+		id := ""
+		if result, ok := data.(themes.ThemeResult); ok {
+			id = result.Theme.ID
+		}
+		p := themePresentation(ctx, d, out, errOut, id)
+		printThemes(&p, data)
+		if p.close() != nil {
+			return 1
+		}
 		return 0
 	}
 	enc := json.NewEncoder(out)
@@ -280,6 +329,9 @@ func validate(p *parsed, now time.Time) error {
 	n := p.command.Name
 	if hooksCommand(n) {
 		return validateHooksCLI(p)
+	}
+	if themeCommand(n) {
+		return validateThemeCLI(p)
 	}
 	if workerCommand(n) {
 		return validateWorkerCLI(p)
@@ -419,6 +471,9 @@ type session struct {
 func execute(ctx context.Context, p parsed, in io.Reader, d Dependencies) (any, error) {
 	if hooksCommand(p.command.Name) {
 		return executeHooks(ctx, p, d)
+	}
+	if themeCommand(p.command.Name) {
+		return executeThemes(ctx, p, d)
 	}
 	if workerCommand(p.command.Name) {
 		return executeWorker(ctx, p, d)

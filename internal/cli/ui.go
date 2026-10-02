@@ -15,6 +15,7 @@ import (
 	"github.com/rbeene/tempo/internal/hookstate"
 	"github.com/rbeene/tempo/internal/setup"
 	"github.com/rbeene/tempo/internal/terminal"
+	"github.com/rbeene/tempo/internal/themes"
 	"github.com/rbeene/tempo/internal/worker"
 )
 
@@ -164,6 +165,10 @@ func uiAuthEffects(effects auth.Effects) string {
 func uiResultError(err error) error {
 	if err == nil {
 		return nil
+	}
+	var appearance *themes.Error
+	if errors.As(err, &appearance) {
+		return appearance
 	}
 	var local *activity.Error
 	if errors.As(err, &local) {

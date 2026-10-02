@@ -10,6 +10,7 @@ import (
 	"github.com/rbeene/tempo/internal/auth"
 	"github.com/rbeene/tempo/internal/setup"
 	"github.com/rbeene/tempo/internal/terminal"
+	"github.com/rbeene/tempo/internal/themes"
 )
 
 // Screen is the existing terminal owner's presentation and event boundary.
@@ -28,16 +29,18 @@ type SnapshotReader interface {
 }
 
 type Options struct {
-	Styler      terminal.Styler
-	Views       *ReadViews
-	Links       *LinkActions
-	Activity    *ActivityActions
-	Auth        *AuthActions
-	Hooks       *HookActions
-	Worker      *WorkerActions
-	Sync        *SyncActions
-	Setup       *SetupActions
-	Diagnostics func(context.Context, bool) (setup.Diagnostics, error)
+	Appearance   *themes.Service
+	Capabilities themes.Capabilities
+	Styler       terminal.Styler
+	Views        *ReadViews
+	Links        *LinkActions
+	Activity     *ActivityActions
+	Auth         *AuthActions
+	Hooks        *HookActions
+	Worker       *WorkerActions
+	Sync         *SyncActions
+	Setup        *SetupActions
+	Diagnostics  func(context.Context, bool) (setup.Diagnostics, error)
 	// Outcome callbacks run only after owned work joins and Close has attempted
 	// terminal restoration. They must report safe shared observations only.
 	OnAuthResult         func(string, auth.Result, error)
@@ -61,6 +64,7 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 	service := &workerController{}
 	uploads := &syncController{}
 	wizard := &setupController{}
+	appearance := newAppearanceFlow(options.Appearance, options.Capabilities)
 	type flowResult struct {
 		name  string
 		style terminal.Styler
@@ -164,6 +168,10 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 						if uploads.pending != nil {
 							id = uploads.pending.id()
 						}
+					case "appearance":
+						if appearance.pending != nil {
+							id = appearance.pending.RequestID
+						}
 					case "setup":
 						id = setupRequestID(outcome)
 					}
@@ -186,12 +194,36 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 		return err
 	}
 	model := NewModel(columns, rows)
+	refreshAppearance := func() {
+		if options.Appearance == nil {
+			return
+		}
+		observed, readErr := currentAppearance(ctx, options.Appearance, options.Capabilities)
+		if readErr != nil {
+			options.Styler, _ = themes.NewStyler("terminal-default", options.Capabilities)
+			model.appearanceWarning = "Appearance unavailable; using terminal default"
+			return
+		}
+		options.Styler = observed
+		model.appearanceWarning = ""
+		if retained["appearance"] != nil {
+			model.appearanceWarning = "Appearance outcome unknown; A retries the exact request"
+		}
+	}
+	refreshAppearance()
 	draw := func() error {
 		outputCtx, end := context.WithTimeout(ctx, 250*time.Millisecond)
 		defer end()
-		frame := model.Render(options.Styler)
+		style := options.Styler
 		if modal != nil {
-			frame = modal.Render(options.Styler)
+			style = modal.styler(style)
+		}
+		if owner, ok := screen.(interface{ SetStyler(terminal.Styler) }); ok {
+			owner.SetStyler(style)
+		}
+		frame := model.Render(style)
+		if modal != nil {
+			frame = modal.Render(style)
 		}
 		if err := screen.Draw(outputCtx, frame); err != nil {
 			if ctx.Err() != nil && errors.Is(err, context.Canceled) {
@@ -329,6 +361,17 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 			if result.name == "hooks" && hooks.pending == nil || result.name == "worker" && service.pending == nil || result.name == "sync" && uploads.pending == nil {
 				request()
 			}
+			if result.name == "appearance" {
+				// Pure saved metadata refresh does not acknowledge durability or
+				// alter the retained mutation outcome or its pending identity.
+				refreshAppearance()
+				if ctx.Err() != nil {
+					return context.Cause(ctx)
+				}
+				if result.err != nil && !unknownOutcome(result.err) && !appearanceCancelled(result.err) {
+					return result.err
+				}
+			}
 			flowBusy = false
 			endFlow = nil
 			if modal != nil {
@@ -426,6 +469,13 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 				startView(timerDetails)
 			case "text":
 				switch event.Text {
+				case "A":
+					startFlow("appearance", func(flowCtx context.Context) (terminal.Styler, error) {
+						if options.Appearance == nil {
+							return nil, bridge.View(flowCtx, "Appearance", "Appearance unavailable.")
+						}
+						return appearance.run(flowCtx, bridge)
+					})
 				case "q":
 					return nil
 				case "r":

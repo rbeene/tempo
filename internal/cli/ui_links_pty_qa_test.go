@@ -17,6 +17,7 @@ import (
 	"github.com/rbeene/tempo/internal/cli"
 	"github.com/rbeene/tempo/internal/harvest"
 	"github.com/rbeene/tempo/internal/hookstate"
+	"github.com/rbeene/tempo/internal/themes"
 )
 
 func TestQAUILinksCLIActionPTYChild(t *testing.T) {
@@ -67,7 +68,20 @@ func TestQAUILinksCLIActionPTYChild(t *testing.T) {
 		return auth.NativeReply{}, errors.New("forbidden native access")
 	})})
 	report("binding", first.Binding.ID)
-	code := cli.Run(context.Background(), []string{"ui"}, os.Stdin, os.Stdout, os.Stderr, cli.Dependencies{Activity: service, Auth: a, ConfigPath: config, Getenv: func(string) string { t.Error("local UI unlink resolved account config"); return "" }})
+	preferences := filepath.Join(root, "appearance-private", "preferences.json")
+	code := cli.Run(context.Background(), []string{"ui"}, os.Stdin, os.Stdout, os.Stderr, cli.Dependencies{Activity: service, Auth: a, ConfigPath: config, Themes: themes.New(themes.Options{Path: preferences}), Getenv: func(key string) string {
+		switch key {
+		case "TERM":
+			return "dumb"
+		case "COLORTERM", "NO_COLOR":
+			return ""
+		}
+		t.Error("local UI unlink resolved account config")
+		return ""
+	}})
+	if _, err := os.Stat(filepath.Dir(preferences)); !errors.Is(err, os.ErrNotExist) {
+		t.Error("UI without Appearance selection initialized private preferences")
+	}
 	if code != 0 {
 		t.Errorf("actual UI action CLI exit=%d", code)
 	}

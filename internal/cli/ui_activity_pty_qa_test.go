@@ -8,6 +8,7 @@ import (
 	"github.com/rbeene/tempo/internal/auth"
 	"github.com/rbeene/tempo/internal/cli"
 	"github.com/rbeene/tempo/internal/harvest"
+	"github.com/rbeene/tempo/internal/themes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -47,7 +48,20 @@ func TestQAUIActivityCLIReadPTYChild(t *testing.T) {
 		t.Error("Activity read accessed credentials")
 		return auth.NativeReply{}, errors.New("forbidden")
 	})})
-	code := cli.Run(context.Background(), []string{"ui"}, os.Stdin, os.Stdout, os.Stderr, cli.Dependencies{Activity: local, Auth: a, ConfigPath: config, Getenv: func(string) string { t.Error("Activity read touched config selection"); return "" }})
+	preferences := filepath.Join(root, "appearance-private", "preferences.json")
+	code := cli.Run(context.Background(), []string{"ui"}, os.Stdin, os.Stdout, os.Stderr, cli.Dependencies{Activity: local, Auth: a, ConfigPath: config, Themes: themes.New(themes.Options{Path: preferences}), Getenv: func(key string) string {
+		switch key {
+		case "TERM":
+			return "dumb"
+		case "COLORTERM", "NO_COLOR":
+			return ""
+		}
+		t.Error("Activity read touched config selection")
+		return ""
+	}})
+	if _, err := os.Stat(filepath.Dir(preferences)); !errors.Is(err, os.ErrNotExist) {
+		t.Error("read-only Activity initialized private preferences")
+	}
 	if code != 0 {
 		t.Errorf("Activity read CLI exit%d", code)
 	}

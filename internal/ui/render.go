@@ -34,14 +34,44 @@ func (m *Model) Render(styler terminal.Styler) []string {
 	if m.columns < 40 || m.rows < 8 {
 		add(terminal.RoleWarning, "Terminal too small")
 		add(terminal.RoleMuted, "Resize to 40x8")
+		if m.appearanceWarning != "" {
+			add(terminal.RoleWarning, m.appearanceWarning)
+		}
 		if m.stale {
 			add(terminal.RoleWarning, "Stale: "+m.reason)
 		}
 		add(terminal.RoleKey, "q Quit")
 		return lines
 	}
-	add(terminal.RoleAccent, "TEMPO  /  LOCAL ACTIVITY")
-	add(terminal.RoleBorder, strings.Repeat("─", width))
+	const primaryHints = "A Appearance  ? Help  q Quit  a Auth  l Links  h Hooks  s Sync  w Worker"
+	splitHints := width >= 60 && width < len(primaryHints)
+	footerRows := 2
+	if splitHints {
+		footerRows++
+	}
+	contentRows := 1
+	if m.observed {
+		contentRows = 2
+		if len(m.snapshot.ProjectTimers) > 0 {
+			contentRows = 3
+		}
+	}
+	// Reserve scope or stale state, activity, warnings, status and hints before
+	// spending any remaining rows on decorative branding and the border.
+	mandatoryRows := footerRows + contentRows + 1
+	if m.appearanceWarning != "" {
+		mandatoryRows++
+	}
+	decorationRows := m.rows - mandatoryRows
+	if decorationRows > 0 {
+		add(terminal.RoleAccent, "TEMPO  /  LOCAL ACTIVITY")
+	}
+	if decorationRows > 1 {
+		add(terminal.RoleBorder, strings.Repeat("─", width))
+	}
+	if m.appearanceWarning != "" {
+		add(terminal.RoleWarning, m.appearanceWarning)
+	}
 	if m.stale {
 		add(terminal.RoleWarning, "Stale · "+m.reason)
 	} else {
@@ -51,9 +81,9 @@ func (m *Model) Render(styler terminal.Styler) []string {
 		}
 		add(terminal.RoleMuted, scope)
 	}
-	// Reserve two footer lines; each timer retains its two distinct duration
+	// Reserve the status and hint rows; each timer retains its two distinct duration
 	// labels even when the optional state/count suffixes must be clipped.
-	available := m.rows - len(lines) - 2
+	available := m.rows - len(lines) - footerRows
 	if !m.observed {
 		message := "Loading local activity…"
 		if m.stale {
@@ -78,7 +108,7 @@ func (m *Model) Render(styler terminal.Styler) []string {
 			add(terminal.RoleMuted, fmt.Sprintf("  Confirmed closed   %s   %d queued / %d need attention", duration(timer.ConfirmedClosedNS), timer.QueuedCount, timer.NeedsAttentionCount))
 		}
 	}
-	for len(lines) < m.rows-2 {
+	for len(lines) < m.rows-footerRows {
 		add(terminal.RoleText, "")
 	}
 	syncState := "unavailable"
@@ -94,9 +124,12 @@ func (m *Model) Render(styler terminal.Styler) []string {
 	}
 	add(terminal.RoleInfo, "Sync "+syncState+"  ·  Worker "+worker)
 	if width < 60 {
-		add(terminal.RoleKey, "? Help  ↑/↓ Select  r Refresh  q Quit")
+		add(terminal.RoleKey, "A Appearance  ? Help  ↑/↓  q Quit")
+	} else if splitHints {
+		add(terminal.RoleKey, "A Appearance  ? Help  q Quit")
+		add(terminal.RoleKey, "a Auth  l Links  h Hooks  s Sync  w Worker")
 	} else {
-		add(terminal.RoleKey, "? Help  a Auth  l Links  h Hooks  s Sync  w Worker  q Quit")
+		add(terminal.RoleKey, primaryHints)
 	}
 	return lines
 }

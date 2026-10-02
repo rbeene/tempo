@@ -25,6 +25,7 @@ import (
 	"github.com/rbeene/tempo/internal/hookstate"
 	"github.com/rbeene/tempo/internal/setup"
 	"github.com/rbeene/tempo/internal/terminal"
+	"github.com/rbeene/tempo/internal/themes"
 )
 
 type qaCLISetupProvider struct {
@@ -188,12 +189,22 @@ func TestQAUISetupCLISharedWizardChild(t *testing.T) {
 		t.Fatal("preflight readiness wrote state")
 	}
 	report("fixture-valid", project)
-	code := cli.Run(ctx, []string{"ui"}, os.Stdin, os.Stdout, os.Stderr, cli.Dependencies{Activity: local, Auth: credentials, Hooks: hooks, ConfigPath: config, Getenv: func(key string) string {
+	preferences := filepath.Join(root, "appearance-private", "preferences.json")
+	code := cli.Run(ctx, []string{"ui"}, os.Stdin, os.Stdout, os.Stderr, cli.Dependencies{Activity: local, Auth: credentials, Hooks: hooks, ConfigPath: config, Themes: themes.New(themes.Options{Path: preferences}), Getenv: func(key string) string {
+		switch key {
+		case "TERM":
+			return "dumb"
+		case "COLORTERM", "NO_COLOR":
+			return ""
+		}
 		if key != "TEMPO_STATE" {
 			t.Errorf("guided UI used undeclared default dependency %s", key)
 		}
 		return ""
 	}})
+	if _, err := os.Stat(filepath.Dir(preferences)); !errors.Is(err, os.ErrNotExist) {
+		t.Error("guided Setup without Appearance selection initialized private preferences")
+	}
 	cancel(nil)
 	signal.Stop(signals)
 	<-signalDone

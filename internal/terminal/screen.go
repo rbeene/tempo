@@ -66,7 +66,10 @@ func (s *Session) EnterScreen(ctx context.Context) error {
 
 // Draw accepts only trusted, sanitized and width-bounded renderer lines.
 func (s *Session) Draw(ctx context.Context, lines []string) error {
-	return s.write(ctx, "\x1b[H\x1b[J"+strings.Join(lines, "\r\n"))
+	// Reset inherited attributes, then establish this frame's normal base
+	// before erasing. The trusted blank span restores the immutable styler's
+	// base; homing again erases that blank along with the previous frame.
+	return s.write(ctx, "\x1b[0m\x1b[H"+s.paint(RoleText, " ")+"\x1b[H\x1b[J"+strings.Join(lines, "\r\n"))
 }
 
 // ensurePaste is shared by full-screen and finite prompts. It is acquired before
