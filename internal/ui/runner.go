@@ -42,7 +42,8 @@ type Options struct {
 	Refresh <-chan time.Time
 }
 
-// Run presents read-only project timers. The caller supplies Session.Context.
+// Run presents authoritative timers and explicit shared-service controls. The
+// caller supplies Session.Context; opening or refreshing performs local reads.
 func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Options) (err error) {
 	ctx, cancel := context.WithCancelCause(ctx)
 	var workers sync.WaitGroup

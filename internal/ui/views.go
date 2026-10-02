@@ -40,7 +40,7 @@ func showView(ctx context.Context, view localView, snapshot activity.ActivitySna
 	case timerDetails:
 		return p.View(ctx, "Timer details", timerDetail(snapshot, key, selected))
 	case helpView:
-		return p.View(ctx, "Help", "Enter: inspect selected timer and immutable attribution\n2 Links: search local mappings and inspect full scope\nl Links actions: create, repair or unlink a reviewed mapping\n3 Sync: inspect upload queue and exact accounting\n, Setup: inspect local readiness\nUp/Down: select timer or scroll details\nr: refresh authoritative local activity\nEscape: close the current modal or quit from the dashboard\nq: quit only from dashboard navigation; search text inside pickers\nPaste never submits or confirms a form\nResize to at least 40x8 to use forms\nJob suspension is unavailable; quit normally instead.")
+		return p.View(ctx, "Help", "Enter: inspect selected timer and immutable attribution\n2 Links: search local mappings and inspect full scope\nl Links actions: create, repair or unlink a reviewed mapping\nx Activity: inspect actors, review timing or capture warnings\na Accounts and auth: inspect, verify or explicitly change credentials/account\n3 Sync: inspect upload queue and exact accounting\n, Setup: inspect local readiness\nUp/Down: select timer or scroll details\nr: refresh authoritative local activity\nEscape: close the current modal or quit from the dashboard\nq: quit only from dashboard navigation; search text inside pickers\nPaste never submits or confirms a form\nResize to at least 40x8 to use forms\nJob suspension is unavailable; quit normally instead.")
 	case linksView:
 		if views == nil || views.Links == nil {
 			return p.View(ctx, "Links", "Local links unavailable.")

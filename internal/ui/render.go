@@ -93,7 +93,7 @@ func (m *Model) Render(styler terminal.Styler) []string {
 	if width < 60 {
 		add(terminal.RoleKey, "? Help  ↑/↓ Select  r Refresh  q Quit")
 	} else {
-		add(terminal.RoleKey, "? Help  2 Links  l Actions  3 Sync  , Setup  Enter Details  r Refresh  q Quit")
+		add(terminal.RoleKey, "? Help  a Auth  x Activity  l Actions  2 Links  3 Sync  , Setup  r  q Quit")
 	}
 	return lines
 }
