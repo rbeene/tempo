@@ -121,10 +121,12 @@ def download_runtime(root, pin):
 
 
 def claude_argv(runtime, project):
+    require(project.is_absolute() and re.fullmatch(r'[A-Za-z0-9/_-]+', str(project)), 'unsafe_fixture_path')
     agents = {'tempo-fixture-child': {'description': 'Synthetic lifecycle child',
               'prompt': 'Complete the supplied synthetic lifecycle case.',
               'tools': ['Read'], 'model': MODEL, 'background': True}}
     return [str(runtime), '--print', '--setting-sources', 'project,local', '--tools', 'Read,Agent',
+            '--allowedTools', f'Read(/{project / "fixture.txt"}),Agent',
             '--strict-mcp-config', '--mcp-config', str(project / 'mcp.json'), '--no-session-persistence',
             '--model', MODEL, '--max-turns', '4', '--agents', json.dumps(agents), PARENT_PROMPT]
 
@@ -200,30 +202,85 @@ def request_case(body):
     raise FixtureFailure('unexpected_provider_turn')
 
 
+AGENT_ERROR_VOCABULARY = {
+    'model': ('model', 'models', 'model_access'),
+    'validation': ('validation', 'invalid', 'schema', 'parameter', 'parameters', 'argument',
+                   'arguments', 'required', 'inputvalidationerror'),
+    'permission': ('permission', 'permissions', 'approval', 'denied', 'rejected', 'allowlist'),
+    'session': ('session', 'sessions', 'diskless', 'persistence'),
+    'background': ('background', 'run_in_background', 'asynchronous', 'concurrent', 'nesting'),
+    'api': ('api', 'authentication_error', 'permission_error', 'invalid_request_error',
+            'rate_limit_error', 'connection', 'timed out'),
+}
+AGENT_ERROR_SUFFIXES = frozenset((
+    'too_many_blocks', 'unsupported_content', 'no_text', 'oversized_text', 'empty_text',
+    'permission', 'type_unavailable', 'executor_unavailable', 'depth_limit', 'concurrency_limit',
+    'background_unavailable', 'input_validation', 'hook_stopped', 'cancelled', 'diskless_output',
+    'cwd_unavailable', 'runtime_type_task_registry', 'runtime_type_tool_catalog',
+    'runtime_type_agent_lifecycle', 'runtime_type_system_prompt', 'runtime_type_project_context',
+    'runtime_type_session_scratch', 'runtime_type_other', 'runtime_reference', 'filesystem',
+    'dispatch_exception', 'unclassified_text_string', 'unclassified_text_blocks',
+))
+
+
+def project_error_domains(domains):
+    return {key: domains.get(key) is True for key in AGENT_ERROR_VOCABULARY}
+
+
+class AgentToolFailure(FixtureFailure):
+    def __init__(self, category, domains):
+        allowed = {'agent_tool_error_' + suffix for suffix in AGENT_ERROR_SUFFIXES}
+        super().__init__(category if isinstance(category, str) and category in allowed
+                         else 'agent_tool_error_unclassified_text_string')
+        self.domains = project_error_domains(domains if isinstance(domains, dict) else {})
+
+
+def bounded_agent_error_text(content):
+    """Share exact extraction bounds between category and lexical diagnostics."""
+    if isinstance(content, str):
+        parts, shape = [content], 'string'
+    elif isinstance(content, list):
+        if len(content) > 128:
+            return None, 'agent_tool_error_too_many_blocks'
+        parts = [v['text'] for v in content if isinstance(v, dict)
+                 and v.get('type') == 'text' and isinstance(v.get('text'), str)]
+        shape = 'blocks'
+    else:
+        return None, 'agent_tool_error_unsupported_content'
+    if not parts:
+        return None, 'agent_tool_error_no_text'
+    if sum(len(v) for v in parts) > 16384:
+        return None, 'agent_tool_error_oversized_text'
+    text = '\n'.join(parts)
+    if not text.strip():
+        return None, 'agent_tool_error_empty_text'
+    return text, shape
+
+
+def agent_error_domains(content):
+    """Six nonexclusive lexical hints from pinned source, never error causes.
+
+    Only these booleans leave memory: no text, captures, positions or counts.
+    Vocabulary comes from 2.1.286 Agent, dispatch, permission and API errors.
+    """
+    text, _ = bounded_agent_error_text(content)
+    if text is None:
+        return project_error_domains({})
+    text = text.lower()
+    return {key: re.search(r'(?<![a-z0-9_-])(?:' + '|'.join(map(re.escape, words))
+                           + r')(?![a-z0-9_-])', text) is not None
+            for key, words in AGENT_ERROR_VOCABULARY.items()}
+
+
 def agent_error_category(content):
     """Classify bounded error text in memory; never return text or captures.
 
     These fixed fragments come from the pinned 2.1.286 Agent launch and tool
     permission paths. They are diagnostic hints only, never success evidence.
     """
-    if isinstance(content, str):
-        parts = [content]
-        shape = 'string'
-    elif isinstance(content, list):
-        if len(content) > 128:
-            return 'agent_tool_error_too_many_blocks'
-        parts = [v['text'] for v in content if isinstance(v, dict)
-                 and v.get('type') == 'text' and isinstance(v.get('text'), str)]
-        shape = 'blocks'
-    else:
-        return 'agent_tool_error_unsupported_content'
-    if not parts:
-        return 'agent_tool_error_no_text'
-    if sum(len(v) for v in parts) > 16384:
-        return 'agent_tool_error_oversized_text'
-    text = '\n'.join(parts)
-    if not text.strip():
-        return 'agent_tool_error_empty_text'
+    text, shape = bounded_agent_error_text(content)
+    if text is None:
+        return shape
     # The native permission formatter interpolates a tool label/rule/reason.
     # Match only its static fragments within this already-correlated Agent error.
     if ("but you haven't granted it yet." in text
@@ -283,8 +340,10 @@ def require_tool_result(body, tool_id, marker=None):
     is_error = matches[0].get('is_error', False)
     require(type(is_error) is bool, 'actual_tool_result_invalid_error_flag')
     if is_error:
-        raise FixtureFailure(agent_error_category(matches[0].get('content'))
-                             if tool_id == 'tempo-agent' else 'actual_tool_result_error')
+        if tool_id == 'tempo-agent':
+            content = matches[0].get('content')
+            raise AgentToolFailure(agent_error_category(content), agent_error_domains(content))
+        raise FixtureFailure('actual_tool_result_error')
     if marker is not None:
         require(marker in '\n'.join(text_blocks(matches[0].get('content', []))), 'actual_read_result_missing')
 
@@ -328,6 +387,7 @@ class Conversation:
         self.phase = 'initial'
         self.counts, self.requests = {}, []
         self.independence_observed = False
+        self.error_domains = None
 
     def respond(self, body):
         require(body.get('stream') is True and body.get('model') == MODEL, 'provider_request_contract')
@@ -370,7 +430,12 @@ class Conversation:
                                   'prompt': CHILD_PROMPT, 'subagent_type': 'tempo-fixture-child', 'run_in_background': True})
                 self.phase, hold = 'agent', False
             elif self.phase == 'agent':
-                require_tool_result(body, 'tempo-agent')
+                try:
+                    require_tool_result(body, 'tempo-agent')
+                except AgentToolFailure as exc:
+                    if self.error_domains is None:
+                        self.error_domains = project_error_domains(exc.domains)
+                    raise
                 for kind in ('PreToolUse', 'PostToolUse'):
                     exact_receipt(rows, kind, self.session, self.turn, '', 'tempo-agent')
                 block, hold = {'type': 'text', 'text': 'tempo-parent-complete'}, False
@@ -664,8 +729,8 @@ def run(args, report):
         report['stage'] = 'runtime_version'
         require_runtime_version(bounded_run([str(runtime), '--version'], env, project, timeout=8))
         require(provider.budget.requests == 0 and provider.error is None, 'unexpected_version_inference')
-        # Profile hashes the ordinary settings exactly; there is no trust record,
-        # installer shortcut, permission allow rule, or callback injection.
+        # Profile hashes ordinary settings. Print uses explicit fixture tool
+        # approval, with no trust record, installer shortcut or callback injection.
         report['stage'] = 'native_print_turn'
         bounded_run(claude_argv(runtime, project), env, project, timeout=110)
         report['stage'] = 'native_terminal_receipts'
@@ -684,6 +749,8 @@ def run(args, report):
             try:
                 if provider is not None: report['provider_entry_count'] = min(provider.budget.requests, 9)
                 if conversation is not None:
+                    if conversation.error_domains is not None:
+                        report['agent_error_domains'] = project_error_domains(conversation.error_domains)
                     report['request_counts'] = conversation.counts
                     report['requests'] = conversation.requests
                     if 'receipts' not in report:

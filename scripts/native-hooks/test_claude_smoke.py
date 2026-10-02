@@ -105,13 +105,14 @@ class IsolationTests(unittest.TestCase):
              mock.patch('pathlib.Path.write_text', side_effect=AssertionError('write')):
             spec.loader.exec_module(importlib.util.module_from_spec(spec))
 
-    def test_normal_print_argv_has_no_permission_grants(self):
+    def test_normal_print_argv_has_only_exact_fixture_tool_preapproval(self):
         argv = smoke.claude_argv(Path('/tmp/claude'), Path('/tmp/project'))
         self.assertIn('--print', argv); self.assertIn('--no-session-persistence', argv)
         self.assertEqual(argv[argv.index('--setting-sources')+1], 'project,local')
         self.assertEqual(argv[argv.index('--tools')+1], 'Read,Agent')
+        self.assertEqual(argv[argv.index('--allowedTools')+1], 'Read(//tmp/project/fixture.txt),Agent')
         self.assertIn('--strict-mcp-config', argv)
-        for forbidden in ('--bare', '--safe-mode', '--allowedTools', '--permission-mode', '--dangerously-skip-permissions'):
+        for forbidden in ('--bare', '--safe-mode', '--permission-mode', '--dangerously-skip-permissions'):
             self.assertNotIn(forbidden, argv)
 
 
@@ -544,5 +545,183 @@ class AcceptanceTests(unittest.TestCase):
             provider=types.SimpleNamespace(error=None,budget=smoke.ProviderBudget())
             smoke.make_handler(provider)(Socket(data),('127.0.0.1',1),types.SimpleNamespace())
             self.assertIsNotNone(provider.error)
+
+class NativeApprovalDiagnosticTests(unittest.TestCase):
+    KEYS = ('model', 'validation', 'permission', 'session', 'background', 'api')
+    VOCABULARY = {
+        'model': ('model', 'models', 'model_access'),
+        'validation': ('validation', 'invalid', 'schema', 'parameter', 'parameters', 'argument',
+                       'arguments', 'required', 'inputvalidationerror'),
+        'permission': ('permission', 'permissions', 'approval', 'denied', 'rejected', 'allowlist'),
+        'session': ('session', 'sessions', 'diskless', 'persistence'),
+        'background': ('background', 'run_in_background', 'asynchronous', 'concurrent', 'nesting'),
+        'api': ('api', 'authentication_error', 'permission_error', 'invalid_request_error',
+                'rate_limit_error', 'connection', 'timed out'),
+    }
+
+    def domains(self, *enabled):
+        return {key: key in enabled for key in self.KEYS}
+
+    def agent_model(self):
+        rows = [receipt('SessionStart'), receipt('UserPromptSubmit')]
+        snap = snapshot(rows)
+        model = smoke.Conversation(lambda: snap, Path('/tmp/project'))
+        read, hold = model.respond(request())
+        self.assertEqual(read, {'type': 'tool_use', 'id': 'tempo-read', 'name': 'Read',
+                                'input': {'file_path': '/tmp/project/fixture.txt'}})
+        self.assertFalse(hold)
+        rows.extend([receipt('PreToolUse', tool='tempo-read'), receipt('PostToolUse', tool='tempo-read')])
+        child, hold = model.respond(request(results=[result('tempo-read')]))
+        self.assertEqual(child, {'type': 'tool_use', 'id': 'tempo-agent', 'name': 'Agent', 'input': {
+            'description': 'Synthetic lifecycle child', 'prompt': smoke.CHILD_PROMPT,
+            'subagent_type': 'tempo-fixture-child', 'run_in_background': True}})
+        self.assertFalse(hold)
+        rows.extend([receipt('PreToolUse', tool='tempo-agent'), receipt('PostToolUse', tool='tempo-agent')])
+        return model
+
+    def test_exact_argv_and_rejected_rule_paths(self):
+        project = Path('/tmp/tempo-fixture/project')
+        argv = smoke.claude_argv(Path('/tmp/runtime'), project)
+        agents = {'tempo-fixture-child': {'description': 'Synthetic lifecycle child',
+                  'prompt': 'Complete the supplied synthetic lifecycle case.', 'tools': ['Read'],
+                  'model': smoke.MODEL, 'background': True}}
+        self.assertEqual(argv, ['/tmp/runtime', '--print', '--setting-sources', 'project,local',
+            '--tools', 'Read,Agent', '--allowedTools', 'Read(//tmp/tempo-fixture/project/fixture.txt),Agent',
+            '--strict-mcp-config', '--mcp-config', str(project / 'mcp.json'), '--no-session-persistence',
+            '--model', smoke.MODEL, '--max-turns', '4', '--agents', json.dumps(agents), smoke.PARENT_PROMPT])
+        for path in ('relative', '/tmp/private path', '/tmp/private,Agent', '/tmp/private(*)',
+                     '/tmp/private*', '/tmp/private\ncanary', '/tmp/private\\canary', '/tmp/private?'):
+            with self.subTest(path=path), self.assertRaises(smoke.FixtureFailure):
+                smoke.claude_argv(Path('/tmp/runtime'), Path(path))
+
+    def test_provider_blocks_are_complete_fixed_fixture_invocations(self):
+        model = self.agent_model()
+        self.assertEqual(model.phase, 'agent')
+        self.assertEqual(model.counts, {'parent': 2})
+
+    def test_closed_domain_vocabulary_has_fixed_boolean_schema_and_identifier_boundaries(self):
+        for domain, words in self.VOCABULARY.items():
+            for word in words:
+                with self.subTest(domain=domain, word=word):
+                    actual = smoke.agent_error_domains('PRIVATE_CANARY: (' + word.upper() + ').')
+                    self.assertEqual(list(actual), list(self.KEYS))
+                    self.assertTrue(all(type(value) is bool for value in actual.values()))
+                    self.assertEqual(actual, self.domains(domain))
+        self.assertEqual(smoke.agent_error_domains('invalid model approval in diskless background API'), self.domains(*self.KEYS))
+        for text in ('PRIVATE_CANARY', 'modelName', 'private-model-canary', 'model_access_extra',
+                     'sessionScratch', 'backgrounded', 'permissions_extra', 'schema2', 'api_key_private'):
+            with self.subTest(text=text):
+                self.assertEqual(smoke.agent_error_domains(text), self.domains())
+
+    def test_domain_bounds_and_mixed_content_preserve_shape_categories(self):
+        self.assertEqual(smoke.agent_error_domains('model ' + 'x' * 16378), self.domains('model'))
+        self.assertEqual(smoke.agent_error_domains('model ' + 'x' * 16379), self.domains())
+        blocks = [{'type': 'text', 'text': ''}] * 127 + [{'type': 'text', 'text': 'model'}]
+        self.assertEqual(smoke.agent_error_domains(blocks), self.domains('model'))
+        self.assertEqual(smoke.agent_error_domains(blocks + [{'type': 'text', 'text': 'permission'}]), self.domains())
+        mixed = [None, 42, {'type': 'image', 'text': 'model PRIVATE_CANARY'},
+                 {'type': 'text', 'text': False}, {'type': 'text', 'text': 'permission'}]
+        self.assertEqual(smoke.agent_error_domains(mixed), self.domains('permission'))
+        malformed = [(None, 'unsupported_content'), ({'text': 'model'}, 'unsupported_content'),
+                     ([], 'no_text'), ([{'type': 'text', 'text': False}], 'no_text'),
+                     (' ', 'empty_text'), ('model ' + 'x' * 16379, 'oversized_text'),
+                     (blocks + [{'type': 'text', 'text': 'permission'}], 'too_many_blocks')]
+        for content, category in malformed:
+            with self.subTest(category=category):
+                self.assertEqual(smoke.agent_error_domains(content), self.domains())
+                bad = dict(result('tempo-agent'), is_error=True, content=content)
+                with self.assertRaises(smoke.AgentToolFailure) as failure:
+                    smoke.require_tool_result(request(results=[bad]), 'tempo-agent')
+                self.assertEqual(str(failure.exception), 'agent_tool_error_' + category)
+                self.assertEqual(failure.exception.domains, self.domains())
+
+    def test_agent_failure_constructor_and_first_error_retention_never_expose_raw_input(self):
+        forged = smoke.AgentToolFailure('PRIVATE_CANARY', {'model': 1, 'permission': True, 'PRIVATE_CANARY': 'PRIVATE_CANARY'})
+        self.assertIsInstance(forged, smoke.FixtureFailure)
+        self.assertEqual(str(forged), 'agent_tool_error_unclassified_text_string')
+        self.assertEqual(forged.domains, self.domains('permission'))
+        self.assertNotIn('PRIVATE_CANARY', repr(forged))
+        self.assertNotIn('PRIVATE_CANARY', json.dumps(forged.domains))
+        prefixed = smoke.AgentToolFailure('agent_tool_error_PRIVATE_CANARY', None)
+        self.assertEqual(str(prefixed), 'agent_tool_error_unclassified_text_string')
+        self.assertEqual(prefixed.domains, self.domains())
+        model = self.agent_model()
+        self.assertIsNone(model.error_domains)
+        for index, text in enumerate(('unrecognized model PRIVATE_CANARY', 'permission session PRIVATE_CANARY')):
+            bad = dict(result('tempo-agent'), is_error=True, content=text)
+            with self.assertRaises(smoke.AgentToolFailure) as failure:
+                model.respond(request(results=[bad]))
+            self.assertNotIn('PRIVATE_CANARY', str(failure.exception))
+            self.assertEqual(model.error_domains, self.domains('model'))
+            self.assertEqual(model.phase, 'agent')
+            self.assertEqual(model.counts, {'parent': 2})
+        for text in ('PRIVATE_CANARY', 'model validation permission session background api PRIVATE_CANARY'):
+            bad = dict(result('tempo-agent'), is_error=True, content=text)
+            with self.assertRaises(smoke.AgentToolFailure):
+                smoke.require_tool_result(request(results=[bad]), 'tempo-agent')
+
+    def test_actual_run_finally_exports_only_retained_fixed_domains(self):
+        for fail_agent in (False, True):
+            with self.subTest(fail_agent=fail_agent), tempfile.TemporaryDirectory(prefix='tempo-approval-qa-') as tmp:
+                fixture = Path(tmp).resolve()
+                root, home = fixture / 'owned', fixture / 'home'
+                home.mkdir()
+                runtime, tempo, helper = (fixture / name for name in ('runtime', 'tempo', 'helper'))
+                for path in (runtime, tempo, helper):
+                    path.write_text('inert file')
+                model = self.agent_model()
+                if fail_agent:
+                    bad = dict(result('tempo-agent'), is_error=True, content='novel model PRIVATE_CANARY')
+                    with self.assertRaises(smoke.AgentToolFailure) as caught:
+                        model.respond(request(results=[bad]))
+                    failure = caught.exception
+                    # Fault injection at the report boundary must not permit
+                    # copied dynamic keys or bool-like native values to escape.
+                    model.error_domains.update({'PRIVATE_CANARY': 'PRIVATE_CANARY', 'api': 1})
+                else:
+                    failure = smoke.FixtureFailure('fixture_cancelled')
+                model.read = lambda: {'receipts': []}
+                provider = types.SimpleNamespace(server=types.SimpleNamespace(server_port=43210),
+                    budget=types.SimpleNamespace(requests=0), error=None, close=lambda: None)
+                def bounded(argv, *_args, **_kwargs):
+                    if argv[0] == str(runtime):
+                        if argv[1:] == ['--version']:
+                            return b'2.1.286 (Claude Code)\n'
+                        raise failure
+                    action = argv[2]
+                    if action == 'confirm':
+                        return json.dumps({'basis': 'operator_declared', 'fingerprint': 'a' * 64}).encode()
+                    if action == 'read':
+                        return b'{"receipts":[]}'
+                    self.assertEqual(action, 'link')
+                    return b''
+                def owned_root(**_kwargs):
+                    root.mkdir()
+                    return str(root)
+                real_home = os.environ['HOME']
+                def boundary_path(value):
+                    return home if str(value) == real_home else Path(value)
+                report = {}
+                with mock.patch.dict(os.environ, {'RUNNER_TEMP': str(fixture), 'GITHUB_SHA': 'd' * 40}), \
+                     mock.patch.object(smoke, 'Path', side_effect=boundary_path), \
+                     mock.patch.object(smoke, 'hosted_precondition'), mock.patch.object(smoke, 'require_absent'), \
+                     mock.patch.object(smoke, 'child_environment', return_value={'TEMPO_STATE': str(root / 'state'), 'TEMPO_HOOK_STATE': str(root / 'policy')}), \
+                     mock.patch.object(smoke.tempfile, 'mkdtemp', side_effect=owned_root), \
+                     mock.patch.object(smoke, 'download_runtime', return_value=runtime), \
+                     mock.patch.object(smoke, 'bounded_run', side_effect=bounded), \
+                     mock.patch.object(smoke, 'Conversation', return_value=model), \
+                     mock.patch.object(smoke, 'Provider', return_value=provider):
+                    with self.assertRaises(smoke.FixtureFailure):
+                        smoke.run(types.SimpleNamespace(tempo=str(tempo), helper=str(helper)), report)
+                if fail_agent:
+                    self.assertEqual(report['agent_error_domains'], self.domains('model'))
+                    self.assertEqual(list(report['agent_error_domains']), list(self.KEYS))
+                else:
+                    self.assertNotIn('agent_error_domains', report)
+                self.assertNotIn('PRIVATE_CANARY', json.dumps(report))
+                self.assertNotEqual(report.get('status'), 'passed')
+                self.assertEqual(os.environ['HOME'], real_home)
+                self.assertFalse(root.exists())
+
 
 if __name__=='__main__':unittest.main()
