@@ -93,7 +93,11 @@ func exitCode(code string) int {
 // Run never exits the process. Dependencies permit tests without personal config,
 // OS credential access or real API requests. Writes are explicit commands only.
 func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer, d Dependencies) int {
-	jsonMode := wantsJSON(args) || wantsLocalJSON(args)
+	eligible := terminal.Eligible
+	if d.TerminalEligible != nil {
+		eligible = d.TerminalEligible
+	}
+	jsonMode := wantsJSON(args) || wantsLocalJSON(args, !eligible(in, out))
 	p, err := parse(args)
 	if (strings.HasPrefix(p.command.Name, "activity ") || linkCommand(p.command.Name)) && p.flags["non-interactive"] == "true" {
 		jsonMode = true
@@ -109,10 +113,6 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 		err = validate(&p, d.Now())
 		if err == nil {
 			if guidedCommand(p.command.Name) {
-				eligible := terminal.Eligible
-				if d.TerminalEligible != nil {
-					eligible = d.TerminalEligible
-				}
 				interactive := eligible(in, out) && p.flags["json"] != "true" && p.flags["non-interactive"] != "true"
 				if !interactive {
 					jsonMode = true
@@ -204,7 +204,7 @@ func printHelp(w io.Writer) {
 			fmt.Fprintln(w)
 		}
 	}
-	fmt.Fprintln(w, "\nUse tempo schema for types, result envelopes, exit codes and environment inputs.\nDestructive commands require --yes. No command prompts for secrets.\nLogin: obtain a personal token at https://id.getharvest.com/developers and pass it via stdin.\nSee docs/commands.md for examples and safe secret input.")
+	fmt.Fprintln(w, "\nUse tempo schema for types, result envelopes, exit codes and environment inputs.\nDestructive commands require --yes. Eligible interactive setup offers hidden secret input.\nUse --json or --non-interactive to disable prompts.\nLogin: obtain a personal token at https://id.getharvest.com/developers and pass it via stdin.\nSee docs/commands.md for examples and safe secret input.")
 }
 
 func validate(p *parsed, now time.Time) error {

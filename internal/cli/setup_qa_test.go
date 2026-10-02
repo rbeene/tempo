@@ -361,3 +361,62 @@ func TestQACLITerminalFailureHasSafeDiagnostic(t *testing.T) {
 		t.Fatal("terminal error leaked secret")
 	}
 }
+func TestQASetupDoctorNoninteractiveParseFailuresStayJSON(t *testing.T) {
+	for _, command := range []string{"setup", "doctor"} {
+		for _, invalid := range [][]string{{"--account", "0"}, {"--unknown-option"}} {
+			t.Run(command+strings.Join(invalid, "-"), func(t *testing.T) {
+				dir := t.TempDir()
+				var out, stderr bytes.Buffer
+				args := append([]string{command, "--non-interactive"}, invalid...)
+				code := cli.Run(context.Background(), args, qaNeverRead{t}, &out, &stderr, cli.Dependencies{Store: qaForbiddenLegacyStore{t}, ConfigPath: filepath.Join(dir, "cfg"), Getenv: func(string) string { t.Fatal("parse failure read environment"); return "" }, Prompter: qaForbiddenPrompt{t}, TerminalEligible: func(io.Reader, io.Writer) bool { return true }})
+				if code != 2 || out.Len() != 0 {
+					t.Fatalf("wrong parse failure exit=%d out=%s", code, out.String())
+				}
+				var env map[string]any
+				if e := json.Unmarshal(stderr.Bytes(), &env); e != nil || env["schema_version"] != float64(1) || env["error"] == nil {
+					t.Fatalf("forced machine parse failure not one envelope: %q %v", stderr.String(), e)
+				}
+				if strings.Contains(stderr.String(), "\x1b") {
+					t.Fatal("ANSI in parse error")
+				}
+			})
+		}
+	}
+}
+func TestQACLIUnsupportedPersistencePreservesSignalExit(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(&terminal.ExitError{Code: 130})
+	a := auth.NewService(auth.Options{ConfigPath: filepath.Join(dir, "cfg"), LockPath: filepath.Join(dir, "owner.lock"), Getenv: func(k string) string {
+		if k == "HARVEST_TOKEN" {
+			return "synthetic-qa-secret"
+		}
+		if k == "HARVEST_ACCOUNT_ID" {
+			return "11"
+		}
+		return ""
+	}, PersistentAvailable: func() bool { return false }, Runner: auth.RunnerFunc(func(context.Context, auth.NativeRequest, *os.File) (auth.NativeReply, error) {
+		t.Fatal("canceled environment workflow invoked native")
+		return auth.NativeReply{}, nil
+	})})
+	var out, stderr bytes.Buffer
+	code := cli.Run(ctx, []string{"setup", "--path", dir}, strings.NewReader(""), &out, &stderr, cli.Dependencies{Auth: a, Activity: activity.New(activity.Options{Path: filepath.Join(dir, "activity", "state")}), ConfigPath: filepath.Join(dir, "cfg"), Getenv: func(string) string { return "" }, Prompter: qaForbiddenPrompt{t}, TerminalEligible: func(io.Reader, io.Writer) bool { return true }})
+	if code != 130 {
+		t.Fatalf("native-unavailable platform swallowed signal: exit=%d out=%s err=%s", code, out.String(), stderr.String())
+	}
+}
+func TestQAGuidedRedirectedParseFailuresStayJSON(t *testing.T) {
+	for _, command := range []string{"setup", "doctor", "link"} {
+		t.Run(command, func(t *testing.T) {
+			var out, stderr bytes.Buffer
+			code := cli.Run(context.Background(), []string{command, "--unknown-option"}, qaNeverRead{t}, &out, &stderr, cli.Dependencies{Store: qaForbiddenLegacyStore{t}, ConfigPath: filepath.Join(t.TempDir(), "cfg"), Getenv: func(string) string { t.Fatal("redirected parse failure read environment"); return "" }, Prompter: qaForbiddenPrompt{t}, TerminalEligible: func(io.Reader, io.Writer) bool { return false }})
+			if code != 2 || out.Len() != 0 {
+				t.Fatalf("parse result exit=%d out=%s", code, out.String())
+			}
+			var envelope map[string]any
+			if e := json.Unmarshal(stderr.Bytes(), &envelope); e != nil || envelope["schema_version"] != float64(1) || envelope["error"] == nil {
+				t.Fatalf("redirected parse failure not one envelope: %q", stderr.String())
+			}
+		})
+	}
+}

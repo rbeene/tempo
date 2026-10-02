@@ -222,7 +222,7 @@ func wantsJSON(args []string) bool {
 
 // Determine forced local output even when parsing later fails, while treating
 // option values (including Harvest notes containing "activity") as literals.
-func wantsLocalJSON(args []string) bool {
+func wantsLocalJSON(args []string, redirected bool) bool {
 	options := optionTypes()
 	first := ""
 	forced := false
@@ -245,5 +245,5 @@ func wantsLocalJSON(args []string) bool {
 			first = token
 		}
 	}
-	return (first == "activity" || first == "link" || first == "links") && forced
+	return (first == "activity" || first == "link" || first == "links" || first == "setup" || first == "doctor") && forced || (first == "setup" || first == "doctor" || first == "link") && redirected
 }

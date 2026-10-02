@@ -10,6 +10,11 @@ import (
 )
 
 func unchanged() Effects { return Effects{"unchanged", "unchanged"} }
+
+// ErrPersistenceUnavailable identifies absent native storage after environment lookup.
+// Its ordinary CLI classification remains keychain; unrelated provider errors differ.
+var ErrPersistenceUnavailable = issue("keychain", unchanged())
+
 func issue(code string, effects Effects) *Error {
 	messages := map[string]string{"auth": "no valid token configured; connect securely or use HARVEST_TOKEN", "keychain": "secure credential storage is unavailable; unlock it locally or use HARVEST_TOKEN", "validation": "check the supplied token and account selection", "confirmation_required": "this action requires explicit confirmation", "config": "could not save account configuration; inspect config show", "forbidden": "selected Harvest account is not accessible", "input_required": "an explicit account selection is required", "credential_write_unknown": "credential operation may have applied; inspect auth status and config show before an explicit replacement; do not retry automatically", "state_busy": "another authentication operation is active; try again after it completes", "response": "credential helper returned an invalid response"}
 	msg := messages[code]
@@ -94,7 +99,7 @@ func (s *Service) resolve(ctx context.Context, lock *os.File) (string, string, e
 		return v, "environment", nil
 	}
 	if !s.CanPersist() {
-		return "", "", issue("keychain", unchanged())
+		return "", "", ErrPersistenceUnavailable
 	}
 	r, e := s.options.Runner.Run(ctx, NativeRequest{Operation: "read"}, lock)
 	if e != nil {

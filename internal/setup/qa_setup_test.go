@@ -488,3 +488,52 @@ func TestQAGuidedChildBindingDoesNotReuseInheritedParentRevision(t *testing.T) {
 		}
 	}
 }
+
+type qaUnavailableBackendProvider struct {
+	harvest.Provider
+	failure error
+}
+
+func (p qaUnavailableBackendProvider) Accounts(context.Context) ([]harvest.Object, error) {
+	return nil, p.failure
+}
+func TestQAUnsupportedPersistencePreservesEnvironmentAuthFailures(t *testing.T) {
+	for _, code := range []string{"network", "forbidden", "keychain", "cancel"} {
+		t.Run(code, func(t *testing.T) {
+			dir := t.TempDir()
+			ctx, cancel := context.WithCancelCause(context.Background())
+			defer cancel(nil)
+			failure := error(&harvest.Error{Code: code, Message: "safe synthetic failure"})
+			if code == "cancel" {
+				cancel(&terminal.ExitError{Code: 130})
+				failure = context.Canceled
+			}
+			a := auth.NewService(auth.Options{ConfigPath: filepath.Join(dir, "cfg"), LockPath: filepath.Join(dir, "owner.lock"), Getenv: func(k string) string {
+				if k == "HARVEST_TOKEN" {
+					return "synthetic-qa-secret"
+				}
+				if k == "HARVEST_ACCOUNT_ID" {
+					return "11"
+				}
+				return ""
+			}, PersistentAvailable: func() bool { return false }, NewProvider: func(string, string) harvest.Provider { return qaUnavailableBackendProvider{failure: failure} }, Runner: auth.RunnerFunc(func(context.Context, auth.NativeRequest, *os.File) (auth.NativeReply, error) {
+				t.Fatal("environment auth invoked unsupported backend")
+				return auth.NativeReply{}, nil
+			})})
+			p := &qaWizardPrompt{t: t}
+			_, e := New(Options{Auth: a, Activity: activity.New(activity.Options{Path: filepath.Join(dir, "activity", "state")})}).Run(ctx, Input{Path: dir}, p)
+			if e == nil {
+				t.Fatalf("unsupported storage swallowed environment %s failure", code)
+			}
+			if code == "cancel" && !errors.Is(e, context.Canceled) {
+				var ended *terminal.ExitError
+				if !errors.As(e, &ended) || ended.Code != 130 {
+					t.Fatalf("cancellation lost %v", e)
+				}
+			}
+			if p.secretCalls+p.confirmCalls+p.chooseCalls != 0 {
+				t.Fatal("failed environment authentication started secret workflow")
+			}
+		})
+	}
+}

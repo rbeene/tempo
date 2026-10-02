@@ -230,7 +230,7 @@ func (s *Service) Run(ctx context.Context, in Input, p terminal.Prompter) (Statu
 	}
 	loginCommitted := false
 	status, e := bounded(ctx, func(c context.Context) (auth.Result, error) { return s.options.Auth.Status(c, true, in.AccountID) })
-	if e != nil && !s.options.Auth.CanPersist() {
+	if errors.Is(e, auth.ErrPersistenceUnavailable) {
 		result.Steps[0] = Step{"auth.login", "unsupported", []string{}, "Set HARVEST_TOKEN locally; secure token storage is unavailable on this platform."}
 		return result, nil
 	}
