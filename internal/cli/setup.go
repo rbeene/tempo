@@ -58,6 +58,11 @@ func executeGuided(ctx context.Context, p parsed, in io.Reader, out io.Writer, d
 					err = &terminal.ExitError{Code: 1}
 				}
 			}()
+			appearance := presentation(session.Context(), d, out, out)
+			if appearance.err != nil {
+				return nil, &terminal.ExitError{Code: 1}
+			}
+			session.SetStyler(appearance.styler)
 			prompt = session
 			ctx = session.Context()
 		}

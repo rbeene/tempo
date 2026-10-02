@@ -28,17 +28,7 @@ func presentation(ctx context.Context, d Dependencies, destination, warnings io.
 
 func themePresentation(ctx context.Context, d Dependencies, destination, warnings io.Writer, id string) prose {
 	p := prose{w: destination}
-	getenv := d.Getenv
-	if getenv == nil {
-		getenv = os.Getenv
-	}
-	tty := false
-	if d.OutputTTY != nil {
-		tty = d.OutputTTY(destination)
-	} else if f, ok := destination.(*os.File); ok {
-		tty = term.IsTerminal(int(f.Fd()))
-	}
-	caps := themes.Capabilities{OutputTTY: tty, Term: getenv("TERM"), ColorTerm: getenv("COLORTERM"), NoColor: getenv("NO_COLOR")}
+	caps := outputCapabilities(d, destination)
 	if themes.ResolveColorMode(caps) == themes.ColorNone {
 		return p
 	}
@@ -53,6 +43,22 @@ func themePresentation(ctx context.Context, d Dependencies, destination, warning
 	p.styler, _ = themes.NewStyler(id, caps)
 	p.active = p.styler != nil && p.styler.Paint(terminal.RoleText, "x") != "x"
 	return p
+}
+
+// Output capability evidence is independent of input eligibility and shared by
+// finite prose, the existing prompt owner, and the activity dashboard.
+func outputCapabilities(d Dependencies, destination io.Writer) themes.Capabilities {
+	getenv := d.Getenv
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	tty := false
+	if d.OutputTTY != nil {
+		tty = d.OutputTTY(destination)
+	} else if f, ok := destination.(*os.File); ok {
+		tty = term.IsTerminal(int(f.Fd()))
+	}
+	return themes.Capabilities{OutputTTY: tty, Term: getenv("TERM"), ColorTerm: getenv("COLORTERM"), NoColor: getenv("NO_COLOR")}
 }
 
 func (p *prose) line(role terminal.Role, text string) {
