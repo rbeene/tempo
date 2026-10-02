@@ -13,6 +13,7 @@ import (
 	"github.com/rbeene/tempo/internal/activity"
 	"github.com/rbeene/tempo/internal/hooks"
 	"github.com/rbeene/tempo/internal/hookstate"
+	"github.com/rbeene/tempo/internal/worker"
 )
 
 // The margin is for process startup and the host's one-second Interrupt default.
@@ -38,6 +39,9 @@ func runHook(ctx context.Context, in io.Reader, out, errOut io.Writer, d Depende
 				service = activity.New(activity.Options{Path: d.Getenv("TEMPO_STATE"), HookPolicies: hookstate.New(hookstate.Options{Path: d.Getenv("TEMPO_HOOK_STATE")})})
 			}
 			result, err = service.IngestHost(ctx, event)
+			if err == nil && result.Durability == "committed" && (result.Disposition == "applied" || result.Disposition == "duplicate") {
+				notifyWorker(ctx, d, worker.Wake)
+			}
 		}
 	}
 	if err != nil {
