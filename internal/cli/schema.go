@@ -25,6 +25,7 @@ var commands = []Command{
 	{"sync pause", "Pause uploads locally without stopping capture", "", map[string]string{"request-id": "uuid"}, true},
 	{"sync resume", "Enable uploads locally; configuration remains explicit", "", map[string]string{"request-id": "uuid"}, true},
 	{"sync resolve", "Attach an existing entry or explicitly retry a definite rejection; requires revision and --yes", "UUID", map[string]string{"entry": "id", "retry-rejected": "bool", "if-revision": "counter", "request-id": "uuid"}, true},
+	{"hook codex", "Capture one native Codex lifecycle callback; emits host JSON", "", map[string]string{"input-stdin": "bool"}, true},
 	{"activity review", "List unresolved local timing uncertainty without credentials", "", map[string]string{"project": "id"}, false},
 	{"activity preview", "Preview a recovery end or discarded tail without changes", "UUID", map[string]string{"end": "utc", "discard-tail": "bool"}, false},
 	{"activity resolve", "Resolve uncertainty; requires revision, end/discard-tail and --yes", "UUID", map[string]string{"end": "utc", "discard-tail": "bool", "if-revision": "counter", "reason": "string", "request-id": "uuid"}, true},

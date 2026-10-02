@@ -4,6 +4,8 @@ package activity
 import (
 	"context"
 	"time"
+
+	"github.com/rbeene/tempo/internal/hookstate"
 )
 
 type Clock interface{ Sample() (ClockSample, error) }
@@ -17,6 +19,7 @@ type Options struct {
 	Clock          Clock
 	ResolveBinding BindingResolver
 	LockTimeout    time.Duration
+	HookPolicies   *hookstate.Service
 }
 type BindingResolver func(context.Context, Event) (BindingSnapshot, bool, error)
 type ActorKey struct {

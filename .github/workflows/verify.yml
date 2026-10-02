@@ -37,6 +37,8 @@ jobs:
       - run: sh scripts/test-install.sh
       - run: sh scripts/test-release-version.sh
       - run: python3 -B scripts/test-release-assets.py
+      - name: Native fixture safety and protocol tests (no host execution)
+        run: python3 -B scripts/native-hooks/test_codex_smoke.py
       - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
         with:
           version: v2.18.2
@@ -54,6 +56,19 @@ jobs:
           bin/tempo help
           bin/tempo schema > /tmp/tempo-schema.json
           cmp docs/cli-schema.json /tmp/tempo-schema.json
+      - name: Build native fixture setup and read helper
+        run: go test -c -o bin/tempo-native-fixture.test ./internal/nativefixture
+      - name: Native Codex hook acceptance (synthetic loopback provider)
+        timeout-minutes: 5
+        run: python3 -B scripts/native-hooks/codex_smoke.py --tempo bin/tempo --helper bin/tempo-native-fixture.test --evidence bin/native-codex-evidence.json
+      - name: Upload allowlisted native evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tempo-native-codex-${{ github.sha }}
+          path: bin/native-codex-evidence.json
+          if-no-files-found: ignore
+          retention-days: 7
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: tempo-linux-${{ runner.arch }}

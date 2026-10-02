@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"time"
+
+	"github.com/rbeene/tempo/internal/hookstate"
 )
 
 type Service struct {
@@ -13,6 +15,7 @@ type Service struct {
 	clock         Clock
 	resolve       BindingResolver
 	observeWorker WorkerObserver
+	policies      *hookstate.Service
 }
 
 func New(o Options) *Service {
@@ -20,7 +23,11 @@ func New(o Options) *Service {
 	if c == nil {
 		c = nativeClock{}
 	}
-	return &Service{store: &fileStore{path: o.Path, timeout: o.LockTimeout}, clock: c, resolve: o.ResolveBinding, observeWorker: o.ObserveWorker}
+	p := o.HookPolicies
+	if p == nil {
+		p = hookstate.New(hookstate.Options{})
+	}
+	return &Service{store: &fileStore{path: o.Path, timeout: o.LockTimeout}, clock: c, resolve: o.ResolveBinding, observeWorker: o.ObserveWorker, policies: p}
 }
 func (s *Service) sample() (ClockSample, error) {
 	v, err := s.clock.Sample()

@@ -12,6 +12,9 @@ const maxStateBytes = 32 << 20
 type state struct {
 	SyncEnabled         bool                           `json:"sync_enabled,omitempty"`
 	SyncConfigurations  map[string]SyncConfiguration   `json:"sync_configurations,omitempty"`
+	HostSessions        map[string]*hostSession        `json:"host_sessions,omitempty"`
+	HostTurns           map[string]*hostTurn           `json:"host_turns,omitempty"`
+	HostReceipts        map[string]hostReceiptRecord   `json:"host_receipts,omitempty"`
 	RecoveryDecisions   map[string]recoveryDecision    `json:"recovery_decisions,omitempty"`
 	Requests            map[string]mutationRequest     `json:"requests,omitempty"`
 	BindingRecords      map[string]bindingRecord       `json:"binding_records,omitempty"`

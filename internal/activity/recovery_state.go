@@ -91,7 +91,7 @@ func validRecoveryState(st *state) bool {
 }
 func recoveryOperation(op string) bool {
 	switch op {
-	case "activity.resolve", "activity.interrupt", "activity.observe_source", "activity.observe_clock":
+	case "activity.resolve", "activity.interrupt", "activity.observe_source", "activity.observe_clock", "activity.observe_host":
 		return true
 	}
 	return false
