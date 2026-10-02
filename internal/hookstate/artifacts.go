@@ -139,7 +139,10 @@ func hashArtifact(ctx context.Context, path, role string) (string, int64, error)
 		return "absent", 0, nil
 	}
 	limit := int64(8 << 20)
-	if role == "runtime" || role == "executable" {
+	if role == "runtime" {
+		// The pinned Codex 0.159.3 Linux runtime is 287,086,056 bytes.
+		limit = 320 << 20
+	} else if role == "executable" {
 		limit = 256 << 20
 	}
 	if err != nil || !before.Mode().IsRegular() || before.Size() > limit {
