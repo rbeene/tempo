@@ -109,7 +109,7 @@ func parse(args []string) (parsed, error) {
 	for _, id := range p.args {
 		if strings.Contains(p.command.Positionals, "UUID") {
 			if !uuidPattern.MatchString(id) {
-				return p, problem("validation", "binding ID must be a canonical UUID")
+				return p, problem("validation", "ID must be a canonical UUID")
 			}
 			continue
 		}

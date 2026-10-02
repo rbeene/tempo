@@ -10,6 +10,7 @@ const stateVersion = 1
 const maxStateBytes = 32 << 20
 
 type state struct {
+	RecoveryDecisions   map[string]recoveryDecision    `json:"recovery_decisions,omitempty"`
 	Requests            map[string]mutationRequest     `json:"requests,omitempty"`
 	BindingRecords      map[string]bindingRecord       `json:"binding_records,omitempty"`
 	SchemaVersion       int                            `json:"schema_version"`

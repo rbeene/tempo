@@ -12,6 +12,10 @@ type Command struct {
 }
 
 var commands = []Command{
+	{"activity review", "List unresolved local timing uncertainty without credentials", "", map[string]string{"project": "id"}, false},
+	{"activity preview", "Preview a recovery end or discarded tail without changes", "UUID", map[string]string{"end": "utc", "discard-tail": "bool"}, false},
+	{"activity resolve", "Resolve uncertainty; requires revision, end/discard-tail and --yes", "UUID", map[string]string{"end": "utc", "discard-tail": "bool", "if-revision": "counter", "reason": "string", "request-id": "uuid"}, true},
+	{"activity interrupt", "Detach one generation; preserve working tails for recovery", "UUID", map[string]string{"generation": "counter", "if-revision": "counter", "request-id": "uuid"}, true},
 	{"link", "Link a directory or entire Git repository and all its worktrees to a project", "[ID]", map[string]string{"task": "id", "path": "string", "timezone": "string", "if-revision": "counter", "request-id": "uuid"}, true},
 	{"links list", "List local directory and repository bindings", "", nil, false},
 	{"links show", "Inspect one local binding by ID or path", "[UUID]", map[string]string{"path": "string"}, false},
@@ -56,7 +60,7 @@ func schema() any {
 		"success":     map[string]any{"schema_version": 1, "data": "command result (object or array)"},
 		"error":       map[string]any{"schema_version": 1, "error": map[string]any{"code": "stable code", "message": "safe human-readable description", "retryable": false, "uncertain": false}},
 		"streams":     map[string]string{"success": "stdout", "error": "stderr", "prompts": "none; destructive actions require --yes"},
-		"exit_codes":  map[string]string{"0": "success", "1": "internal/config/keychain/state_corrupt/clock_unavailable", "2": "usage/validation/input_required/invalid_transition/unsupported_contract", "3": "auth", "4": "forbidden", "5": "not_found/binding_unavailable", "6": "conflict/confirmation_required/attribution_conflict/binding_in_use/revision_conflict/request_conflict/event_conflict/event_gap/clock_conflict/state_busy", "7": "network/api/rate_limit/response", "8": "uncertain_write/local_write_unknown"},
+		"exit_codes":  map[string]string{"0": "success", "1": "internal/config/keychain/state_corrupt/clock_unavailable", "2": "usage/validation/input_required/invalid_transition/recovery_bounds/unsupported_contract", "3": "auth", "4": "forbidden", "5": "not_found/binding_unavailable/actor_not_found/uncertainty_not_found", "6": "conflict/confirmation_required/attribution_conflict/binding_in_use/revision_conflict/request_conflict/event_conflict/event_gap/clock_conflict/state_busy", "7": "network/api/rate_limit/response", "8": "uncertain_write/local_write_unknown"},
 		"environment": []string{"HARVEST_TOKEN", "HARVEST_ACCOUNT_ID", "TEMPO_CONFIG", "TEMPO_STATE"},
 		"semantics":   map[string]string{"date": "YYYY-MM-DD, today or yesterday; relative dates use machine local timezone", "duration": "decimal hours, H:MM, or Go duration such as 1h30m; range 0..24 hours", "time": "HH:MM, same-day end strictly after start; split overnight entries", "pagination": "complete arrays; errors never emit partial success", "auth": "HARVEST_TOKEN overrides macOS Keychain; --account overrides HARVEST_ACCOUNT_ID overrides config", "retry": "GET only; never automatically replay mutations", "timer": "current user, all dates; no automatic switch; preflight is not atomic"},
 	}

@@ -49,7 +49,7 @@ func validState(st *state) bool {
 		if !ok || !ok2 || !start.Equal(seg.Start) || !confirmed.Equal(seg.Confirmed) || seg.Confirmed.Before(seg.Start) {
 			return false
 		}
-		if seg.End != nil && !seg.End.Equal(seg.Confirmed) {
+		if seg.End != nil && !seg.End.Equal(seg.Confirmed) && (seg.UncertaintyID == nil || st.Uncertainties[*seg.UncertaintyID] == nil || st.Uncertainties[*seg.UncertaintyID].State != "resolved") {
 			return false
 		}
 		if seg.UncertaintyID != nil {
@@ -131,6 +131,14 @@ func validState(st *state) bool {
 		if !ok || evidence.Detection.WallUTC.IsZero() || !reflect.DeepEqual(evidence.LastConfirmed, seg.ConfirmedSample) {
 			return false
 		}
+		if (evidence.BoundSample == nil) != (u.UpperBound == nil) {
+			return false
+		}
+		if evidence.BoundSample != nil {
+			if _, _, ok := sampleValues(*evidence.BoundSample); !ok {
+				return false
+			}
+		}
 	}
 	intervals := map[string]Interval{}
 	supportsBySegment := map[string]int{}
@@ -152,7 +160,7 @@ func validState(st *state) bool {
 		ids := map[string]bool{}
 		for _, id := range in.SegmentIDs {
 			seg := st.Segments[id]
-			if seg == nil || !seg.Finalized || ids[id] || seg.Binding.Attribution != in.Attribution || seg.Start.Before(in.Start) || seg.Confirmed.After(in.End) {
+			if seg == nil || !seg.Finalized || ids[id] || seg.Binding.Attribution != in.Attribution || seg.Start.Before(in.Start) || segmentEnd(seg).After(in.End) {
 				return false
 			}
 			ids[id] = true
@@ -160,7 +168,7 @@ func validState(st *state) bool {
 			if supportsBySegment[id] > 1 {
 				return false
 			}
-			supports = append(supports, timeRange{start: seg.Start, end: seg.Confirmed})
+			supports = append(supports, timeRange{start: seg.Start, end: segmentEnd(seg)})
 		}
 		merged := mergeRanges(supports)
 		if len(merged) != 1 || !merged[0].start.Equal(in.Start) || !merged[0].end.Equal(in.End) {
@@ -235,5 +243,5 @@ func validState(st *state) bool {
 			return false
 		}
 	}
-	return true
+	return validRecoveryState(st)
 }

@@ -148,6 +148,9 @@ func printHelp(w io.Writer) {
 func validate(p *parsed, now time.Time) error {
 	f := p.flags
 	n := p.command.Name
+	if recoveryCommand(n) {
+		return validateRecoveryCLI(p)
+	}
 	for _, k := range []string{"date", "from", "to"} {
 		if v, ok := f[k]; ok {
 			s, e := date(v, now)
@@ -287,6 +290,9 @@ func execute(ctx context.Context, p parsed, in io.Reader, d Dependencies) (any, 
 		service := d.Activity
 		if service == nil {
 			service = activity.New(activity.Options{Path: d.Getenv("TEMPO_STATE")})
+		}
+		if recoveryCommand(p.command.Name) {
+			return executeRecovery(ctx, p, service)
 		}
 		if p.command.Name == "activity status" {
 			return service.Status(ctx)
