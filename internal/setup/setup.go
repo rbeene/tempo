@@ -66,16 +66,31 @@ func uuid() string {
 func (s *Service) deps() activity.LinkDependencies {
 	return activity.LinkDependencies{ResolveAccount: func(context.Context) (string, error) { return s.options.Auth.EffectiveAccount("") }, NewProvider: s.options.Auth.Provider}
 }
+
+// CommitLink dispatches exactly the prepared intent to the shared activity
+// service; it never repeats guided discovery or presentation.
+func (s *Service) CommitLink(ctx context.Context, in activity.LinkInput) (activity.BindingResult, error) {
+	return bounded(ctx, func(c context.Context) (activity.BindingResult, error) {
+		return s.options.Activity.Link(c, in, s.deps())
+	})
+}
 func (s *Service) Link(ctx context.Context, in activity.LinkInput, p terminal.Prompter) (activity.BindingResult, error) {
-	empty := activity.BindingResult{}
+	prepared, err := s.PrepareLink(ctx, in, p)
+	if err != nil {
+		return activity.BindingResult{}, err
+	}
+	return s.CommitLink(ctx, prepared)
+}
+
+// PrepareLink resolves and confirms a guided link without mutating activity.
+// The returned value retains the exact request identity for CommitLink replay.
+func (s *Service) PrepareLink(ctx context.Context, in activity.LinkInput, p terminal.Prompter) (activity.LinkInput, error) {
+	empty := activity.LinkInput{}
 	if in.RequestID == "" {
 		in.RequestID = uuid()
 	}
-	commit := func(c context.Context) (activity.BindingResult, error) {
-		return s.options.Activity.Link(c, in, s.deps())
-	}
 	if p == nil || in.ProjectID != "" && in.TaskID != "" && in.Timezone != "" {
-		return bounded(ctx, commit)
+		return in, nil
 	}
 	location, e := bounded(ctx, func(c context.Context) (activity.Location, error) { return activity.DiscoverLocation(c, in.Path) })
 	if e != nil {
@@ -192,7 +207,7 @@ func (s *Service) Link(ctx context.Context, in activity.LinkInput, p terminal.Pr
 	if exactSaved && in.IfRevision == "" {
 		in.IfRevision = saved.Revision
 	}
-	return bounded(ctx, commit)
+	return in, nil
 }
 func chooseAccount(ctx context.Context, p terminal.Prompter, as []harvest.Object) (string, error) {
 	choices := []terminal.Choice{}
