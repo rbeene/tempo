@@ -35,6 +35,7 @@ type Options struct {
 	Auth        *AuthActions
 	Hooks       *HookActions
 	Worker      *WorkerActions
+	Sync        *SyncActions
 	Diagnostics func(context.Context, bool) (setup.Diagnostics, error)
 	// Outcome callbacks run only after owned work joins and Close has attempted
 	// terminal restoration. They must report safe shared observations only.
