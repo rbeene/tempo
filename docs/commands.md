@@ -75,10 +75,10 @@ Failure with `--json`, stderr (stdout empty):
 |---|---|
 | 0 | success |
 | 1 | internal, config, keychain, state_corrupt, clock_unavailable |
-| 2 | usage, validation, input_required, invalid_transition, unsupported_contract |
+| 2 | usage, validation, input_required, invalid_transition, recovery_bounds, unsupported_contract |
 | 3 | auth |
 | 4 | forbidden |
-| 5 | not_found, binding_unavailable |
+| 5 | not_found, binding_unavailable, actor_not_found, uncertainty_not_found |
 | 6 | conflict, confirmation_required, attribution_conflict, binding_in_use, revision_conflict, request_conflict, event_conflict, event_gap, clock_conflict, state_busy |
 | 7 | network, api, rate_limit, response |
 | 8 | uncertain_write, local_write_unknown |
@@ -99,7 +99,7 @@ The complete generated interface is [cli-schema.json](cli-schema.json). `make sc
 
 ## Planned agent activity interface
 
-The [agent activity contract](agent-contracts.md) and [planned operation catalog](agent-operations.json) define `tempo link [PROJECT_ID]`, local `activity` status/recovery, setup, hooks, worker, sync and themes for the agent timing epic. They also define equal CLI/UI access, searchable arrow-key pickers and forced finite JSON output. `activity status` and `activity event --input-stdin` are now shipped as described below. Explicit linking and link inspection/mutation are also shipped. Recovery, setup pickers, hooks, worker, sync, themes and interactive activity views remain planned. The generated schema describes available commands. `timer …` retains its Harvest meaning; `activity …` describes local computer activity.
+The [agent activity contract](agent-contracts.md) and [planned operation catalog](agent-operations.json) define `tempo link [PROJECT_ID]`, local `activity` status/recovery, setup, hooks, worker, sync and themes for the agent timing epic. They also define equal CLI/UI access, searchable arrow-key pickers and forced finite JSON output. `activity status` and `activity event --input-stdin` are now shipped as described below. Explicit linking, link inspection/mutation and local recovery are also shipped. Setup pickers, hooks, worker, sync, themes and interactive activity views remain planned. The generated schema describes available commands. `timer …` retains its Harvest meaning; `activity …` describes local computer activity.
 
 ## Local agent activity
 
@@ -108,7 +108,7 @@ The [agent activity contract](agent-contracts.md) and [planned operation catalog
 | `activity status` | Finite local snapshot; no credentials, configuration reads or network. `--json` and `--non-interactive` emit the versioned envelope. An absent store returns null computer ID, revision `"0"` and empty collections without creating files. |
 | `activity event --input-stdin` | Accept exactly one normalized v1 lifecycle JSON event, at most 16KiB. Adapter/internal operation; no prompts or arbitrary attribution fields. Uses the persisted computer identity and a linked path or binding ID/revision for tracked work; an unlinked location returns `untracked` without starting a timer. |
 
-Local activity is independent of Harvest `timer` commands. `TEMPO_STATE` selects an absolute private state-file path for isolated operation; default is the OS user config directory under `tempo/activity-state.json`. No public fake-binding/init command is provided. Explicit linking is available below; supported host bridges remain separate, and these commands do not install or automatically capture agent callbacks. Interactive watch and recovery commands are not yet shipped.
+Local activity is independent of Harvest `timer` commands. `TEMPO_STATE` selects an absolute private state-file path for isolated operation; default is the OS user config directory under `tempo/activity-state.json`. No public fake-binding/init command is provided. Explicit linking is available below; supported host bridges remain separate, and these commands do not install or automatically capture agent callbacks. Interactive watch and activity UI views are not yet shipped.
 
 Every accepted event has stable source/actor/generation/sequence identity. Retry the exact same event after an uncertain local write; a conflicting payload returns `event_conflict`. `state_busy` is retryable; `local_write_unknown` exits 8 with uncertainty set. State and clock failures use safe errors, never raw payloads. Binding, ordering and attribution conflicts use exit 6; unsupported contract/input/transition uses exit 2. Local `--non-interactive` errors use one stderr JSON envelope and empty stdout.
 
@@ -134,3 +134,23 @@ All local mutations accept `--request-id UUID`. The CLI generates one when omitt
 Relink, unlink and repair reject `binding_in_use` while working, waiting or stale actors remain attached. Identical linking remains a no-op. Compatible idle bindings for the same account/project must agree on user, task and timezone; disagreement returns `attribution_conflict`. Historical actors, segments, uncertainties and intervals keep their captured attribution after later permitted changes. Existing-generation stop/wait events use that history, regardless of their current directory.
 
 `links list/show/unlink/repair` use only local state. Link performs read-only Harvest validation through current-user assignments with complete pagination, without administrator project/task catalogs. New `link`/`links` commands with `--non-interactive` always emit one finite JSON envelope; failures use stderr and leave stdout empty. No host hooks or background sync worker are installed by linking.
+
+
+## Inspect and recover local activity
+
+| Command | Behavior |
+|---|---|
+| `activity review [--account ID] [--project ID]` | List unresolved uncertainty, including actor/session/generation references, using only local state. |
+| `activity preview UNCERTAINTY_ID --end UTC` | Preview an explicit continuous-work assertion through the chosen UTC end. |
+| `activity preview UNCERTAINTY_ID --discard-tail` | Preview keeping only the original confirmed prefix. |
+| `activity resolve UNCERTAINTY_ID --end UTC --if-revision REV --yes [--reason TEXT] [--request-id UUID]` | Commit the asserted end after rechecking the uncertainty revision and bounds. |
+| `activity resolve UNCERTAINTY_ID --discard-tail --if-revision REV --yes [--reason TEXT] [--request-id UUID]` | Discard unverified time, retaining the confirmed prefix and audit history. Works without clock capability. |
+| `activity interrupt ACTOR_ID --generation G --if-revision REV --yes [--request-id UUID]` | Detach exactly that generation. Waiting adds no time; working preserves uncertainty for subsequent recovery. Children and peers remain independent. |
+
+Recovery `--end` accepts a UTC RFC3339 timestamp ending in `Z`, for example `2026-10-02T10:00:00Z`, with up to nanosecond precision. This is separate from the `HH:MM` format used by Harvest `time` commands. Choose exactly one of `--end` or `--discard-tail`. A rationale may contain up to 512 UTF-8 bytes without control characters. These commands never access credentials or Harvest; `--account` is only a local filter on review and is rejected on preview, resolve and interrupt.
+
+Inspect the preview before committing. It returns the original confirmed prefix, proposed end, excluded suffix when bounded, confirmed/resolved union ranges before and after, and remaining uncertainty IDs. Open peer work is provisional and does not appear as confirmed time. Use the preview's uncertainty revision in resolve; concurrent evidence may require a fresh preview. Reads never save health or uncertainty. Resolve keeps original samples alongside its audited assertion and finalizes only safe disconnected union components. If A starts at 09:00, B at 11:00, and A is recovered through 10:00, the 10:00–11:00 gap stays unbilled while B continues.
+
+An end cannot precede confirmed evidence, follow subsequent resume/terminal bounds or trusted current time, or touch/overlap finalized output. Ends outside the confirmed/current/later-event bounds return `recovery_bounds`; conflicting clock evidence or finalized output returns `clock_conflict`. A stale entity revision returns `revision_conflict`. Original unknown time remains unresolved after normal finish, resume or a newer generation. Resolving an older segment does not stop newer work. Resolving the current stale segment detaches its generation; delayed callbacks cannot reopen it.
+
+Supply and retain `--request-id` for reliable automated replay. Repeating the same intent returns its original result even after restart, without resampling the clock. Changed intent with the same ID returns `request_conflict`. An interruption that discovers an unavailable clock may durably quarantine the tail and return `clock_unavailable` without detaching; inspect status and use a new reviewed request for the next action. An uncertain local commit returns `local_write_unknown` with the request ID: retry that exact request first. No automatic Harvest correction or upload occurs.

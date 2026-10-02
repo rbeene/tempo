@@ -11,6 +11,7 @@ import (
 // A finite typed receipt is committed with its effect. Future operations add
 // their actual result type here rather than persisting opaque provider payloads.
 type mutationRequest struct {
+	Error          *Error          `json:"error,omitempty"`
 	Operation      string          `json:"operation"`
 	Fingerprint    string          `json:"fingerprint"`
 	BindingResult  *BindingResult  `json:"binding_result,omitempty"`

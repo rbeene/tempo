@@ -49,6 +49,15 @@ func validBindingState(st *state) bool {
 		if _, err := hex.DecodeString(r.Fingerprint); err != nil {
 			return false
 		}
+		if recoveryOperation(r.Operation) {
+			if !validRecoveryReceipt(st, id, r, revision) {
+				return false
+			}
+			continue
+		}
+		if r.Error != nil {
+			return false
+		}
 		switch r.Operation {
 		case "bindings.link", "bindings.repair":
 			b := r.BindingResult
