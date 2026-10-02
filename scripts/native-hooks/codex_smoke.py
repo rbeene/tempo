@@ -436,6 +436,7 @@ class Model:
     def __init__(self, read, repo, deadline):
         self.read, self.repo, self.deadline = read, repo, deadline
         self.session = self.turn = self.child = self.interrupt_turn = None
+        self.baseline = None
         self.child_turn = None
         self.lock = threading.Lock()
         self.error = None
@@ -520,7 +521,17 @@ class Model:
             require(not self.shutdown.is_set(), "provider_request_after_shutdown")
             snap = self.read()
             receipts = snap["receipts"]
-            require(self.session is not None, "request_before_measured_session")
+            if self.session is None:
+                require(self.baseline is not None and category == "parent" and self.phase == "initial", "request_before_measured_session")
+                starts = [r for r in receipts if r["kind"] == "SessionStart" and r["id"] not in self.baseline and accepted(r)]
+                require(len(starts) == 1, "measured_session_ambiguous")
+                session = starts[0]["session_id"]
+                prompts = [r for r in receipts if r["kind"] == "UserPromptSubmit" and r["id"] not in self.baseline
+                           and r["session_id"] == session and accepted(r)]
+                require(len(prompts) == 1, "parent_prompt_identity")
+                require(prompts[0]["ordering"] == "supported", "prompt_barrier_missing")
+                require_prompt_barrier(receipts, session, prompts[0]["turn_id"])
+                self.session = session
             if category == "child":
                 require(self.counts.get("child", 0) == 0, "duplicate_child_request")
                 starts = [r for r in receipts if r["kind"] == "SubagentStart" and r["session_id"] == self.session and accepted(r)]
@@ -849,6 +860,21 @@ def normal_trust(terminal, repo, command, trusted_events, probe=None, startup_pr
     require(terminal.proc.returncode == 0, "trust_host_exit_failed")
 
 
+def start_measured_turn(terminal, model, baseline, wait_snapshot):
+    with model.lock:
+        require(model.baseline is None and model.session is None and model.phase == "initial", "measured_session_already_armed")
+        model.baseline = frozenset(baseline)
+    # The pinned host drains pending SessionStart only on the first actual turn.
+    # The provider independently gates every response on genuine hook receipts.
+    terminal.command(PARENT_PROMPT)
+    snapshot = wait_snapshot(lambda s: any(r["kind"] == "SessionStart" and r["id"] not in baseline and accepted(r)
+                             for r in s["receipts"]), "posttrust_session_start_missing")
+    starts = [r for r in snapshot["receipts"] if r["kind"] == "SessionStart" and r["id"] not in baseline and accepted(r)]
+    require(len(starts) == 1, "measured_session_ambiguous")
+    with model.lock:
+        require(model.session is None or model.session == starts[0]["session_id"], "measured_session_identity_mismatch")
+
+
 def actor_state(snapshot, receipt):
     matches = [a for a in snapshot["actors"] if a["ref"] == receipt.get("actor")]
     require(len(matches) == 1, "actor_projection_missing")
@@ -935,12 +961,8 @@ def run(args, report):
             terminal.until(check, category, seconds)
             return result
 
-        snapshot = wait_snapshot(lambda s: any(r["kind"] == "SessionStart" and r["id"] not in baseline and accepted(r) for r in s["receipts"]), "posttrust_session_start_missing")
-        starts = [r for r in snapshot["receipts"] if r["kind"] == "SessionStart" and r["id"] not in baseline and accepted(r)]
-        require(len(starts) == 1, "measured_session_ambiguous")
-        model.session = starts[0]["session_id"]
+        start_measured_turn(terminal, model, baseline, wait_snapshot)
         report["stage"] = "parent_read_and_child"
-        terminal.command(PARENT_PROMPT)
         snapshot = wait_snapshot(lambda s: model.child_seen.is_set() and any(r["kind"] == "Stop" and r["session_id"] == model.session and accepted(r) for r in s["receipts"]), "parent_stop_missing", 40)
         require(model.child_seen.is_set() and model.child, "child_request_missing")
         parent_stop = next(r for r in snapshot["receipts"] if r["kind"] == "Stop" and r["session_id"] == model.session and accepted(r))

@@ -565,6 +565,7 @@ class HarnessTests(unittest.TestCase):
         model.lock = threading.Lock()
         model.session, model.turn, model.child = "session-1", None, None
         model.child_turn = None
+        model.baseline = None
         model.shutdown = threading.Event()
         model.phase, model.counts, model.requests = "initial", {}, []
         return model
@@ -573,6 +574,73 @@ class HarnessTests(unittest.TestCase):
         return {"model": "gpt-6.1-sol", "stream": True, "input": [{"role": "user", "content": [{"text": marker}]}],
                 "tools": [{"type": "function", "name": "exec_command", "parameters": {"properties": {"cmd": {}, "workdir": {}, "max_output_tokens": {}}, "required": ["cmd"]}},
                           {"type": "function", "name": "spawn_agent", "parameters": {"properties": {"message": {}}, "required": ["message"]}}]}
+
+    def test_first_provider_response_binds_only_postbaseline_native_session_and_prompt(self):
+        old = self.receipt("SessionStart", id="old-start", session_id="old-session")
+        good = [old, self.receipt("SessionStart"), self.receipt("UserPromptSubmit")]
+        model = self.model(good)
+        model.session, model.baseline = None, frozenset({"old-start"})
+        item, category, _ = model.respond(self.request())
+        self.assertEqual((model.session, model.turn, category, item["call_id"]),
+                         ("session-1", "turn-1", "parent1", "tempo-read"))
+        self.assertEqual(len(model.requests), 1)
+        cases = [(good, None), (good[2:], frozenset()), (good, frozenset({"old-start", "receipt-SessionStart"})),
+                 (good + [self.receipt("SessionStart", id="second-start", session_id="session-2")], frozenset({"old-start"})),
+                 ([self.receipt("SessionStart", disposition="review_required"), good[2]], frozenset()),
+                 ([good[1], self.receipt("UserPromptSubmit", session_id="different")], frozenset()),
+                 ([good[1], self.receipt("UserPromptSubmit", ordering="unavailable")], frozenset()),
+                 (good[1:], frozenset({"receipt-UserPromptSubmit"})),
+                 ([good[1]], frozenset()),
+                 ([good[1], self.receipt("UserPromptSubmit", id="baseline-prompt"),
+                   self.receipt("UserPromptSubmit", ordering="unavailable")], frozenset({"baseline-prompt"}))]
+        for receipts, baseline in cases:
+            model = self.model(receipts)
+            model.session, model.baseline = None, baseline
+            with self.assertRaises(smoke.FixtureFailure): model.respond(self.request())
+            self.assertIsNone(model.session)
+            self.assertEqual(model.requests, [])
+        for marker in (smoke.CHILD_PROMPT, smoke.INTERRUPT_PROMPT):
+            model = self.model(good[1:])
+            model.session, model.baseline = None, frozenset()
+            with self.assertRaises(smoke.FixtureFailure): model.respond(self.request(marker))
+            self.assertEqual(model.requests, [])
+
+    def test_measured_start_submits_once_before_receipt_wait_without_session_overwrite(self):
+        receipts = [self.receipt("SessionStart"), self.receipt("UserPromptSubmit")]
+        model = self.model(receipts)
+        model.session = None
+        terminal = mock.Mock()
+        terminal.command.side_effect = lambda value: model.respond(self.request(value))
+        def wait_snapshot(predicate, category):
+            terminal.command.assert_called_once_with(smoke.PARENT_PROMPT)
+            snapshot = {"receipts": receipts}
+            self.assertTrue(predicate(snapshot))
+            return snapshot
+        smoke.start_measured_turn(terminal, model, {"old-start"}, wait_snapshot)
+        self.assertEqual(model.session, "session-1")
+        self.assertEqual(model.baseline, frozenset({"old-start"}))
+        with self.assertRaises(smoke.FixtureFailure):
+            smoke.start_measured_turn(terminal, model, set(), wait_snapshot)
+        terminal.command.assert_called_once_with(smoke.PARENT_PROMPT)
+        deferred = self.model(receipts)
+        deferred.session = None
+        terminal.reset_mock(side_effect=True)
+        smoke.start_measured_turn(terminal, deferred, set(), wait_snapshot)
+        self.assertIsNone(deferred.session)
+        deferred.respond(self.request())
+        self.assertEqual(deferred.session, "session-1")
+        terminal.command.side_effect = lambda value: model.respond(self.request(value))
+        for observed in ([self.receipt("SessionStart", session_id="different")],
+                         [*receipts, self.receipt("SessionStart", id="ambiguous-start")]):
+            model = self.model(receipts)
+            model.session = None
+            terminal.reset_mock()
+            def mismatch_wait(predicate, category):
+                terminal.command.assert_called_once_with(smoke.PARENT_PROMPT)
+                return {"receipts": observed}
+            with self.assertRaises(smoke.FixtureFailure):
+                smoke.start_measured_turn(terminal, model, set(), mismatch_wait)
+            self.assertEqual(model.session, "session-1")
 
     def test_model_transition_requires_real_read_and_tool_receipts(self):
         receipts = [self.receipt("SessionStart"), self.receipt("UserPromptSubmit")]
