@@ -21,6 +21,8 @@ type promptRequest struct {
 	body        string
 	choices     []terminal.Choice
 	defaultText string
+	styles      map[string]terminal.Styler
+	style       terminal.Styler
 	reply       chan promptReply
 }
 type promptReply struct {
@@ -32,6 +34,17 @@ type promptReply struct {
 
 func newPromptBridge(ctx context.Context) *promptBridge {
 	return &promptBridge{ctx: ctx, requests: make(chan promptRequest, 1)}
+}
+
+// chooseStyled previews supplied immutable candidate styles inside one modal.
+func (p *promptBridge) chooseStyled(ctx context.Context, title string, choices []terminal.Choice, styles map[string]terminal.Styler) (string, error) {
+	return "", nil
+}
+func (p *promptBridge) confirmStyled(ctx context.Context, title string, style terminal.Styler) (bool, error) {
+	return false, nil
+}
+func (p *promptBridge) viewStyled(ctx context.Context, title, body string, style terminal.Styler) error {
+	return nil
 }
 func (p *promptBridge) Choose(ctx context.Context, title string, choices []terminal.Choice) (string, error) {
 	r := p.ask(promptRequest{kind: "choose", ctx: ctx, title: title, choices: append([]terminal.Choice(nil), choices...)})
@@ -112,11 +125,15 @@ type promptModel struct {
 	caller                      context.Context
 	kind, title, body, text     string
 	choices                     []terminal.Choice
+	styles                      map[string]terminal.Styler
+	style                       terminal.Styler
 	secret                      []byte
 	columns, rows               int
 	selected, scroll            int
 	affirmative, reviewed, done bool
 }
+
+func (m *promptModel) styler(base terminal.Styler) terminal.Styler { return base }
 
 func newPromptModel(request promptRequest, columns, rows int) *promptModel {
 	m := &promptModel{caller: request.ctx, kind: request.kind, title: request.title, body: request.body, choices: append([]terminal.Choice(nil), request.choices...), columns: columns, rows: rows}
