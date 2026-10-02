@@ -76,7 +76,37 @@ func (s *Service) resolveInitial(ctx context.Context, st *state, e Event) (Bindi
 			return b, true, nil
 		}
 	}
-	if e.BindingID != "" {
+	if s.resolve == nil {
+		if e.BindingID != "" {
+			r, ok := st.BindingRecords[e.BindingID]
+			if !ok || r.Deleted || r.Snapshot.Revision != e.BindingRevision {
+				return BindingSnapshot{}, false, failure("binding_unavailable")
+			}
+			if err := bindingAvailable(ctx, r); err != nil {
+				return BindingSnapshot{}, false, err
+			}
+			if e.CWD != "" {
+				loc, err := DiscoverLocation(ctx, e.CWD)
+				if err != nil {
+					return BindingSnapshot{}, false, err
+				}
+				match, ok := recordForLocation(st, loc)
+				if !ok || match.Snapshot.ID != r.Snapshot.ID {
+					return BindingSnapshot{}, false, failure("binding_unavailable")
+				}
+			}
+			return r.Snapshot, true, nil
+		}
+		if e.CWD != "" {
+			loc, err := DiscoverLocation(ctx, e.CWD)
+			if err != nil {
+				return BindingSnapshot{}, false, err
+			}
+			if r, ok := recordForLocation(st, loc); ok {
+				return r.Snapshot, true, nil
+			}
+		}
+	} else if e.BindingID != "" {
 		return BindingSnapshot{}, false, nil
 	}
 	if e.Parent != nil {

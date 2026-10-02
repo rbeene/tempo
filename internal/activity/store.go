@@ -178,6 +178,12 @@ func (s *fileStore) acquire(ctx context.Context, create bool) (*lockedStore, boo
 		flags |= os.O_CREATE
 	}
 	lock, err := openNoFollow(root, name+".lock", flags, 0600)
+	// Simultaneous first creators can observe ENOENT from openat on macOS.
+	// Retry only this initial create, through the same pinned root/no-follow
+	// boundary; all inode/permission checks below still apply.
+	for attempt := 0; create && !exists && errors.Is(err, os.ErrNotExist) && attempt < 3; attempt++ {
+		lock, err = openNoFollow(root, name+".lock", flags, 0600)
+	}
 	if err != nil {
 		root.Close()
 		return nil, false, failure("state_corrupt")

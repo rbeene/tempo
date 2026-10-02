@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -76,7 +77,7 @@ func parse(args []string) (parsed, error) {
 	}
 	name := words[0]
 	n := 1
-	if name != "help" && name != "schema" && name != "version" {
+	if name != "help" && name != "schema" && name != "version" && name != "link" {
 		if len(words) < 2 {
 			return p, problem("usage", "subcommand required; use tempo help")
 		}
@@ -102,16 +103,30 @@ func parse(args []string) (parsed, error) {
 			}
 		}
 	}
-	if p.command.Positionals == "" && len(p.args) != 0 || p.command.Positionals == "ID" && len(p.args) != 1 || p.command.Positionals == "[ID]" && len(p.args) > 1 {
+	if p.command.Positionals == "" && len(p.args) != 0 || (p.command.Positionals == "ID" || p.command.Positionals == "UUID") && len(p.args) != 1 || (p.command.Positionals == "[ID]" || p.command.Positionals == "[UUID]") && len(p.args) > 1 {
 		return p, problem("usage", "invalid arguments for "+name)
 	}
 	for _, id := range p.args {
+		if strings.Contains(p.command.Positionals, "UUID") {
+			if !uuidPattern.MatchString(id) {
+				return p, problem("validation", "binding ID must be a canonical UUID")
+			}
+			continue
+		}
 		if !validID(id) {
 			return p, problem("validation", "ID must be a positive integer")
 		}
 	}
 	for k, v := range p.flags {
 		kind := all[k]
+		if kind == "uuid" && !uuidPattern.MatchString(v) {
+			return p, problem("validation", "--"+k+" must be a canonical UUID")
+		}
+		if kind == "counter" {
+			if _, e := strconv.ParseUint(v, 10, 64); e != nil || v == "" || (len(v) > 1 && v[0] == '0') || strings.Trim(v, "0123456789") != "" {
+				return p, problem("validation", "--"+k+" must be a canonical counter")
+			}
+		}
 		if kind == "id" && !validID(v) {
 			return p, problem("validation", "--"+k+" must be a positive integer")
 		}
@@ -121,6 +136,9 @@ func parse(args []string) (parsed, error) {
 	}
 	return p, nil
 }
+
+var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
 func validID(s string) bool { return identity.Valid(s) }
 
 func date(s string, now time.Time) (string, error) {
@@ -227,5 +245,5 @@ func wantsLocalJSON(args []string) bool {
 			first = token
 		}
 	}
-	return first == "activity" && forced
+	return (first == "activity" || first == "link" || first == "links") && forced
 }

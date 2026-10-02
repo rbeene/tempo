@@ -12,6 +12,11 @@ type Command struct {
 }
 
 var commands = []Command{
+	{"link", "Link a directory or entire Git repository and all its worktrees to a project", "[ID]", map[string]string{"task": "id", "path": "string", "timezone": "string", "if-revision": "counter", "request-id": "uuid"}, true},
+	{"links list", "List local directory and repository bindings", "", nil, false},
+	{"links show", "Inspect one local binding by ID or path", "[UUID]", map[string]string{"path": "string"}, false},
+	{"links unlink", "Remove a binding; requires revision and --yes", "UUID", map[string]string{"if-revision": "counter", "request-id": "uuid"}, true},
+	{"links repair", "Repair a moved binding; requires path, revision and --yes", "UUID", map[string]string{"path": "string", "if-revision": "counter", "request-id": "uuid"}, true},
 	{"activity status", "Read local agent activity without credentials or network", "", nil, false},
 	{"activity event", "Persist one normalized lifecycle event from bounded JSON stdin", "", map[string]string{"input-stdin": "bool"}, true},
 	{"auth login", "Validate a token from stdin and save in macOS Keychain", "", map[string]string{"token-stdin": "bool"}, true},

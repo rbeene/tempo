@@ -1,6 +1,6 @@
 {
   "catalog_version": 1,
-  "status": "planned; not emitted by tempo schema until implemented",
+  "status": "design catalog; tempo schema emits only the implemented subset",
   "normative_spec": "agent-contracts.md",
   "envelope_schema_version": 1,
   "type_notation": "Types are named below; T[] is an array, T|null is nullable, enum values use |. Request optional fields may be omitted; result fields are required unless suffixed ?. IDs and counters are strings. No unlisted request fields are accepted. Global output/account flags are CLI options, not secretly injected action inputs.",

@@ -118,9 +118,143 @@
       "actor": "ActorRef",
       "segment_id": "uuid|null",
       "uncertainty_ids": "uuid[]"
+    },
+    "Binding": {
+      "id": "uuid",
+      "revision": "counter",
+      "kind": "repository|directory",
+      "locator": "path",
+      "attribution": "Attribution",
+      "attached_actors": "ActorRef[]"
+    },
+    "BindingList": {
+      "contract_version": "integer=1",
+      "snapshot_revision": "counter",
+      "bindings": "Binding[]"
+    },
+    "BindingResult": {
+      "contract_version": "integer=1",
+      "snapshot_revision": "counter",
+      "request_id": "uuid",
+      "changed": "bool",
+      "binding": "Binding"
+    },
+    "MutationResult": {
+      "contract_version": "integer=1",
+      "snapshot_revision": "counter",
+      "request_id": "uuid",
+      "changed": "bool",
+      "affected_ids": "uuid[]",
+      "entity_revision": "counter|null"
+    },
+    "path": "local filesystem path; canonical absolute path in results",
+    "Location": {
+      "kind": "repository|directory",
+      "locator": "path",
+      "root": "path",
+      "path": "path"
     }
   },
   "input_limit_bytes": 16384,
   "status_read_only": true,
-  "initialization": "Explicit linking owns store identity. Before linking is implemented or no binding resolves, initial work returns untracked without creating state."
+  "initialization": "First successful explicit link initializes computer identity. Unlinked initial work returns untracked without creating state; bindings resolve locally by Git common-directory or nearest ordinary-directory scope.",
+  "actions": [
+    {
+      "id": "bindings.link",
+      "cli": "link [PROJECT_ID]",
+      "flags": {
+        "task": "harvest_id",
+        "path": "path",
+        "timezone": "timezone",
+        "if-revision": "counter"
+      },
+      "input": {
+        "project_id": "harvest_id",
+        "task_id": "harvest_id",
+        "path": "path",
+        "account_id": "harvest_id",
+        "timezone": "timezone",
+        "if_revision": "counter"
+      },
+      "required": [
+        "project_id"
+      ],
+      "result": "BindingResult",
+      "effect": "remote_read_local_mutation",
+      "ui": "Links; Add/Edit searchable project and task pickers",
+      "notes": "Explicit project required; no picker is shipped. Missing task uses a still-active saved choice or sole active task; missing timezone uses a saved choice for this account/project. Unresolved choices return input_required. Path defaults cwd. No user override. Omitted revision means create-only or identical no-op."
+    },
+    {
+      "id": "bindings.list",
+      "cli": "links list",
+      "flags": {},
+      "input": {},
+      "required": [],
+      "result": "BindingList",
+      "effect": "local_read",
+      "ui": "Links list"
+    },
+    {
+      "id": "bindings.show",
+      "cli": "links show [BINDING_ID]",
+      "flags": {
+        "path": "path"
+      },
+      "input": {
+        "binding_id": "uuid",
+        "path": "path"
+      },
+      "required": [],
+      "result": "BindingList",
+      "effect": "local_read",
+      "ui": "Link details",
+      "notes": "ID and path mutually exclusive; defaults cwd. Exactly one binding returned or not_found."
+    },
+    {
+      "id": "bindings.unlink",
+      "cli": "links unlink BINDING_ID",
+      "flags": {
+        "if-revision": "counter"
+      },
+      "input": {
+        "binding_id": "uuid",
+        "if_revision": "counter",
+        "confirmed": "bool"
+      },
+      "required": [
+        "binding_id",
+        "if_revision",
+        "confirmed"
+      ],
+      "result": "MutationResult",
+      "effect": "local_mutation",
+      "ui": "Links; Remove with confirmation",
+      "notes": "Requires --yes; rejects attached working/waiting/stale generations. Historical snapshots persist."
+    },
+    {
+      "id": "bindings.repair",
+      "cli": "links repair BINDING_ID",
+      "flags": {
+        "path": "path",
+        "if-revision": "counter"
+      },
+      "input": {
+        "binding_id": "uuid",
+        "path": "path",
+        "if_revision": "counter",
+        "confirmed": "bool"
+      },
+      "required": [
+        "binding_id",
+        "path",
+        "if_revision",
+        "confirmed"
+      ],
+      "result": "BindingResult",
+      "effect": "local_mutation",
+      "ui": "Links; Repair moved repository",
+      "notes": "Explicit locator replacement only; same attribution, --yes, no attached generation, no conflicting locator. No remote/name-based guessing."
+    }
+  ],
+  "local_mutation_semantics": "request_id is a UUID; CLI generates one if omitted. Exact replay returns original typed result before config, account, credentials, network or path discovery, after a local durability check. Same request ID with changed explicit intent returns request_conflict. Retry local_write_unknown with the same request ID; safe error details include it. No Harvest writes."
 }
