@@ -86,12 +86,12 @@ func (c *authController) run(ctx context.Context, p *promptBridge, actions *Auth
 		result, err := authCall(ctx, 2*time.Minute, func(ctx context.Context) (auth.Result, error) { return actions.UseAccount(ctx, account) })
 		return c.finish(ctx, p, actions, "account selection", account, result, err)
 	case "logout":
+		if actions.Logout == nil {
+			return authUnavailable(ctx, p)
+		}
 		yes, err := p.Confirm(ctx, "Remove the saved credential and clear account config? This removes only local storage; it does not unset environment authentication or revoke a token in Harvest. HARVEST_TOKEN must be unset separately.")
 		if err != nil || !yes {
 			return err
-		}
-		if actions.Logout == nil {
-			return authUnavailable(ctx, p)
 		}
 		result, err := authCall(ctx, 2*time.Minute, func(ctx context.Context) (auth.Result, error) { return actions.Logout(ctx, true) })
 		return c.finish(ctx, p, actions, "logout", "", result, err)

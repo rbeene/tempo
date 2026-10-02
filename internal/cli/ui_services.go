@@ -40,7 +40,14 @@ func uiSetupActions(d Dependencies) *ui.SetupActions {
 		if err != nil {
 			return setup.Status{}, err
 		}
-		return service.Run(ctx, input, prompt)
+		result, err := service.Run(ctx, input, prompt)
+		for _, step := range result.Steps {
+			if step.Action == "auth.login" && step.State == "complete" {
+				notifyWorker(ctx, d, worker.Recheck)
+				break
+			}
+		}
+		return result, err
 	}}
 }
 

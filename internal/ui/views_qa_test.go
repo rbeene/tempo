@@ -62,6 +62,9 @@ func TestQAUIViewsExplicitReadsLazyAndNeverOnRefresh(t *testing.T) {
 				t.Fatal("opening dashboard invoked ancillary reads")
 			}
 			x.screen.events <- terminal.Event{Kind: "text", Text: tc.key}
+			if tc.key == "," {
+				qaSetupChoice(t, x, "Setup", "readiness")
+			}
 			frame := x.frame(t, tc.content)
 			if !strings.Contains(strings.Join(frame, "\n"), tc.title) {
 				t.Errorf("shared view content lost its title %s", tc.title)

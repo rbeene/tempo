@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/rbeene/tempo/internal/activity"
@@ -19,7 +20,59 @@ import (
 
 var uiRequestIdentity = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
-func uiSetupReport(w io.Writer, status setup.Status, outcome error) {}
+func uiSetupReport(w io.Writer, status setup.Status, outcome error) {
+	for _, step := range status.Steps {
+		switch step.Action {
+		case "auth.status", "auth.login", "bindings.link", "hooks.status", "sync.status", "worker.status":
+		default:
+			continue
+		}
+		switch step.State {
+		case "complete", "input_required", "unsupported":
+		default:
+			continue
+		}
+		fields := []string{}
+		for _, field := range step.RequiredFields {
+			switch field {
+			case "account_id", "project_id", "task_id", "timezone", "host", "scope", "path", "fingerprint", "declaration_version":
+				fields = append(fields, field)
+			}
+		}
+		required := ""
+		if len(fields) != 0 {
+			required = "; required: " + strings.Join(fields, ", ")
+		}
+		fmt.Fprintf(w, "tempo: setup: %s %s%s\n", step.Action, step.State, required)
+	}
+	if outcome == nil {
+		return
+	}
+	var credential *auth.Error
+	var local *activity.Error
+	var hooks *hookstate.Error
+	var remote *harvest.Error
+	if errors.As(outcome, &credential) && credential.Uncertain {
+		uiRetainedReport(w, "setup", "", outcome)
+		return
+	}
+	id := ""
+	if errors.As(outcome, &local) && local.Uncertain {
+		id, _ = local.Details["request_id"].(string)
+	} else if errors.As(outcome, &hooks) && hooks.Uncertain {
+		id = hooks.RequestID
+	} else if !errors.As(outcome, &remote) || !remote.Uncertain {
+		code := safeError(outcome).Code
+		switch code {
+		case "auth", "keychain", "validation", "confirmation_required", "config", "forbidden", "input_required", "state_busy", "response", "network", "api", "rate_limit", "revision_conflict", "request_conflict", "not_found", "binding_in_use":
+		default:
+			code = "operation_failed"
+		}
+		fmt.Fprintf(w, "tempo: setup: %s; completed steps remain applied; inspect readiness\n", code)
+		return
+	}
+	uiRetainedReport(w, "setup", id, outcome)
+}
 
 // The report budget begins after Close, at the first plain diagnostic. Every
 // retained outcome and the final human error share that one bounded budget.
@@ -60,7 +113,7 @@ func uiAuthReport(w io.Writer, operation string, result auth.Result, err error) 
 
 func uiRetainedReport(w io.Writer, family, requestID string, err error) {
 	switch family {
-	case "auth", "links", "activity", "sync", "hooks", "worker", "appearance":
+	case "auth", "links", "activity", "sync", "hooks", "worker", "setup", "appearance":
 	default:
 		family = "operation"
 	}

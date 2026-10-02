@@ -156,7 +156,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 						}, Unlink: a.Unlink, Repair: a.RepairBinding}
 						authActions := uiAuthActions(d)
 						capture := &ui.ActivityActions{Status: a.Status, Review: a.Review, Preview: a.Preview, Resolve: a.Resolve, Interrupt: a.Interrupt}
-						err = uiResultError(ui.Run(session.Context(), session, a, ui.Options{Views: views, Links: links, Activity: capture, Auth: authActions, Hooks: uiHookActions(d), Worker: uiWorkerActions(d), Sync: uiSyncActions(d, a), Diagnostics: func(readCtx context.Context, check bool) (setup.Diagnostics, error) {
+						err = uiResultError(ui.Run(session.Context(), session, a, ui.Options{Views: views, Links: links, Activity: capture, Auth: authActions, Hooks: uiHookActions(d), Worker: uiWorkerActions(d), Sync: uiSyncActions(d, a), Setup: uiSetupActions(d), Diagnostics: func(readCtx context.Context, check bool) (setup.Diagnostics, error) {
 							service, err := setupService(d)
 							if err != nil {
 								return setup.Diagnostics{}, err
@@ -164,6 +164,8 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 							return service.Doctor(readCtx, check)
 						}, OnAuthResult: func(operation string, result auth.Result, outcome error) {
 							uiAuthReport(errOut, operation, result, outcome)
+						}, OnSetupResult: func(result setup.Status, outcome error) {
+							uiSetupReport(errOut, result, outcome)
 						}, OnRetainedOutcome: func(family, requestID string, outcome error) {
 							uiRetainedReport(errOut, family, requestID, outcome)
 						}, OnRestorationFailure: func() { uiRestorationReport(errOut) }}))

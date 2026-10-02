@@ -60,6 +60,7 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 	hooks := &hookController{}
 	service := &workerController{}
 	uploads := &syncController{}
+	wizard := &setupController{}
 	type flowResult struct {
 		name  string
 		style terminal.Styler
@@ -126,9 +127,19 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 			result := credential.completed
 			options.OnAuthResult(result.operation, result.result, result.err)
 		}
-		if options.OnRetainedOutcome != nil {
+		if wizard.completed != nil && wizard.pending == nil && options.OnSetupResult != nil {
+			options.OnSetupResult(wizard.completed.status, wizard.completed.err)
+		}
+		if options.OnRetainedOutcome != nil || options.OnSetupResult != nil {
 			for _, name := range retainedNames(retained) {
 				outcome := retained[name]
+				if name == "setup" && wizard.completed != nil && options.OnSetupResult != nil {
+					options.OnSetupResult(wizard.completed.status, wizard.completed.err)
+					continue
+				}
+				if options.OnRetainedOutcome == nil {
+					continue
+				}
 				id := ""
 				var authFailure *auth.Error
 				if !errors.As(outcome, &authFailure) {
@@ -153,6 +164,8 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 						if uploads.pending != nil {
 							id = uploads.pending.id()
 						}
+					case "setup":
+						id = setupRequestID(outcome)
 					}
 				}
 				options.OnRetainedOutcome(name, id, outcome)
@@ -422,12 +435,26 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 				case "3":
 					startView(syncView)
 				case ",":
-					startView(setupView)
+					startFlow("setup", func(flowCtx context.Context) (terminal.Styler, error) {
+						actions := options.Setup
+						if wizard.pending == nil && (credential.pending != nil || links.pending != nil || hooks.pending != nil) && actions != nil {
+							copy := *actions
+							copy.Run = nil
+							actions = &copy
+						}
+						return nil, wizard.run(flowCtx, bridge, actions, options.Views)
+					})
 				case "?":
 					startView(helpView)
 				case "l":
 					startFlow("links", func(flowCtx context.Context) (terminal.Styler, error) {
-						return nil, links.run(flowCtx, bridge, options.Views, options.Links)
+						actions := options.Links
+						if wizard.pending != nil && links.pending == nil && actions != nil {
+							copy := *actions
+							copy.Prepare, copy.Commit, copy.Unlink, copy.Repair = nil, nil, nil, nil
+							actions = &copy
+						}
+						return nil, links.run(flowCtx, bridge, options.Views, actions)
 					})
 				case "x":
 					startFlow("activity", func(flowCtx context.Context) (terminal.Styler, error) {
@@ -435,11 +462,24 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 					})
 				case "a":
 					startFlow("auth", func(flowCtx context.Context) (terminal.Styler, error) {
-						return nil, credential.run(flowCtx, bridge, options.Auth)
+						actions := options.Auth
+						if wizard.pending != nil && credential.pending == nil && actions != nil {
+							copy := *actions
+							copy.PrepareLogin, copy.CommitLogin, copy.UseAccount, copy.Logout = nil, nil, nil, nil
+							copy.Accounts = nil
+							actions = &copy
+						}
+						return nil, credential.run(flowCtx, bridge, actions)
 					})
 				case "h":
 					startFlow("hooks", func(flowCtx context.Context) (terminal.Styler, error) {
-						return nil, hooks.run(flowCtx, bridge, options.Hooks)
+						actions := options.Hooks
+						if wizard.pending != nil && hooks.pending == nil && actions != nil {
+							copy := *actions
+							copy.ApplyInstall, copy.ConfirmInstalled, copy.Revoke = nil, nil, nil
+							actions = &copy
+						}
+						return nil, hooks.run(flowCtx, bridge, actions)
 					})
 				case "w":
 					startFlow("worker", func(flowCtx context.Context) (terminal.Styler, error) {

@@ -197,7 +197,11 @@ try:
   if closed():raise AssertionError('q inside readonly modal quit dashboard')
   count=len(frames('No activity yet'));os.write(master,b'\x1b');until(lambda:len(frames('No activity yet'))>count)
   for key,title in ((b'2','Links'),(b'3','Sync'),(b',','Setup')):
-   os.write(master,key);until(lambda:len(modal_frames(title))>=1)
+   os.write(master,key)
+   if key==b',':
+    until(lambda:any(r['kind']=='frame' and r['message'].split('\n')[0]=='Setup' and 'Search: ' in r['message'] and '[readiness]' in r['message'] for r in reports))
+    os.write(master,b'readiness\r');until(lambda:len(modal_frames('Setup · Readiness'))>=1)
+   else:until(lambda:len(modal_frames(title))>=1)
    os.write(master,b'\x1b[200~q\r\n\x03\x1b[201~')
    deadline=time.monotonic()+.05
    while time.monotonic()<deadline:poll(.01)
