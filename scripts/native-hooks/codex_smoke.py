@@ -34,6 +34,7 @@ EVENTS = ("PreToolUse", "PostToolUse", "SessionStart", "SessionEnd", "UserPrompt
           "SubagentStart", "SubagentStop", "Stop", "Interrupt")
 EVENT_ORDER = ("PreToolUse", "PermissionRequest", "PostToolUse", "PreCompact", "PostCompact",
                "SessionStart", "SessionEnd", "UserPromptSubmit", "SubagentStart", "SubagentStop", "Stop", "Interrupt")
+MODEL = "tempo-ci-fixture"
 PARENT_PROMPT = "tempo-native-parent-case"
 CHILD_PROMPT = "tempo-native-child-case"
 INTERRUPT_PROMPT = "tempo-native-interrupt-case"
@@ -418,7 +419,7 @@ def command_input_probe(screen, value):
     row = "".join(screen.grid[screen.row]).rstrip()
     exact = re.fullmatch(r"[ ]*[›»] +" + re.escape(value), row) is not None
     lines = [line.strip() for line in text.splitlines()]
-    return {"is_quit": value == "/quit", "model_label_present": "gpt-6.1-sol" in text,
+    return {"is_quit": value == "/quit", "model_label_present": MODEL in text,
             "modal_present": any(title in text for title in ("Trust this folder?", "Hooks need review",
                 "Lifecycle hooks from config and enabled plugins.")) or any(event + " hooks" in lines for event in EVENT_ORDER),
             "cursor_row_exact_echo": exact, "cursor_at_echo_end": exact and screen.col == len(row),
@@ -598,7 +599,7 @@ class Model:
     def respond(self, body):
         with self.lock:
             self.entry_count = min(16, self.entry_count + 1)
-        require(body.get("stream") is True and body.get("model") == "gpt-6.1-sol", "provider_request_contract")
+        require(body.get("stream") is True and body.get("model") == MODEL, "provider_request_contract")
         # The newest actual user message distinguishes parent/child/interrupt;
         # nested tool arguments containing the child marker don't count.
         users = [item for item in body.get("input", []) if item.get("role") == "user"]
@@ -714,7 +715,7 @@ def download_runtime(root, pin):
 
 
 def config_text(port):
-    return f'''model = "gpt-6.1-sol"
+    return f'''model = "{MODEL}"
 model_provider = "tempo_ci"
 check_for_update_on_startup = false
 cli_auth_credentials_store = "ephemeral"
@@ -732,7 +733,7 @@ metrics_exporter = "none"
 log_user_prompt = false
 [agents]
 enabled = true
-default_subagent_model = "gpt-6.1-sol"
+default_subagent_model = "{MODEL}"
 max_concurrent_threads_per_session = 1
 max_depth = 1
 [features]
@@ -772,7 +773,7 @@ def workspace_trust_probe(screen, repo):
 def startup_trust_probe(screen):
     lines = [re.sub(r"^›\s*", "", line.strip()) for line in screen.splitlines()]
     return {"workspace_title_present": "Trust this folder?" in screen,
-            "model_label_present": "gpt-6.1-sol" in screen,
+            "model_label_present": MODEL in screen,
             "hooks_review_title_present": "Hooks need review" in screen,
             "exact_count_present": str(len(EVENTS)) + " hooks are new or changed." in lines,
             "review_choice_present": "1. Review hooks" in lines,
@@ -890,7 +891,7 @@ def normal_trust(terminal, repo, command, trusted_events, probe=None, startup_pr
             return predicate(screen)
         return terminal.until(observed, category)
 
-    initial = observe_until(lambda s: "Trust this folder?" in s or "gpt-6.1-sol" in s or "Hooks need review" in s, "startup_ui_unavailable")
+    initial = observe_until(lambda s: "Trust this folder?" in s or MODEL in s or "Hooks need review" in s, "startup_ui_unavailable")
     startup_screen = initial
     if "Trust this folder?" in initial:
         # A PTY read can end halfway through a redraw. Wait for the complete

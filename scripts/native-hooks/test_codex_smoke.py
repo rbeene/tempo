@@ -36,7 +36,10 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(config.get("tui"), {"show_tooltips": False})
         self.assertNotIn("projects", config)
         self.assertNotIn("hooks", config)
-        self.assertEqual(config["model"], "gpt-6.1-sol")
+        self.assertEqual(config["model"], "tempo-ci-fixture")
+        self.assertEqual(config["agents"]["default_subagent_model"], "tempo-ci-fixture")
+        self.assertFalse(config["features"]["code_mode"])
+        self.assertFalse(config["features"]["code_mode_only"])
         self.assertEqual(config["model_providers"]["tempo_ci"]["base_url"], "http://127.0.0.1:43210/codex/v1")
 
     def test_command_pastes_then_waits_for_cursor_local_echo_before_single_enter(self):
@@ -47,10 +50,10 @@ class HarnessTests(unittest.TestCase):
                     terminal.input_probe = {}
                     terminal.send = mock.Mock()
                     row = "  " + glyph + " " + value
-                    frames = [("gpt-6.1-sol\n" + row + "\n› empty", 2, 7),
-                              ("gpt-6.1-sol\n" + row[:-1], 1, len(row)-1),
-                              ("gpt-6.1-sol\n" + row, 1, 0),
-                              ("gpt-6.1-sol\n" + row, 1, len(row))]
+                    frames = [("tempo-ci-fixture\n" + row + "\n› empty", 2, 7),
+                              ("tempo-ci-fixture\n" + row[:-1], 1, len(row)-1),
+                              ("tempo-ci-fixture\n" + row, 1, 0),
+                              ("tempo-ci-fixture\n" + row, 1, len(row))]
                     def until(predicate, category, seconds):
                         self.assertEqual(seconds, 5)
                         self.assertEqual(terminal.send.call_args_list,
@@ -91,12 +94,12 @@ class HarnessTests(unittest.TestCase):
 
     def test_command_never_submits_partial_historical_popup_or_modal_echo(self):
         value = "/quit"
-        cases = [("gpt-6.1-sol\n› /qui", 1, 6),
-                 ("gpt-6.1-sol\n› /quit\n› empty", 2, 7),
-                 ("gpt-6.1-sol\n› /quit  exit Codex", 1, 19),
-                 ("gpt-6.1-sol\n› /quit", 1, 0)]
+        cases = [("tempo-ci-fixture\n› /qui", 1, 6),
+                 ("tempo-ci-fixture\n› /quit\n› empty", 2, 7),
+                 ("tempo-ci-fixture\n› /quit  exit Codex", 1, 19),
+                 ("tempo-ci-fixture\n› /quit", 1, 0)]
         for title in ("Trust this folder?", "Hooks need review", "Lifecycle hooks from config and enabled plugins.", "Stop hooks"):
-            cases.append(("gpt-6.1-sol\n" + title + "\n› /quit", 2, 7))
+            cases.append(("tempo-ci-fixture\n" + title + "\n› /quit", 2, 7))
         for text, row, col in cases:
             with self.subTest(text=text):
                 terminal = smoke.Terminal.__new__(smoke.Terminal)
@@ -288,7 +291,7 @@ class HarnessTests(unittest.TestCase):
         class ReachedNextRow(Exception): pass
         class Terminal:
             def __init__(self, rows):
-                self.screens = iter(["gpt-6.1-sol", *browser_frames(), *rows])
+                self.screens = iter(["tempo-ci-fixture", *browser_frames(), *rows])
                 self.sent = []
             def until(self, predicate, category, **_):
                 for screen in self.screens:
@@ -315,7 +318,7 @@ class HarnessTests(unittest.TestCase):
         full = "PreToolUse hooks\n› [!] Hook 1 · new\nEvent: PreToolUse\nSource: User - ~/.codex/hooks.json\nCommand: " + command + "\nMode: Sync\nTimeout: 2s\nTrust: New hook - review required\nt trust · esc back"
         class Terminal:
             def __init__(self, details):
-                self.screens = iter(["gpt-6.1-sol", *browser_frames(),
+                self.screens = iter(["tempo-ci-fixture", *browser_frames(),
                                      "› PreToolUse 1 0 1 \n", "› PreToolUse 1 0 1 \n", *details])
                 self.sent = []
             def until(self, predicate, category, **_):
@@ -422,7 +425,7 @@ class HarnessTests(unittest.TestCase):
             pass
         class Terminal:
             def __init__(self, path):
-                self.screens = iter(["Trust this folder?", workspace_frames(path)[0].replace("› ", ""), *workspace_frames(path), "gpt-6.1-sol"])
+                self.screens = iter(["Trust this folder?", workspace_frames(path)[0].replace("› ", ""), *workspace_frames(path), "tempo-ci-fixture"])
                 self.sent = []
             def until(self, predicate, category, **_):
                 for screen in self.screens:
@@ -519,7 +522,7 @@ class HarnessTests(unittest.TestCase):
         for invalid in (title, full.replace("9 hooks", "19 hooks"), full.replace("9 hooks", "8 hooks"), full.replace("2. Trust all and continue", ""),
                         full.replace("› ", ""), full + "\n› 3. Continue without trusting (hooks won't run)"):
             with self.subTest(invalid=invalid):
-                bad = Terminal([invalid + "\ngpt-6.1-sol"])
+                bad = Terminal([invalid + "\ntempo-ci-fixture"])
                 with self.assertRaises(smoke.FixtureFailure):
                     smoke.normal_trust(bad, Path("/tmp/exact-project"), "unused", [])
                 self.assertEqual(bad.sent, [b"\x1b[B", b"\x1b[A", b"\r"])
@@ -553,13 +556,13 @@ class HarnessTests(unittest.TestCase):
         smoke.review_input_ack(good, prompt, evidence)
         self.assertEqual(good.sent, [b"\x1b[F", b"\x1b[F", b"1"])
         self.assertTrue(evidence["selected_continue_row"])
-        for outcomes, sends in (([prompt, prompt], 2), (["gpt-6.1-sol"], 1), ([acknowledged + "\n› 1. Review hooks"], 1)):
+        for outcomes, sends in (([prompt, prompt], 2), (["tempo-ci-fixture"], 1), ([acknowledged + "\n› 1. Review hooks"], 1)):
             bad = Terminal(outcomes)
             with self.assertRaises(smoke.FixtureFailure): smoke.review_input_ack(bad, prompt, {})
             self.assertEqual(bad.sent, [b"\x1b[F"] * sends)
 
     def test_review_transition_projection_is_finite_and_replaces_unknown_text(self):
-        probe = smoke.review_transition_probe("PRIVATE /path\ngpt-6.1-sol")
+        probe = smoke.review_transition_probe("PRIVATE /path\ntempo-ci-fixture")
         self.assertEqual(probe, {"complete_startup_modal": False, "selected_review_row": False,
                                 "selected_continue_row": False, "inventory_caption_present": False,
                                 "inventory_first_row": False, "inventory_last_row": False,
@@ -572,7 +575,7 @@ class HarnessTests(unittest.TestCase):
         class Terminal:
             def __init__(self, start, depart=False):
                 self.phase = start if start != "browser" else "composer"
-                self.screen = {"workspace": workspace_frames()[0], "startup": review, "browser": "gpt-6.1-sol"}[start]
+                self.screen = {"workspace": workspace_frames()[0], "startup": review, "browser": "tempo-ci-fixture"}[start]
                 self.start, self.depart, self.sent, self.counts = start, depart, [], {}
                 self.workspace_ack = False
             def until(self, predicate, category, **_):
@@ -693,7 +696,7 @@ class HarnessTests(unittest.TestCase):
         return model
 
     def request(self, marker=smoke.PARENT_PROMPT):
-        return {"model": "gpt-6.1-sol", "stream": True, "input": [{"role": "user", "content": [{"text": marker}]}],
+        return {"model": "tempo-ci-fixture", "stream": True, "input": [{"role": "user", "content": [{"text": marker}]}],
                 "tools": [{"type": "function", "name": "exec_command", "parameters": {"properties": {"cmd": {}, "workdir": {}, "max_output_tokens": {}}, "required": ["cmd"]}},
                           {"type": "function", "name": "spawn_agent", "parameters": {"properties": {"message": {}}, "required": ["message"]}}]}
 
@@ -726,6 +729,17 @@ class HarnessTests(unittest.TestCase):
             model.session, model.baseline = None, frozenset()
             with self.assertRaises(smoke.FixtureFailure): model.respond(self.request(marker))
             self.assertEqual(model.requests, [])
+
+    def test_direct_fixture_model_accepts_native_exec_schema_and_rejects_other_model(self):
+        receipts = [self.receipt("SessionStart"), self.receipt("UserPromptSubmit")]
+        body = self.request()
+        body["model"] = "tempo-ci-fixture"
+        item, category, hold = self.model(receipts).respond(body)
+        self.assertEqual((item["name"], item["call_id"], category, hold), ("exec_command", "tempo-read", "parent1", None))
+        self.assertEqual(json.loads(item["arguments"]), {"cmd": "cat fixture.txt", "workdir": "/tmp/project", "max_output_tokens": 1000})
+        body["model"] = "gpt-6.1-sol"
+        with self.assertRaisesRegex(smoke.FixtureFailure, "^provider_request_contract$"):
+            self.model(receipts).respond(body)
 
     def test_measured_start_submits_once_before_receipt_wait_without_session_overwrite(self):
         receipts = [self.receipt("SessionStart"), self.receipt("UserPromptSubmit")]
