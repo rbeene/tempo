@@ -160,9 +160,93 @@ class ArchiveTests(unittest.TestCase):
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_distinct_response_ids_survive_child_hold_and_both_request_orders(self):
+        # Exercise the real request-to-SSE handler with inert byte streams. The
+        # child response is allocated before release, while parent completion
+        # can serialize first; a late shared-counter lookup must not alias IDs.
+        for child_first in (True, False):
+            with self.subTest(child_first=child_first):
+                rows = [receipt('SessionStart'), receipt('UserPromptSubmit')]
+                snap = snapshot(rows)
+                conversation = smoke.Conversation(lambda: snap, Path('/tmp/project'))
+                provider = types.SimpleNamespace(conversation=conversation,
+                    budget=smoke.ProviderBudget(), shutdown=threading.Event(),
+                    deadline=time.monotonic()+5, error=None)
+                held = threading.Event()
+                original_observe = conversation.observe_parent_stop
+                def observe():
+                    held.set()
+                    return original_observe()
+                conversation.observe_parent_stop = observe
+                handler_type = smoke.make_handler(provider)
+                def make_request(body):
+                    data = json.dumps(body).encode()
+                    handler = handler_type.__new__(handler_type)
+                    handler.path = '/claude/v1/messages'
+                    handler.headers = {'Content-Length': str(len(data)), 'x-api-key': smoke.TOKEN}
+                    handler.rfile, handler.wfile = io.BytesIO(data), io.BytesIO()
+                    handler.codes = []
+                    handler.send_response = handler.codes.append
+                    handler.send_header = lambda *_: None
+                    handler.end_headers = lambda: None
+                    return handler
+                def events(handler):
+                    self.assertEqual(handler.codes, [200])
+                    return [json.loads(line[6:]) for line in handler.wfile.getvalue().decode().splitlines()
+                            if line.startswith('data: ')]
+                first = make_request(request()); first.do_POST()
+                rows.extend([receipt('PreToolUse', tool='tempo-read'), receipt('PostToolUse', tool='tempo-read')])
+                second = make_request(request(results=[result('tempo-read')]))
+                second.do_POST()
+                rows.extend([receipt('PreToolUse', tool='tempo-agent'), receipt('PostToolUse', tool='tempo-agent')])
+                child_receipt = receipt('SubagentStart', 'native-child', turn='child-turn')
+                rows.append(child_receipt)
+                snap['actors'].append({'ref': child_receipt['actor'], 'state': 'working', 'health': 'continuous'})
+                parent = make_request(request(results=[result('tempo-agent', 'synthetic child started')]))
+                child = make_request(request(smoke.CHILD_PROMPT))
+                worker = threading.Thread(target=child.do_POST)
+                try:
+                    if child_first:
+                        worker.start()
+                        self.assertTrue(held.wait(2), 'child handler never reached real hold')
+                        self.assertEqual(child.wfile.getvalue(), b'')
+                        parent.do_POST()
+                    else:
+                        parent.do_POST()
+                        worker.start()
+                        self.assertTrue(held.wait(2), 'child handler never reached real hold')
+                    # The child must remain held even after parent SSE completes.
+                    self.assertEqual(parent.codes, [200])
+                    self.assertEqual(child.wfile.getvalue(), b'')
+                    with conversation.lock:
+                        rows.append(receipt('Stop'))
+                        snap['actors'][0]['state'] = 'wait_user'
+                    worker.join(2)
+                    self.assertFalse(worker.is_alive(), 'child failed to finish after actual stop barrier')
+                    self.assertIsNone(provider.error)
+                    streams = [events(h) for h in (first, second, parent, child)]
+                    message_ids = [stream[0]['message']['id'] for stream in streams]
+                    self.assertEqual(len(set(message_ids)), 4, 'distinct Message objects shared an identity')
+                    self.assertTrue(all(isinstance(i, str) and i.startswith('msg_') for i in message_ids))
+                    for stream in streams:
+                        self.assertEqual([e['type'] for e in stream], ['message_start', 'content_block_start',
+                            'content_block_delta', 'content_block_stop', 'message_delta', 'message_stop'])
+                        self.assertEqual(sum('message' in e for e in stream), 1)
+                    self.assertEqual(streams[0][1]['content_block']['id'], 'tempo-read')
+                    self.assertEqual(streams[1][1]['content_block']['id'], 'tempo-agent')
+                    self.assertEqual(streams[2][2]['delta']['text'], 'tempo-parent-complete')
+                    self.assertEqual(streams[3][2]['delta']['text'], 'tempo-child-complete')
+                    self.assertEqual(conversation.counts, {'parent': 3, 'child': 1})
+                    self.assertTrue(conversation.independence_observed)
+                finally:
+                    provider.shutdown.set()
+                    if worker.ident is not None:
+                        worker.join(2)
+                    self.assertFalse(worker.is_alive())
+
     def test_sse_has_complete_text_and_tool_lifecycle(self):
         for block in ({'type':'text','text':'done'}, {'type':'tool_use','id':'tempo-read','name':'Read','input':{'file_path':'/tmp/fixture'}}):
-            events=smoke.sse_events(block)
+            events=smoke.sse_events(block, "msg_tempo_fixture_1")
             self.assertEqual([e['type'] for e in events], ['message_start','content_block_start','content_block_delta',
                              'content_block_stop','message_delta','message_stop'])
             self.assertEqual(events[-2]['delta']['stop_reason'], 'tool_use' if block['type']=='tool_use' else 'end_turn')
@@ -303,7 +387,7 @@ class ProtocolTests(unittest.TestCase):
                 with self.assertRaises(smoke.FixtureFailure):model.respond(request())
                 self.assertEqual(model.counts,{})
         model=smoke.Conversation(lambda:snapshot(base),Path('/tmp/project'))
-        block,hold=model.respond(request());self.assertEqual(block['name'],'Read');self.assertFalse(hold)
+        block,hold,_=model.respond(request());self.assertEqual(block['name'],'Read');self.assertFalse(hold)
 
 
     def test_initial_provider_response_rejects_nonworking_or_stale_root(self):
@@ -319,13 +403,13 @@ class ProtocolTests(unittest.TestCase):
         snap=snapshot(rows);model=smoke.Conversation(lambda:snap,Path('/tmp/project'))
         model.respond(request())
         rows.extend([receipt('PreToolUse',tool='tempo-read'),receipt('PostToolUse',tool='tempo-read')])
-        block,_=model.respond(request(results=[result('tempo-read')]))
+        block,_,_=model.respond(request(results=[result('tempo-read')]))
         self.assertEqual(block['name'],'Agent')
         with self.assertRaises(smoke.FixtureFailure):model.respond(request('tempo-native-child-case'))
         rows.append(receipt('PreToolUse',tool='tempo-agent'))
         start=receipt('SubagentStart','native-child',turn='child-prompt');rows.append(start)
         snap['actors'].append({'ref':start['actor'],'state':'working','health':'continuous'})
-        block,hold=model.respond(request('tempo-native-child-case'));self.assertTrue(hold)
+        block,hold,_=model.respond(request('tempo-native-child-case'));self.assertTrue(hold)
         self.assertEqual(model.child,'native-child');self.assertEqual(model.child_turn,'child-prompt')
         with self.assertRaises(smoke.FixtureFailure):model.respond(request('tempo-native-child-case'))
 
@@ -343,7 +427,7 @@ class ProtocolTests(unittest.TestCase):
             snap['actors'].append({'ref':start['actor'],'state':'working','health':'continuous'})
             if child_first:model.respond(request('tempo-native-child-case'))
             rows.append(receipt('PostToolUse',tool='tempo-agent'))
-            block,hold=model.respond(request(results=[result('tempo-agent','launched')]))
+            block,hold,_=model.respond(request(results=[result('tempo-agent','launched')]))
             self.assertEqual(block['type'],'text');self.assertFalse(hold)
             if not child_first:model.respond(request('tempo-native-child-case'))
             self.assertEqual(model.counts,{'parent':3,'child':1})
@@ -566,12 +650,12 @@ class NativeApprovalDiagnosticTests(unittest.TestCase):
         rows = [receipt('SessionStart'), receipt('UserPromptSubmit')]
         snap = snapshot(rows)
         model = smoke.Conversation(lambda: snap, Path('/tmp/project'))
-        read, hold = model.respond(request())
+        read, hold, _ = model.respond(request())
         self.assertEqual(read, {'type': 'tool_use', 'id': 'tempo-read', 'name': 'Read',
                                 'input': {'file_path': '/tmp/project/fixture.txt'}})
         self.assertFalse(hold)
         rows.extend([receipt('PreToolUse', tool='tempo-read'), receipt('PostToolUse', tool='tempo-read')])
-        child, hold = model.respond(request(results=[result('tempo-read')]))
+        child, hold, _ = model.respond(request(results=[result('tempo-read')]))
         self.assertEqual(child, {'type': 'tool_use', 'id': 'tempo-agent', 'name': 'Agent', 'input': {
             'description': 'Synthetic lifecycle child', 'prompt': smoke.CHILD_PROMPT,
             'subagent_type': 'tempo-fixture-child', 'run_in_background': True}})

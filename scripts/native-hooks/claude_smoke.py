@@ -365,11 +365,11 @@ def tool_item(body, name, tool_id, arguments):
     return {'type': 'tool_use', 'id': tool_id, 'name': name, 'input': arguments}
 
 
-def sse_events(block):
+def sse_events(block, message_id):
     tool = block['type'] == 'tool_use'
     start = dict(block, input={}) if tool else {'type': 'text', 'text': ''}
     delta = {'type': 'input_json_delta', 'partial_json': json.dumps(block['input'])} if tool else {'type': 'text_delta', 'text': block['text']}
-    return [{'type': 'message_start', 'message': {'id': 'msg_tempo_fixture', 'type': 'message', 'role': 'assistant',
+    return [{'type': 'message_start', 'message': {'id': message_id, 'type': 'message', 'role': 'assistant',
              'model': MODEL, 'content': [], 'stop_reason': None, 'stop_sequence': None,
              'usage': {'input_tokens': 1, 'output_tokens': 0}}},
             {'type': 'content_block_start', 'index': 0, 'content_block': start},
@@ -445,7 +445,10 @@ class Conversation:
             self.counts[category] = self.counts.get(category, 0) + 1
             require(sum(self.counts.values()) <= 4, 'provider_response_bound')
             self.requests.append({'case': category, 'index': len(self.requests) + 1, 'receipt_count': len(rows)})
-            return block, hold
+            # Capture identity under the lock, before a child response can wait
+            # while another handler allocates and sends the parent's response.
+            message_id = 'msg_tempo_fixture_' + str(len(self.requests))
+            return block, hold, message_id
 
     def observe_parent_stop(self):
         with self.lock:
@@ -570,7 +573,7 @@ def make_handler(provider):
                 body = json.loads(data)
                 require(isinstance(body, dict), 'provider_request_contract')
                 require(not provider.shutdown.is_set(), 'provider_request_after_shutdown')
-                block, hold = provider.conversation.respond(body)
+                block, hold, message_id = provider.conversation.respond(body)
                 if hold:
                     until = min(provider.deadline, time.monotonic() + 30)
                     while time.monotonic() < until and not provider.shutdown.is_set():
@@ -580,7 +583,7 @@ def make_handler(provider):
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/event-stream')
                 self.send_header('Connection', 'close'); self.end_headers()
-                for event in sse_events(block):
+                for event in sse_events(block, message_id):
                     self.wfile.write(('event: ' + event['type'] + '\ndata: ' + json.dumps(event) + '\n\n').encode())
                     self.wfile.flush()
             except Exception as exc:
