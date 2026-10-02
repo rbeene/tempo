@@ -10,3 +10,5 @@ func openNoFollow(*os.Root, string, int, os.FileMode) (*os.File, error) {
 }
 func tryLockFile(*os.File) (bool, error) { return false, problem("unsupported_contract") }
 func unlockFile(*os.File)                {}
+
+func repositoryIdentity(fi os.FileInfo) string { return "" }

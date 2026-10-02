@@ -8,9 +8,11 @@ import (
 // This is the authoritative hooks metadata domain. Installer manifests and
 // future typed requests extend this record under its existing lock.
 type metadata struct {
-	SchemaVersion int                      `json:"schema_version"`
-	Profiles      map[string]Profile       `json:"profiles"`
-	Requests      map[string]policyRequest `json:"requests"`
+	SchemaVersion   int                       `json:"schema_version"`
+	Installations   map[string]installation   `json:"installations,omitempty"`
+	InstallRequests map[string]installRequest `json:"install_requests,omitempty"`
+	Profiles        map[string]Profile        `json:"profiles"`
+	Requests        map[string]policyRequest  `json:"requests"`
 }
 
 type policyRequest struct {
@@ -39,7 +41,7 @@ func validProfile(p Profile) bool {
 		return false
 	}
 	c := p.Context
-	if c.Host != "codex" && c.Host != "claude" || c.Scope != "project" || c.Surface != "local" || !filepath.IsAbs(c.Path) || filepath.Clean(c.Path) != c.Path || !safeText(c.Path, 4096) || len(c.Conflicts) != 0 || len(c.Artifacts) < 3 || len(c.Artifacts) > 16 {
+	if c.InventoryVersion != "" && c.InventoryVersion != installedInventoryVersion || c.Host != "codex" && c.Host != "claude" || c.Scope != "project" && c.Scope != "user" || c.Surface != "local" || !filepath.IsAbs(c.Path) || filepath.Clean(c.Path) != c.Path || !safeText(c.Path, 4096) || len(c.Conflicts) != 0 || len(c.Artifacts) < 3 || len(c.Artifacts) > maxProfileArtifacts {
 		return false
 	}
 	if c.Host == "codex" && c.RuntimeVersion != "0.159.3" || c.Host == "claude" && c.RuntimeVersion != "2.1.286" {
@@ -52,7 +54,7 @@ func validProfile(p Profile) bool {
 			return false
 		}
 		switch a.Role {
-		case "runtime", "executable", "definitions":
+		case "runtime", "executable", "definitions", "repository":
 			if a.SHA256 == "absent" {
 				return false
 			}
@@ -91,6 +93,9 @@ func validMetadata(d *metadata) bool {
 		if !ok || before > after || before == after && digest(r.Result) != digest(current) {
 			return false
 		}
+	}
+	if !validInstallMetadata(d) {
+		return false
 	}
 	return true
 }

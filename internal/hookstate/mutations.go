@@ -54,6 +54,9 @@ func (s *Service) replay(ctx context.Context, id, operation, fingerprint string)
 	if err != nil {
 		return Profile{}, false, err
 	}
+	if _, exists := disk.InstallRequests[id]; exists {
+		return Profile{}, true, problem("request_conflict")
+	}
 	r, ok := disk.Requests[id]
 	if !ok {
 		return Profile{}, false, nil
@@ -99,6 +102,9 @@ func (s *Service) confirm(ctx context.Context, in ConfirmInput) (Profile, error)
 	}
 	var result Profile
 	err = s.update(ctx, func(d *metadata) (bool, error) {
+		if _, exists := d.InstallRequests[in.RequestID]; exists {
+			return false, problem("request_conflict")
+		}
 		if old, ok := d.Requests[in.RequestID]; ok {
 			if old.Operation != operation || old.Fingerprint != fingerprint {
 				return false, problem("request_conflict")
@@ -141,7 +147,7 @@ func (s *Service) revoke(ctx context.Context, in RevokeInput) (Profile, error) {
 	if !in.Confirmed {
 		return Profile{}, problem("confirmation_required")
 	}
-	if in.Host != "codex" && in.Host != "claude" || in.Scope != "project" || !filepath.IsAbs(in.Path) || !safeText(in.Path, 4096) {
+	if in.Host != "codex" && in.Host != "claude" || in.Scope != "project" && in.Scope != "user" || !filepath.IsAbs(in.Path) || !safeText(in.Path, 4096) {
 		return Profile{}, problem("validation")
 	}
 	if n, ok := number(in.IfRevision); !ok || n == 0 {
@@ -161,6 +167,9 @@ func (s *Service) revoke(ctx context.Context, in RevokeInput) (Profile, error) {
 	}
 	var result Profile
 	err = s.update(ctx, func(d *metadata) (bool, error) {
+		if _, exists := d.InstallRequests[in.RequestID]; exists {
+			return false, problem("request_conflict")
+		}
 		if old, ok := d.Requests[in.RequestID]; ok {
 			if old.Operation != operation || old.Fingerprint != fingerprint {
 				return false, problem("request_conflict")
@@ -207,7 +216,7 @@ func (s *Service) eligibility(ctx context.Context, disk *metadata, host, cwd str
 	}
 	selected := Profile{Basis: "none", State: "absent", Revision: "0", DiagnosticCode: "profile_required"}
 	for _, p := range disk.Profiles {
-		if p.Context.Host == host && applicable(p.Context.Path, path) && len(p.Context.Path) > len(selected.Context.Path) {
+		if p.Context.Host == host && (p.Context.InventoryVersion == "" && applicable(p.Context.Path, path) || p.Context.InventoryVersion == installedInventoryVersion && p.Context.Path == path) && (len(p.Context.Path) > len(selected.Context.Path) || len(p.Context.Path) == len(selected.Context.Path) && p.Context.Scope == "project") {
 			selected = p
 		}
 	}
@@ -215,6 +224,9 @@ func (s *Service) eligibility(ctx context.Context, disk *metadata, host, cwd str
 		return selected, nil
 	}
 	current, hashErr := sampleContext(ctx, selected.Context)
+	if selected.Context.InventoryVersion == installedInventoryVersion && !s.normalHostRoot(host) {
+		hashErr = problem("unsupported_contract")
+	}
 	if hashErr == nil && contextFingerprint(current) == contextFingerprint(selected.Context) {
 		return selected, nil
 	}

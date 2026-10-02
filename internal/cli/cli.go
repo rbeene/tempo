@@ -15,6 +15,7 @@ import (
 	"github.com/rbeene/tempo/internal/activity"
 	"github.com/rbeene/tempo/internal/auth"
 	"github.com/rbeene/tempo/internal/harvest"
+	"github.com/rbeene/tempo/internal/hookstate"
 	"github.com/rbeene/tempo/internal/setup"
 	"github.com/rbeene/tempo/internal/terminal"
 	"github.com/rbeene/tempo/internal/worker"
@@ -23,6 +24,7 @@ import (
 var Version = "dev"
 
 type Dependencies struct {
+	Hooks            *hookstate.Service
 	Worker           *worker.Service
 	Auth             *auth.Service
 	Prompter         terminal.Prompter
@@ -53,6 +55,14 @@ func safeError(err error) *cliError {
 	var ae *activity.Error
 	if errors.As(err, &ae) {
 		return &cliError{Code: ae.Code, Message: ae.Message, Retryable: ae.Retryable, Uncertain: ae.Uncertain, Details: ae.Details}
+	}
+	var hookErr *hookstate.Error
+	if errors.As(err, &hookErr) {
+		details := map[string]any{}
+		if hookErr.RequestID != "" {
+			details["request_id"] = hookErr.RequestID
+		}
+		return &cliError{Code: hookErr.Code, Message: "hook lifecycle operation failed; inspect hooks status and preserve the request ID", Retryable: hookErr.Retryable, Uncertain: hookErr.Uncertain, Details: details}
 	}
 	var we *worker.Error
 	if errors.As(err, &we) {
@@ -222,6 +232,9 @@ func printHelp(w io.Writer) {
 func validate(p *parsed, now time.Time) error {
 	f := p.flags
 	n := p.command.Name
+	if hooksCommand(n) {
+		return validateHooksCLI(p)
+	}
 	if workerCommand(n) {
 		return validateWorkerCLI(p)
 	}
@@ -358,6 +371,9 @@ type session struct {
 }
 
 func execute(ctx context.Context, p parsed, in io.Reader, d Dependencies) (any, error) {
+	if hooksCommand(p.command.Name) {
+		return executeHooks(ctx, p, d)
+	}
 	if workerCommand(p.command.Name) {
 		return executeWorker(ctx, p, d)
 	}

@@ -158,11 +158,11 @@ Supply and retain `--request-id` for reliable automated replay. Repeating the sa
 
 ## Guided setup and diagnostics
 
-`tempo setup [--path PATH] [--host codex|claude|both] [--scope user|project]` verifies authentication, offers hidden token entry and account selection when needed, and guides project linking. The host/scope choices do not install anything in this version. Every authentication save and binding change has its own confirmation. Setup reports completed steps if a later step fails or is cancelled; earlier confirmed changes remain applied. Authentication alone never reports hooks or automatic upload as ready.
+`tempo setup [--path PATH] [--host codex|claude|both] [--scope user|project]` verifies authentication, offers hidden token entry and account selection when needed, and guides project linking. The host/scope choices select the shared hook lifecycle menu, including preview and separately confirmed installation. Every authentication save and binding change has its own confirmation. Setup reports completed steps if a later step fails or is cancelled; earlier confirmed changes remain applied. Authentication alone never reports hooks or automatic upload as ready.
 
 `tempo link [PROJECT_ID]` offers searchable active assigned projects, Up/Down selection and Enter, then resolves the task, account and IANA timezone. Type to filter; `q` is ordinary search text. Escape or EOF cancels; Ctrl-C cancels even during an API request. Saved parent-directory choices may supply defaults for a new child mapping; only an exact target mapping supplies an update revision. Repository mappings cover all Git worktrees.
 
-Finite `setup` inspects local account configuration and the target binding without reading credentials or contacting Harvest. `doctor` reports local configuration and binding-state problems plus unverified capabilities; `doctor --check` additionally checks credentials and account access. Neither command installs hooks or enables uploads.
+Finite `setup` inspects local account configuration and the target binding without reading credentials or contacting Harvest. `doctor` reports local configuration and binding-state problems plus unverified capabilities; `doctor --check` additionally checks credentials and account access. Finite setup and doctor do not install hooks or enable uploads. Interactive setup offers separately confirmed shared hook operations.
 
 Native credential operations disable OS prompts and run with a five-second helper budget. Login, logout and account selection share a per-user lock even across different config paths. If a dispatched credential/config write has no conclusive reply, `credential_write_unknown` exits 8 with safe `details.effects`; inspect `auth status` and `config show` before an explicit replacement. Do not automatically replay the operation. A killed helper cannot guarantee an already accepted OS operation will not complete later. Unsupported secure storage is reported before interactive secret collection; use a securely supplied `HARVEST_TOKEN` instead.
 
@@ -316,3 +316,7 @@ offline capture and retained eligibility requirements apply. `--json` and
 `--non-interactive` preserve empty host stdout. See [Claude lifecycle
 capture](claude-hooks.md) for prompt/child identity, question waits, failure and
 delivery limits. Neither hook command installs configuration or grants trust.
+
+### Native hook lifecycle
+
+`tempo hooks preview|install|status|verify|repair|uninstall|confirm-profile|revoke-profile` are finite local operations available through the shared setup controls. Supply `--host codex|claude|both`, `--scope user|project` and an absolute project `--path` where required. Preview also requires `--operation install|repair|uninstall`. Mutations require the reviewed fingerprint (or current revision for revoke) and `--yes`; `--request-id` is generated when omitted and exposed for replay. Profile confirmation takes one host, an explicit project context, and the current declaration version. See [hook installation](hook-installation.md) for the full trust, retained policy, ownership and uncertain-write recovery sequence. `hooks verify` is read-only and cannot prove delivery by invoking a test callback.

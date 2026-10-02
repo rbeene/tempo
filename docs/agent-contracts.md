@@ -175,3 +175,7 @@ Setup and direct auth commands use the same bounded native helper and account-se
 ## Native Codex capture subset
 
 The local Codex and Claude hook protocols and their retained eligibility, ordering, delivery limits and native acceptance bounds are documented in [codex-hooks.md](codex-hooks.md) and [claude-hooks.md](claude-hooks.md). `ActivitySnapshot.capture_reviews` projects retained non-reconstructable host warnings from committed receipts. It is separate from end-resolvable `uncertainties`: an incomplete blocking wait has no proven continuous working tail to resolve. The warning retains exact actor/native/policy provenance and never authorizes automatic billing or implicit acknowledgment. Later independent generations remain usable.
+
+## Hook installation and retained profile controls
+
+The shipped installer and CLI/setup controls use one `hookstate.Service` and its authoritative metadata lock. [hook-installation.md](hook-installation.md) specifies exact preview/confirmation, ownership, private backups, multi-file journal recovery, retained operator declaration and the limits of delivery evidence. Hook mutations require a preserved request UUID after unknown local I/O; CLI/setup generate one before dispatch when omitted and expose it in results and uncertain errors. Status/verify never manufacture a receipt or persist eligibility changes. User-scope declarations are bound to an explicit project context, not the whole home directory. Installation, host approval, eligibility, receipt origin and worker/upload readiness remain separate dimensions.

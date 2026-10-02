@@ -15,7 +15,7 @@ archives:
   - id: linux
     formats: [tar.gz]
     name_template: 'tempo_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
-    files: [README.md, docs/commands.md]
+    files: [README.md, docs/commands.md, THIRD_PARTY_NOTICES.md]
 checksum:
   name_template: checksums-linux.txt
 snapshot:

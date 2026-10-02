@@ -26,3 +26,11 @@ func tryLockFile(f *os.File) (bool, error) {
 	return e == nil, e
 }
 func unlockFile(f *os.File) { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }
+
+func repositoryIdentity(fi os.FileInfo) string {
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return ""
+	}
+	return digest(struct{ Device, Inode uint64 }{uint64(st.Dev), uint64(st.Ino)})
+}

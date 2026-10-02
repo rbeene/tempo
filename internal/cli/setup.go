@@ -20,7 +20,15 @@ func authService(d Dependencies) *auth.Service {
 }
 func executeGuided(ctx context.Context, p parsed, in io.Reader, out io.Writer, d Dependencies, interactive bool) (result any, err error) {
 	a := activityService(d)
-	service := setup.New(setup.Options{Auth: authService(d), Activity: a})
+	options := setup.Options{Auth: authService(d), Activity: a, Hooks: d.Hooks, Worker: d.Worker}
+	if d.Activity == nil {
+		options.Hooks = hooksService(d)
+		options.Worker, err = workerService(d)
+		if err != nil {
+			return nil, err
+		}
+	}
+	service := setup.New(options)
 	if p.command.Name == "doctor" {
 		return service.Doctor(ctx, p.flags["check"] == "true")
 	}
