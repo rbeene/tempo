@@ -115,6 +115,8 @@ Every accepted event has stable source/actor/generation/sequence identity. Retry
 
 Working actors contribute to one union per computer/account/project; separate projects run concurrently. Waits close only that actor's segment. Parent termination never stops a child. Reliable closed unions appear with queued counts, and capture itself makes no Harvest requests; explicit sync or the optional worker submits eligible completed intervals. Uncertainties remain separate and cannot become queued time through an ordinary later stop or resume.
 
+`ActivitySnapshot.project_timers` is the authoritative display projection grouped by computer/account/project. It reports provisional union and confirmed closed durations separately, with grouped actor references, unresolved IDs and queue counts. Existing `projects` retains full task/user/timezone attribution details. Both projections use the same status sample and resolved endpoints; the UI never sums actor durations or advances time itself. Live attribution compatibility and relink guards prevent conflicting overlapping attribution, and finalization rejects overlapping immutable closed intervals for a project timer. Sequential attribution epochs remain one project timer while retaining distinct accounting history. An absent store returns `project_timers: []` without creating state.
+
 ## Project and directory links
 
 | Command | Behavior |

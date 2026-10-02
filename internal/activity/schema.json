@@ -79,6 +79,19 @@
       "synced_count": "integer",
       "needs_attention_count": "integer"
     },
+    "ProjectTimer": {
+      "computer_id": "uuid",
+      "account_id": "harvest_id",
+      "project_id": "harvest_id",
+      "active_actor_refs": "ActorRef[]",
+      "waiting_actor_refs": "ActorRef[]",
+      "provisional_union_ns": "counter",
+      "confirmed_closed_ns": "counter",
+      "unresolved_ids": "uuid[]",
+      "queued_count": "integer",
+      "synced_count": "integer",
+      "needs_attention_count": "integer"
+    },
     "HostReceipt": {
       "contract_version": "integer=1",
       "snapshot_revision": "counter",
@@ -106,6 +119,7 @@
       "observed_at": "utc",
       "computer_id": "uuid|null",
       "projects": "ProjectActivity[]",
+      "project_timers": "ProjectTimer[]",
       "actors": "Actor[]",
       "uncertainties": "Uncertainty[]",
       "capture_reviews": "HostReceipt[]",
