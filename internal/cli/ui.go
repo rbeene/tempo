@@ -12,11 +12,14 @@ import (
 	"github.com/rbeene/tempo/internal/auth"
 	"github.com/rbeene/tempo/internal/harvest"
 	"github.com/rbeene/tempo/internal/hookstate"
+	"github.com/rbeene/tempo/internal/setup"
 	"github.com/rbeene/tempo/internal/terminal"
 	"github.com/rbeene/tempo/internal/worker"
 )
 
 var uiRequestIdentity = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+func uiSetupReport(w io.Writer, status setup.Status, outcome error) {}
 
 // The report budget begins after Close, at the first plain diagnostic. Every
 // retained outcome and the final human error share that one bounded budget.

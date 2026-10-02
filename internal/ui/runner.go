@@ -36,10 +36,12 @@ type Options struct {
 	Hooks       *HookActions
 	Worker      *WorkerActions
 	Sync        *SyncActions
+	Setup       *SetupActions
 	Diagnostics func(context.Context, bool) (setup.Diagnostics, error)
 	// Outcome callbacks run only after owned work joins and Close has attempted
 	// terminal restoration. They must report safe shared observations only.
 	OnAuthResult         func(string, auth.Result, error)
+	OnSetupResult        func(setup.Status, error)
 	OnRetainedOutcome    func(string, string, error)
 	OnRestorationFailure func()
 	// Refresh is an optional testable refresh source. Nil uses a one-second

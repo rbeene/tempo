@@ -154,8 +154,7 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 							service := setup.New(setup.Options{Auth: authService(d), Activity: a})
 							return service.CommitLink(actionCtx, input)
 						}, Unlink: a.Unlink, Repair: a.RepairBinding}
-						credentials := authService(d)
-						authActions := &ui.AuthActions{CanPersist: credentials.CanPersist, Status: credentials.Status, Accounts: credentials.Accounts, PrepareLogin: credentials.PrepareLogin, CommitLogin: credentials.CommitLogin, Logout: credentials.Logout, UseAccount: credentials.UseAccount, ConfigShow: credentials.ConfigShow}
+						authActions := uiAuthActions(d)
 						capture := &ui.ActivityActions{Status: a.Status, Review: a.Review, Preview: a.Preview, Resolve: a.Resolve, Interrupt: a.Interrupt}
 						err = uiResultError(ui.Run(session.Context(), session, a, ui.Options{Views: views, Links: links, Activity: capture, Auth: authActions, Hooks: uiHookActions(d), Worker: uiWorkerActions(d), Diagnostics: func(readCtx context.Context, check bool) (setup.Diagnostics, error) {
 							service, err := setupService(d)

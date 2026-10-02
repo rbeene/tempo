@@ -3,13 +3,46 @@ package cli
 import (
 	"context"
 
+	"github.com/rbeene/tempo/internal/auth"
 	"github.com/rbeene/tempo/internal/hookstate"
+	"github.com/rbeene/tempo/internal/setup"
+	"github.com/rbeene/tempo/internal/terminal"
 	"github.com/rbeene/tempo/internal/ui"
 	"github.com/rbeene/tempo/internal/worker"
 )
 
-// Factories run only after an explicit action, never while opening or ticking
-// the dashboard. All operations delegate to the same finite-command services.
+// Constructing adapters performs no I/O. Shared services and provider reads run
+// only for an explicit action; the dashboard does not perform them on a tick.
+func uiAuthActions(d Dependencies) *ui.AuthActions {
+	credentials := authService(d)
+	return &ui.AuthActions{CanPersist: credentials.CanPersist, Status: credentials.Status, Accounts: credentials.Accounts, PrepareLogin: credentials.PrepareLogin, Logout: credentials.Logout, ConfigShow: credentials.ConfigShow,
+		CommitLogin: func(ctx context.Context, attempt *auth.LoginAttempt, account string) (auth.Result, error) {
+			result, err := credentials.CommitLogin(ctx, attempt, account)
+			if err == nil {
+				notifyWorker(ctx, d, worker.Recheck)
+			}
+			return result, err
+		},
+		UseAccount: func(ctx context.Context, account string) (auth.Result, error) {
+			result, err := credentials.UseAccount(ctx, account)
+			if err == nil {
+				notifyWorker(ctx, d, worker.Recheck)
+			}
+			return result, err
+		},
+	}
+}
+
+func uiSetupActions(d Dependencies) *ui.SetupActions {
+	return &ui.SetupActions{Run: func(ctx context.Context, input setup.Input, prompt terminal.Prompter) (setup.Status, error) {
+		service, err := setupService(d)
+		if err != nil {
+			return setup.Status{}, err
+		}
+		return service.Run(ctx, input, prompt)
+	}}
+}
+
 func uiHookActions(d Dependencies) *ui.HookActions {
 	return &ui.HookActions{
 		Status: func(ctx context.Context, in hookstate.HookSelector) (hookstate.HookList, error) {
