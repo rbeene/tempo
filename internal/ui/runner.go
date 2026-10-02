@@ -8,6 +8,7 @@ import (
 
 	"github.com/rbeene/tempo/internal/activity"
 	"github.com/rbeene/tempo/internal/auth"
+	"github.com/rbeene/tempo/internal/setup"
 	"github.com/rbeene/tempo/internal/terminal"
 )
 
@@ -27,11 +28,14 @@ type SnapshotReader interface {
 }
 
 type Options struct {
-	Styler   terminal.Styler
-	Views    *ReadViews
-	Links    *LinkActions
-	Activity *ActivityActions
-	Auth     *AuthActions
+	Styler      terminal.Styler
+	Views       *ReadViews
+	Links       *LinkActions
+	Activity    *ActivityActions
+	Auth        *AuthActions
+	Hooks       *HookActions
+	Worker      *WorkerActions
+	Diagnostics func(context.Context, bool) (setup.Diagnostics, error)
 	// Outcome callbacks run only after owned work joins and Close has attempted
 	// terminal restoration. They must report safe shared observations only.
 	OnAuthResult         func(string, auth.Result, error)
