@@ -608,7 +608,13 @@ stream_max_retries = 0
 def normal_trust(terminal, repo, command, trusted_events):
     initial = terminal.until(lambda s: "Trust this folder?" in s or "gpt-6.1-sol" in s, "startup_ui_unavailable")
     if "Trust this folder?" in initial:
-        require(str(repo) in initial and "Trust and continue" in initial and "Quit" in initial, "workspace_trust_mismatch")
+        # A PTY read can end halfway through a redraw. Wait for the complete
+        # exact folder/choice display before taking the normal trust action.
+        terminal.until(lambda s: "Trust this folder?" in s
+                       and str(repo) in [line.strip() for line in s.splitlines()]
+                       and "Trust and continue" in s and "Quit" in s
+                       and "Trusting will apply to the repository root:" not in s,
+                       "workspace_trust_mismatch")
         terminal.send(b"\r")
         terminal.until(lambda s: "Trust this folder?" not in s and "gpt-6.1-sol" in s, "workspace_trust_failed")
     terminal.command("/hooks")

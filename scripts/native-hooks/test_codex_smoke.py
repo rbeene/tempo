@@ -95,6 +95,48 @@ class HarnessTests(unittest.TestCase):
         with self.assertRaisesRegex(smoke.FixtureFailure, "unsupported_terminal_parameters"):
             smoke.Screen().feed(b"\x1b[?1H")
 
+    def test_workspace_trust_waits_for_complete_exact_prompt_before_enter(self):
+        class ReachedHooks(Exception):
+            pass
+        class Terminal:
+            def __init__(self, path):
+                self.screens = iter(["Trust this folder?", "Trust this folder?\n" + path + "\nTrust and continue\nQuit", "gpt-6.1-sol"])
+                self.sent = []
+            def until(self, predicate, category, **_):
+                for screen in self.screens:
+                    if predicate(screen): return screen
+                raise smoke.FixtureFailure(category)
+            def send(self, data): self.sent.append(data)
+            def command(self, value):
+                self.asserted_command = value
+                raise ReachedHooks()
+        terminal = Terminal("/tmp/exact-project")
+        with self.assertRaises(ReachedHooks):
+            smoke.normal_trust(terminal, Path("/tmp/exact-project"), "unused", [])
+        self.assertEqual(terminal.sent, [b"\r"])
+        self.assertEqual(terminal.asserted_command, "/hooks")
+        for path in ("/tmp/different-project", "/tmp/exact-project-other"):
+            wrong = Terminal(path)
+            with self.assertRaisesRegex(smoke.FixtureFailure, "workspace_trust_mismatch"):
+                smoke.normal_trust(wrong, Path("/tmp/exact-project"), "unused", [])
+            self.assertEqual(wrong.sent, [])
+
+    def test_workspace_trust_rejects_near_prefix_folder_without_enter(self):
+        class Terminal:
+            def __init__(self, path_display):
+                self.sent = []
+                self.screen = "Trust this folder?\n" + path_display + "\nTrust and continue\nQuit"
+            def until(self, predicate, category, **_):
+                if predicate(self.screen): return self.screen
+                raise smoke.FixtureFailure(category)
+            def send(self, data): self.sent.append(data)
+        for path_display in ("/tmp/exact-project-other", "/tmp/exact-project\nTrusting will apply to the repository root:\n/tmp/different-root"):
+            with self.subTest(path_display=path_display):
+                terminal = Terminal(path_display)
+                with self.assertRaisesRegex(smoke.FixtureFailure, "workspace_trust_mismatch"):
+                    smoke.normal_trust(terminal, Path("/tmp/exact-project"), "unused", [])
+                self.assertEqual(terminal.sent, [])
+
     def test_receipt_projection_cannot_export_raw_payload_or_unknown_status(self):
         receipt = self.receipt("SessionStart")
         receipt.update(prompt="SECRET", headers={"Authorization": "SECRET"}, diagnostic_code="SECRET")
