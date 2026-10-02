@@ -31,6 +31,56 @@ def browser_frames():
 
 
 class HarnessTests(unittest.TestCase):
+    def test_read_result_probe_exports_only_bounded_fixed_observations(self):
+        def body(value):
+            return {"input": [{"type": "function_call_output", "call_id": "tempo-read", "output": value}]}
+        value = 'exec_command failed: CreateProcess { message: "PRIVATE /secret; No permissions to create a new namespace" }'
+        result = smoke.read_result_probe(body(value))
+        self.assertEqual(result, {"matching_results": 1, "output_type": "string", "sentinel_present": False,
+                                  "error_category": "create_process", "process_state": "unknown",
+                                  "namespace_failure_marker": True, "companion_failure_marker": False})
+        self.assertNotIn("PRIVATE", json.dumps(result))
+        self.assertNotIn("/secret", json.dumps(result))
+        for value, kind in (({}, "object"), ([], "list"), (None, "other"), ("x" * 16385, "oversize")):
+            projected = smoke.read_result_probe(body(value))
+            self.assertEqual(projected["output_type"], kind)
+            self.assertEqual(projected["error_category"], "unavailable")
+        duplicate = body("PRIVATE")
+        duplicate["input"] *= 10
+        self.assertEqual(smoke.read_result_probe(duplicate)["matching_results"], 2)
+        self.assertEqual(smoke.read_result_probe(duplicate)["output_type"], "missing")
+        self.assertEqual(smoke.read_result_probe({})["matching_results"], 0)
+
+    def test_read_result_probe_matches_error_boundaries_and_only_process_headers(self):
+        def probe(value):
+            return smoke.read_result_probe({"input": [{"type": "function_call_output", "call_id": "tempo-read", "output": value}]})
+        for variant, category in (("CreateProcess", "create_process"), ("ProcessFailed", "process_failed"),
+                                  ("SandboxDenied", "sandbox_denied"), ("ForeignPath", "foreign_path")):
+            self.assertEqual(probe('exec_command failed: ' + variant + ' { message: "PRIVATE" }')["error_category"], category)
+        self.assertEqual(probe('exec_command failed: CreateProcessPrivate { }')["error_category"], "unavailable")
+        self.assertEqual(probe('PRIVATE exec_command failed: CreateProcess { }')["error_category"], "unavailable")
+        self.assertEqual(probe('exec_command failed: CreateProcess { message: "failed to open bundled bubblewrap /PRIVATE" }')["companion_failure_marker"], True)
+        for line, state in (("Process exited with code 0", "exited_zero"), ("Process exited with code 7", "exited_nonzero"),
+                            ("Process running with session ID 123", "running")):
+            self.assertEqual(probe("Chunk ID: PRIVATE\nWall time: 0.1 seconds\n" + line + "\nOutput:\nPRIVATE")["process_state"], state)
+            self.assertEqual(probe("Output:\n" + line)["process_state"], "unknown")
+        self.assertEqual(probe("Process exited with code 0")["process_state"], "unknown")
+        self.assertTrue(probe("Output:\n" + smoke.READ_RESULT)["sentinel_present"])
+
+    def test_actual_provider_read_failure_records_probe_without_releasing_response(self):
+        receipts = [self.receipt("SessionStart"), self.receipt("UserPromptSubmit")]
+        model = self.model(receipts)
+        model.respond(self.request())
+        body = self.request()
+        body["input"].append({"type": "function_call_output", "call_id": "tempo-read", "output": "exec_command failed: MissingCommandLine"})
+        with self.assertRaisesRegex(smoke.FixtureFailure, "^actual_read_result_missing$"): model.respond(body)
+        self.assertEqual(model.read_probe["error_category"], "missing_command_line")
+        self.assertEqual(model.counts, {"parent": 1})
+        body["input"][-1]["output"] = "PRIVATE"
+        with self.assertRaises(smoke.FixtureFailure): model.respond(body)
+        self.assertEqual(model.read_probe["error_category"], "unavailable")
+        self.assertEqual(model.counts, {"parent": 1})
+
     def test_fixture_config_disables_persisted_startup_tooltips_without_trust_seeding(self):
         config = tomllib.loads(smoke.config_text(43210))
         self.assertEqual(config.get("tui"), {"show_tooltips": False})
