@@ -27,6 +27,7 @@ type SnapshotReader interface {
 
 type Options struct {
 	Styler terminal.Styler
+	Views  *ReadViews
 	// Refresh is an optional testable refresh source. Nil uses a one-second
 	// ticker; closing an injected channel disables further scheduled refreshes.
 	Refresh <-chan time.Time
@@ -36,9 +37,35 @@ type Options struct {
 func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Options) (err error) {
 	ctx, cancel := context.WithCancelCause(ctx)
 	var workers sync.WaitGroup
+	bridge := newPromptBridge(ctx)
+	var modal *promptModel
+	var active *promptRequest
+	clearReply := func(request *promptRequest) {
+		if request == nil {
+			return
+		}
+		select {
+		case reply := <-request.reply:
+			clear(reply.secret)
+		default:
+		}
+	}
 	defer func() {
 		cancel(nil)
+		if modal != nil {
+			modal.Close()
+		}
 		workers.Wait()
+		clearReply(active)
+		for {
+			select {
+			case request := <-bridge.requests:
+				clearReply(&request)
+			default:
+				goto drained
+			}
+		}
+	drained:
 		if closeErr := screen.Close(); closeErr != nil {
 			var ended *terminal.ExitError
 			if err == nil || errors.As(err, &ended) && ended.Code == 0 {
@@ -57,7 +84,11 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 	draw := func() error {
 		outputCtx, end := context.WithTimeout(ctx, 250*time.Millisecond)
 		defer end()
-		if err := screen.Draw(outputCtx, model.Render(options.Styler)); err != nil {
+		frame := model.Render(options.Styler)
+		if modal != nil {
+			frame = modal.Render(options.Styler)
+		}
+		if err := screen.Draw(outputCtx, frame); err != nil {
 			if ctx.Err() != nil && errors.Is(err, context.Canceled) {
 				return context.Cause(ctx)
 			}
@@ -139,10 +170,57 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 		requests <- sequence
 	}
 	request()
+	flowDone := make(chan error, 1)
+	flowBusy := false
+	var endFlow context.CancelFunc
+	startFlow := func(view localView) {
+		if flowBusy {
+			return
+		}
+		flowCtx, end := context.WithTimeout(ctx, 2*time.Minute)
+		endFlow, flowBusy = end, true
+		snapshot := model.snapshot
+		key, selected := model.SelectedKey()
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			defer end()
+			flowErr := showView(flowCtx, view, snapshot, key, selected, bridge, options.Views)
+			select {
+			case flowDone <- flowErr:
+			case <-ctx.Done():
+			}
+		}()
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return context.Cause(ctx)
+		case request := <-bridge.requests:
+			if request.ctx.Err() != nil {
+				clearReply(&request)
+				continue
+			}
+			active = &request
+			if modal != nil {
+				modal.Close()
+			}
+			modal = newPromptModel(request, columns, rows)
+			if err = draw(); err != nil {
+				return err
+			}
+		case <-flowDone:
+			flowBusy = false
+			endFlow = nil
+			if modal != nil {
+				modal.Close()
+				modal = nil
+			}
+			clearReply(active)
+			active = nil
+			if err = draw(); err != nil {
+				return err
+			}
 		case _, open := <-refresh:
 			if !open {
 				refresh = nil
@@ -167,15 +245,71 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 			if result.err != nil {
 				return result.err
 			}
-			switch event := result.event; event.Kind {
+			event := result.event
+			if event.Kind == "resize" {
+				columns, rows = event.Columns, event.Rows
+				model.Resize(columns, rows)
+				if modal != nil {
+					modal.Resize(columns, rows)
+				}
+				if err = draw(); err != nil {
+					return err
+				}
+				continue
+			}
+			if modal != nil {
+				reply, done := modal.Handle(event)
+				if done {
+					if active.ctx.Err() == nil && ctx.Err() == nil {
+						select {
+						case active.reply <- reply:
+						default:
+							clear(reply.secret)
+						}
+					} else {
+						clear(reply.secret)
+					}
+					if event.Kind == "escape" {
+						endFlow()
+						modal.Close()
+						modal = nil
+					}
+					// Keep the completed frame until the service either opens
+					// its next prompt or finishes the flow.
+					// Retain the reply channel until the flow has consumed or
+					// abandoned it; teardown clears any private bytes.
+					// The dashboard is shown only after the flow finishes, so
+					// visible navigation always accepts the next explicit view.
+					continue
+				}
+				if err = draw(); err != nil {
+					return err
+				}
+				continue
+			}
+			switch event.Kind {
 			case "escape":
+				if flowBusy {
+					endFlow()
+					continue
+				}
 				return nil
+			case "enter":
+				startFlow(timerDetails)
 			case "text":
 				switch event.Text {
 				case "q":
 					return nil
 				case "r":
 					request()
+				case "2":
+					startFlow(linksView)
+				case "3":
+					startFlow(syncView)
+				case ",":
+					startFlow(setupView)
+				case "?":
+					startFlow(helpView)
 				}
 				continue
 			case "up":

@@ -18,6 +18,7 @@ type promptRequest struct {
 	kind        string
 	ctx         context.Context
 	title       string
+	body        string
 	choices     []terminal.Choice
 	defaultText string
 	reply       chan promptReply
@@ -51,6 +52,13 @@ func (p *promptBridge) Confirm(ctx context.Context, title string) (bool, error) 
 	r := p.ask(promptRequest{kind: "confirm", ctx: ctx, title: title})
 	defer clear(r.secret)
 	return r.confirmed, r.err
+}
+
+// View displays complete read-only details through the same modal owner.
+func (p *promptBridge) View(ctx context.Context, title, body string) error {
+	r := p.ask(promptRequest{kind: "view", ctx: ctx, title: title, body: body})
+	defer clear(r.secret)
+	return r.err
 }
 func (p *promptBridge) ask(request promptRequest) (reply promptReply) {
 	request.reply = make(chan promptReply, 1)
@@ -102,7 +110,7 @@ func (p *promptBridge) ask(request promptRequest) (reply promptReply) {
 // promptModel holds only an active form; secrets never enter the timer Model.
 type promptModel struct {
 	caller                      context.Context
-	kind, title, text           string
+	kind, title, body, text     string
 	choices                     []terminal.Choice
 	secret                      []byte
 	columns, rows               int
@@ -111,7 +119,7 @@ type promptModel struct {
 }
 
 func newPromptModel(request promptRequest, columns, rows int) *promptModel {
-	m := &promptModel{caller: request.ctx, kind: request.kind, title: request.title, choices: append([]terminal.Choice(nil), request.choices...), columns: columns, rows: rows}
+	m := &promptModel{caller: request.ctx, kind: request.kind, title: request.title, body: request.body, choices: append([]terminal.Choice(nil), request.choices...), columns: columns, rows: rows}
 	if request.kind == "secret" {
 		m.secret = make([]byte, 0, 16384)
 	} else if request.kind == "text" {
@@ -145,6 +153,19 @@ func (m *promptModel) Handle(event terminal.Event) (promptReply, bool) {
 	}
 	if event.Kind == "resize" {
 		m.Resize(event.Columns, event.Rows)
+		return promptReply{}, false
+	}
+	if m.kind == "view" {
+		switch event.Kind {
+		case "up":
+			m.scroll = max(0, m.scroll-1)
+		case "down":
+			m.scroll = min(m.warningScrollLimit(), m.scroll+1)
+		case "enter":
+			if m.columns >= 40 && m.rows >= 8 {
+				return finish(promptReply{})
+			}
+		}
 		return promptReply{}, false
 	}
 	if m.kind == "confirm" {
@@ -234,6 +255,14 @@ func lastClusterStart(data []byte) int {
 	return start
 }
 func (m *promptModel) warningLines() []string {
+	if m.kind == "view" {
+		// Strip escape strings across line breaks before splitting trusted rows.
+		var lines []string
+		for _, paragraph := range strings.Split(sanitizeText(m.body, true), "\n") {
+			lines = append(lines, wrapWords(paragraph, max(0, m.columns-1))...)
+		}
+		return lines
+	}
 	return wrapWords(sanitize(strings.ReplaceAll(m.title, "\n", " ")), max(0, m.columns-1))
 }
 func (m *promptModel) warningScrollLimit() int { return max(0, len(m.warningLines())-max(1, m.rows-3)) }
@@ -262,14 +291,23 @@ func (m *promptModel) Render(styler terminal.Styler) []string {
 		add(terminal.RoleKey, "Esc Cancel")
 		return lines
 	}
-	if m.kind == "confirm" {
-		add(terminal.RoleAccent, "Review scoped change")
+	if m.kind == "confirm" || m.kind == "view" {
+		title := "Review scoped change"
+		if m.kind == "view" {
+			title = m.title
+		}
+		add(terminal.RoleAccent, title)
 		warning := m.warningLines()
 		capacity := max(1, m.rows-3)
 		m.scroll = min(m.scroll, max(0, len(warning)-capacity))
 		end := min(len(warning), m.scroll+capacity)
 		for _, line := range warning[m.scroll:end] {
 			add(terminal.RoleText, line)
+		}
+		if m.kind == "view" {
+			add(terminal.RoleMuted, "Read-only information")
+			add(terminal.RoleKey, "↑/↓ Read  Enter Back  Escape Back")
+			return lines
 		}
 		if end == len(warning) {
 			m.reviewed = true

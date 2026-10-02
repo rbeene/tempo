@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"syscall"
 	"testing"
@@ -34,7 +35,7 @@ func TestQAUIRunnerCLIChild(t *testing.T) {
 	var args []string
 	switch mode {
 	case "default", "default-ctrlc":
-	case "ui", "stdin-pipe", "stdout-pipe":
+	case "ui", "stdin-pipe", "stdout-pipe", "read-navigation":
 		args = []string{"ui"}
 	case "watch":
 		args = []string{"activity", "status", "--watch"}
@@ -45,11 +46,18 @@ func TestQAUIRunnerCLIChild(t *testing.T) {
 	default:
 		t.Fatal("unknown synthetic mode")
 	}
-	live := mode == "default" || mode == "ui" || mode == "watch" || mode == "default-ctrlc"
+	live := mode == "default" || mode == "ui" || mode == "watch" || mode == "default-ctrlc" || mode == "read-navigation"
 	if eligible := cli.InteractiveInvocation(args, os.Stdin, os.Stdout); eligible != live {
 		report("error", "incorrect interactive deadline classification")
 	}
 	f := qaNewUIModeFixture(t)
+	if mode == "read-navigation" {
+		f.deps.Worker = nil
+		f.deps.Hooks = nil
+		if err := os.Chdir(filepath.Dir(f.deps.ConfigPath)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	ctx, cancel := context.WithCancelCause(context.Background())
 	defer cancel(nil)
 	signals := make(chan os.Signal, 1)
@@ -86,7 +94,7 @@ func TestQAUIRunnerCLIActualModesAndLifetime(t *testing.T) {
 	if err != nil {
 		t.Fatal("python3 required for actual CLI PTY verification")
 	}
-	for _, mode := range []string{"default", "ui", "watch", "default-ctrlc", "json", "noninteractive", "stdin-pipe", "stdout-pipe"} {
+	for _, mode := range []string{"default", "ui", "watch", "default-ctrlc", "json", "noninteractive", "stdin-pipe", "stdout-pipe", "read-navigation"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 7*time.Second)
 			defer cancel()
@@ -131,12 +139,26 @@ def until(predicate,seconds=2):
   poll()
   if closed() and not predicate():break
  if not predicate():raise AssertionError('CLI behavior missing: '+repr(reports)+' '+repr(transcript[-600:]))
-live=mode in ('default','ui','watch','default-ctrlc')
+def last_frame_has(word):
+ frame=transcript.split(b'\x1b[H\x1b[J')[-1]
+ return word in frame.split(b'\r\n')[0]
+live=mode in ('default','ui','watch','default-ctrlc','read-navigation')
 try:
  if live:
   until(lambda:b'TEMPO' in transcript and b'No activity yet' in transcript)
   if b'\x1b[?1049h' not in transcript:raise AssertionError('CLI dashboard did not enter actual screen')
-  os.write(master,b'\x03' if mode=='default-ctrlc' else b'q')
+  if mode=='read-navigation':
+   os.write(master,b'?');until(lambda:last_frame_has(b'Help'))
+   os.write(master,b'q')
+   deadline=time.monotonic()+.06
+   while time.monotonic()<deadline:poll(.01)
+   if closed():raise AssertionError('q inside CLI readonly modal quit dashboard')
+   os.write(master,b'\x1b');until(lambda:last_frame_has(b'TEMPO'))
+   for key,title in ((b'2',b'Links'),(b'3',b'Sync'),(b',',b'Setup')):
+    os.write(master,key);until(lambda:last_frame_has(title))
+    os.write(master,b'\x1b');until(lambda:last_frame_has(b'TEMPO'))
+   os.write(master,b'q')
+  else:os.write(master,b'\x03' if mode=='default-ctrlc' else b'q')
  until(closed)
  deadline=time.monotonic()+1
  while p.poll() is None and time.monotonic()<deadline:poll(.01)

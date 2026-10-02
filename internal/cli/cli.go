@@ -138,7 +138,15 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 					if openErr != nil {
 						err = openErr
 					} else {
-						err = ui.Run(session.Context(), session, activityService(d), ui.Options{})
+						a := activityService(d)
+						views := &ui.ReadViews{Links: a.ListBindings, Sync: a.SyncStatus, Setup: func(readCtx context.Context) (setup.Status, error) {
+							service, err := setupService(d)
+							if err != nil {
+								return setup.Status{}, err
+							}
+							return service.Run(readCtx, setup.Input{}, nil)
+						}}
+						err = ui.Run(session.Context(), session, a, ui.Options{Views: views})
 						if err == nil {
 							return 0
 						}

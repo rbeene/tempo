@@ -74,6 +74,36 @@ func TestQAUIPromptChooseSearchStableIDsAndDefensiveCopy(t *testing.T) {
 		t.Errorf("search returned unstable/mutated ID: %+v", got)
 	}
 }
+
+func TestQAUIPromptReadonlyViewScrollsFullBodyWithoutConsent(t *testing.T) {
+	r := qaPromptRequest("view", "Read-only information")
+	r.body = "FIRST DETAIL \x1b]52;c;OSC_PRIVATE\nsecret\a\x1bPDCS_PRIVATE\npayload\x1b\\ " + strings.Repeat("scoped account/project/path evidence ", 30) + " LAST DETAIL"
+	m := qaPromptModel(t, r, 40, 8)
+	qaPromptPending(t, m, terminal.Event{Kind: "text", Text: "q"})
+	first, last := false, false
+	for i := 0; i < 150; i++ {
+		frame := qaPromptFrame(t, m.Render(nil), 40, 8)
+		visible := strings.Join(strings.Fields(frame), " ")
+		if strings.Contains(frame, "OSC_PRIVATE") || strings.Contains(frame, "DCS_PRIVATE") || strings.Contains(frame, "payload") {
+			t.Error("multiline terminal escape payload leaked into readonly body")
+		}
+		first = first || strings.Contains(visible, "FIRST DETAIL")
+		last = last || strings.Contains(visible, "LAST DETAIL")
+		if strings.Contains(frame, "Selected: Yes") || strings.Contains(frame, "Selected: No") || strings.Contains(frame, "scoped change") {
+			t.Errorf("readonly view misleadingly requests mutation consent: %q", frame)
+		}
+		if last {
+			break
+		}
+		qaPromptPending(t, m, terminal.Event{Kind: "down"})
+	}
+	if !first || !last {
+		t.Fatal("readonly body unavailable or clipped instead of scrollable")
+	}
+	if r := qaPromptSubmit(t, m); r.confirmed || r.text != "" || len(r.secret) != 0 {
+		t.Error("readonly view returned a mutation/input value")
+	}
+}
 func TestQAUIPromptChooseNavigationEmptyAndPaste(t *testing.T) {
 	for _, mode := range []string{"arrows", "no-match", "paste"} {
 		t.Run(mode, func(t *testing.T) {
@@ -114,7 +144,7 @@ func TestQAUIPromptTextEditableDefaultPasteAndGraphemeBackspace(t *testing.T) {
 	}
 }
 func TestQAUIPromptEscapeCancelsEachModal(t *testing.T) {
-	for _, kind := range []string{"choose", "text", "secret", "confirm"} {
+	for _, kind := range []string{"choose", "text", "secret", "confirm", "view"} {
 		t.Run(kind, func(t *testing.T) {
 			r := qaPromptRequest(kind, "Cancel safely")
 			r.choices = []terminal.Choice{{ID: "a", Label: "Alpha"}}
@@ -379,7 +409,7 @@ func TestQAUIPromptInputBudgetsFailWithoutReturningTruncatedValues(t *testing.T)
 }
 
 func TestQAUIPromptBridgeRoutesTypedRequestsAndCopiesChoices(t *testing.T) {
-	for _, kind := range []string{"choose", "text", "secret", "confirm"} {
+	for _, kind := range []string{"choose", "text", "secret", "confirm", "view"} {
 		t.Run(kind, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
@@ -400,6 +430,8 @@ func TestQAUIPromptBridgeRoutesTypedRequestsAndCopiesChoices(t *testing.T) {
 					r.secret, r.err = b.Secret(ctx, "TITLE")
 				case "confirm":
 					r.confirmed, r.err = b.Confirm(ctx, "TITLE")
+				case "view":
+					r.err = b.View(ctx, "TITLE", "body")
 				}
 				out <- r
 			}()
@@ -423,6 +455,9 @@ func TestQAUIPromptBridgeRoutesTypedRequestsAndCopiesChoices(t *testing.T) {
 			}
 			if kind == "text" && req.defaultText != "draft" {
 				t.Error("bridge lost editable default")
+			}
+			if kind == "view" && req.body != "body" {
+				t.Error("bridge lost readonly body")
 			}
 			req.reply <- promptReply{choiceID: "stable", text: "edited", secret: []byte("private-reply"), confirmed: true}
 			select {

@@ -40,6 +40,7 @@ type qaRunnerScreen struct {
 	enterErr, drawErr, sizeErr, closeErr    error
 	reader                                  *qaRunnerReader
 	closeBeforeJoin                         bool
+	closeCheck                              func() bool
 }
 
 func qaNewRunnerScreen() *qaRunnerScreen {
@@ -98,7 +99,7 @@ func (s *qaRunnerScreen) Close() error {
 	s.closes.Add(1)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.closeBeforeJoin = s.nextActive.Load() != 0 || s.reader != nil && s.reader.active.Load() != 0
+	s.closeBeforeJoin = s.nextActive.Load() != 0 || s.reader != nil && s.reader.active.Load() != 0 || s.closeCheck != nil && s.closeCheck()
 	return s.closeErr
 }
 
@@ -112,10 +113,14 @@ type qaRunnerRig struct {
 
 func qaStartRunner(t *testing.T, s *qaRunnerScreen, r *qaRunnerReader, refresh <-chan time.Time) *qaRunnerRig {
 	t.Helper()
+	return qaStartRunnerOptions(t, s, r, ui.Options{Refresh: refresh})
+}
+func qaStartRunnerOptions(t *testing.T, s *qaRunnerScreen, r *qaRunnerReader, options ui.Options) *qaRunnerRig {
+	t.Helper()
 	ctx, cancel := context.WithCancelCause(context.Background())
 	x := &qaRunnerRig{screen: s, reader: r, done: make(chan error, 1), cancel: cancel}
 	s.reader = r
-	go func() { x.done <- ui.Run(ctx, s, r, ui.Options{Refresh: refresh}) }()
+	go func() { x.done <- ui.Run(ctx, s, r, options) }()
 	t.Cleanup(func() {
 		cancel(context.Canceled)
 		select {

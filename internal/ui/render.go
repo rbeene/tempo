@@ -90,7 +90,11 @@ func (m *Model) Render(styler terminal.Styler) []string {
 		worker = "unavailable"
 	}
 	add(terminal.RoleInfo, "Sync "+syncState+"  ·  Worker "+worker)
-	add(terminal.RoleKey, "↑/↓ Select   r Refresh   q Quit")
+	if width < 60 {
+		add(terminal.RoleKey, "? Help  ↑/↓ Select  r Refresh  q Quit")
+	} else {
+		add(terminal.RoleKey, "? Help  2 Links  3 Sync  , Setup  Enter Details  r Refresh  q Quit")
+	}
 	return lines
 }
 
@@ -126,6 +130,10 @@ func clip(text string, cells int) string {
 // sanitize strips complete escape strings (including their payload), terminal
 // controls, malformed UTF-8 and bidi formatting while retaining emoji joiners.
 func sanitize(text string) string {
+	return sanitizeText(text, false)
+}
+
+func sanitizeText(text string, keepNewlines bool) string {
 	var b strings.Builder
 	for i := 0; i < len(text); {
 		if text[i] == 0x1b {
@@ -169,6 +177,10 @@ func sanitize(text string) string {
 		}
 		r, n := utf8.DecodeRuneInString(text[i:])
 		i += n
+		if keepNewlines && r == '\n' {
+			b.WriteRune(r)
+			continue
+		}
 		if r == utf8.RuneError || unicode.IsControl(r) || r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069 || r == 0x061c || r == 0x200e || r == 0x200f || r == 0x2028 || r == 0x2029 {
 			continue
 		}

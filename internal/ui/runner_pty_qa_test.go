@@ -15,7 +15,10 @@ import (
 	"time"
 
 	"github.com/rbeene/tempo/internal/activity"
+	"github.com/rbeene/tempo/internal/auth"
+	"github.com/rbeene/tempo/internal/harvest"
 	"github.com/rbeene/tempo/internal/hookstate"
+	"github.com/rbeene/tempo/internal/setup"
 	"github.com/rbeene/tempo/internal/terminal"
 	"github.com/rbeene/tempo/internal/ui"
 )
@@ -80,6 +83,20 @@ func TestQAUIRunnerPTYChild(t *testing.T) {
 		if mode != "default-tick" {
 			options.Refresh = make(chan time.Time)
 		}
+		if mode == "read-navigation" {
+			root := filepath.Dir(filepath.Dir(path))
+			a := auth.NewService(auth.Options{ConfigPath: filepath.Join(root, "missing-account-config"), LockPath: filepath.Join(root, "forbidden-auth-lock"), Getenv: func(string) string { return "" }, PersistentAvailable: func() bool { report("error", "readonly view inspected credential capability"); return false }, NewProvider: func(string, string) harvest.Provider {
+				report("error", "readonly view constructed Harvest provider")
+				return nil
+			}, Runner: auth.RunnerFunc(func(context.Context, auth.NativeRequest, *os.File) (auth.NativeReply, error) {
+				report("error", "readonly view accessed native credentials")
+				return auth.NativeReply{}, errors.New("synthetic forbidden credential call")
+			})})
+			readiness := setup.New(setup.Options{Auth: a, Activity: service})
+			options.Views = &ui.ReadViews{Links: service.ListBindings, Sync: service.SyncStatus, Setup: func(ctx context.Context) (setup.Status, error) {
+				return readiness.Run(ctx, setup.Input{Path: root}, nil)
+			}}
+		}
 		err = ui.Run(s.Context(), &qaRunnerPTYScreen{Session: s, report: report}, service, options)
 	}
 	signal.Stop(signals)
@@ -107,6 +124,9 @@ func TestQAUIRunnerPTYChild(t *testing.T) {
 	if _, statErr := os.Stat(filepath.Dir(path)); !errors.Is(statErr, os.ErrNotExist) {
 		report("error", "read-only dashboard initialized local state")
 	}
+	if entries, readErr := os.ReadDir(filepath.Dir(filepath.Dir(path))); readErr != nil || len(entries) != 0 {
+		report("error", "readonly dashboard/view wrote synthetic activity/auth/config files")
+	}
 	report("closed", "")
 	if err != nil && want == 0 && mode != "eof" {
 		os.Exit(73)
@@ -119,7 +139,7 @@ func TestQAUIRunnerActualTerminalAndSharedStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal("python3 required for actual PTY verification")
 	}
-	for _, mode := range []string{"quit", "escape", "paste-refresh-resize", "default-tick", "ctrlc", "sigterm", "eof"} {
+	for _, mode := range []string{"quit", "escape", "paste-refresh-resize", "default-tick", "ctrlc", "sigterm", "eof", "read-navigation"} {
 		t.Run(mode, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 			defer cancel()
@@ -157,6 +177,7 @@ def poll(timeout=.02):
    if line: reports.append(json.loads(line))
 def closed(): return any(r['kind']=='closed' for r in reports)
 def frames(needle): return [r for r in reports if r['kind']=='frame' and needle in r['message']]
+def modal_frames(title): return [r for r in reports if r['kind']=='frame' and title in r['message'].split('\n')[0]]
 def until(predicate,seconds=2):
  deadline=time.monotonic()+seconds
  while not predicate() and time.monotonic()<deadline:
@@ -168,7 +189,25 @@ try:
  if b'TEMPO' not in transcript:
   poll(.03)
  if b'TEMPO' not in transcript or b'No activity yet' not in transcript: raise AssertionError('reported shared Status frame was not drawn to actual terminal')
- if mode=='paste-refresh-resize':
+ if mode=='read-navigation':
+  os.write(master,b'?');until(lambda:len(modal_frames('Help'))>=1)
+  os.write(master,b'q')
+  deadline=time.monotonic()+.08
+  while time.monotonic()<deadline:poll(.01)
+  if closed():raise AssertionError('q inside readonly modal quit dashboard')
+  count=len(frames('No activity yet'));os.write(master,b'\x1b');until(lambda:len(frames('No activity yet'))>count)
+  for key,title in ((b'2','Links'),(b'3','Sync'),(b',','Setup')):
+   os.write(master,key);until(lambda:len(modal_frames(title))>=1)
+   os.write(master,b'\x1b[200~q\r\n\x03\x1b[201~')
+   deadline=time.monotonic()+.05
+   while time.monotonic()<deadline:poll(.01)
+   if closed():raise AssertionError('paste submitted/canceled readonly modal')
+   fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',5,20,0,0));p.send_signal(signal.SIGWINCH)
+   count=len(frames('too small'));until(lambda:len(frames('too small'))>count)
+   fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',24,80,0,0));p.send_signal(signal.SIGWINCH)
+   count=len(frames('No activity yet'));os.write(master,b'\x1b');until(lambda:len(frames('No activity yet'))>count)
+  os.write(master,b'q')
+ elif mode=='paste-refresh-resize':
   os.write(master,b'\x1b[200~qr\x03\x1b[A\x1b[201~')
   deadline=time.monotonic()+.12
   while time.monotonic()<deadline: poll(.01)
