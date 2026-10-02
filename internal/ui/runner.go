@@ -37,6 +37,20 @@ type Options struct {
 func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Options) (err error) {
 	ctx, cancel := context.WithCancelCause(ctx)
 	var workers sync.WaitGroup
+	type flowResult struct {
+		name  string
+		style terminal.Styler
+		err   error
+	}
+	flowDone := make(chan flowResult, 1)
+	retained := make(map[string]error)
+	remember := func(result flowResult) {
+		if unknownOutcome(result.err) {
+			retained[result.name] = result.err
+		} else {
+			delete(retained, result.name)
+		}
+	}
 	bridge := newPromptBridge(ctx)
 	var modal *promptModel
 	var active *promptRequest
@@ -56,6 +70,16 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 			modal.Close()
 		}
 		workers.Wait()
+		select {
+		case result := <-flowDone:
+			remember(result)
+		default:
+		}
+		// Catchable cancellation and presentation/cleanup failure cannot hide a
+		// joined uncertain shared write. Read flows never clear another family.
+		for _, outcome := range retained {
+			err = outcome
+		}
 		clearReply(active)
 		for {
 			select {
@@ -170,27 +194,28 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 		requests <- sequence
 	}
 	request()
-	flowDone := make(chan error, 1)
 	flowBusy := false
 	var endFlow context.CancelFunc
-	startFlow := func(view localView) {
+	startFlow := func(name string, run func(context.Context) (terminal.Styler, error)) {
 		if flowBusy {
 			return
 		}
 		flowCtx, end := context.WithTimeout(ctx, 2*time.Minute)
 		endFlow, flowBusy = end, true
-		snapshot := model.snapshot
-		key, selected := model.SelectedKey()
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
 			defer end()
-			flowErr := showView(flowCtx, view, snapshot, key, selected, bridge, options.Views)
-			select {
-			case flowDone <- flowErr:
-			case <-ctx.Done():
-			}
+			style, flowErr := run(flowCtx)
+			flowDone <- flowResult{name, style, flowErr}
 		}()
+	}
+	startView := func(view localView) {
+		snapshot := model.snapshot
+		key, selected := model.SelectedKey()
+		startFlow("read", func(flowCtx context.Context) (terminal.Styler, error) {
+			return nil, showView(flowCtx, view, snapshot, key, selected, bridge, options.Views)
+		})
 	}
 	for {
 		select {
@@ -209,7 +234,11 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 			if err = draw(); err != nil {
 				return err
 			}
-		case <-flowDone:
+		case result := <-flowDone:
+			remember(result)
+			if result.err == nil && result.style != nil {
+				options.Styler = result.style
+			}
 			flowBusy = false
 			endFlow = nil
 			if modal != nil {
@@ -258,6 +287,17 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 				continue
 			}
 			if modal != nil {
+				if modal.done {
+					if event.Kind == "escape" {
+						endFlow()
+						modal.Close()
+						modal = nil
+					}
+					if event.Kind == "text" && event.Text == "q" {
+						return nil
+					}
+					continue
+				}
 				reply, done := modal.Handle(event)
 				if done {
 					if active.ctx.Err() == nil && ctx.Err() == nil {
@@ -295,7 +335,7 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 				}
 				return nil
 			case "enter":
-				startFlow(timerDetails)
+				startView(timerDetails)
 			case "text":
 				switch event.Text {
 				case "q":
@@ -303,13 +343,13 @@ func Run(ctx context.Context, screen Screen, reader SnapshotReader, options Opti
 				case "r":
 					request()
 				case "2":
-					startFlow(linksView)
+					startView(linksView)
 				case "3":
-					startFlow(syncView)
+					startView(syncView)
 				case ",":
-					startFlow(setupView)
+					startView(setupView)
 				case "?":
-					startFlow(helpView)
+					startView(helpView)
 				}
 				continue
 			case "up":

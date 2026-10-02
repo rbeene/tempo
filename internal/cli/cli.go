@@ -146,16 +146,11 @@ func Run(ctx context.Context, args []string, in io.Reader, out, errOut io.Writer
 							}
 							return service.Run(readCtx, setup.Input{}, nil)
 						}}
-						err = ui.Run(session.Context(), session, a, ui.Options{Views: views})
+						err = uiResultError(ui.Run(session.Context(), session, a, ui.Options{Views: views}))
 						if err == nil {
 							return 0
 						}
-						// Presentation failures use the existing fixed terminal error
-						// boundary only after Run has joined and restored its owner.
-						var ended *terminal.ExitError
-						if !errors.As(err, &ended) {
-							err = &terminal.ExitError{Code: 1}
-						}
+
 					}
 				} else {
 					jsonMode = true
