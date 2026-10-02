@@ -33,9 +33,43 @@ func TestMain(m *testing.M) {
 	os.Exit(0)
 }
 
-func run(args []string) error {
+func fixtureArguments(args []string) ([]string, string, string, error) {
+	host, version := "codex", "0.159.3"
+	if len(args) >= 2 && args[len(args)-2] == "--host" {
+		if args[len(args)-1] != "claude" {
+			return nil, "", "", fmt.Errorf("arguments")
+		}
+		host, version = "claude", "2.1.286"
+		args = args[:len(args)-2]
+	}
 	if len(args) < 3 || !filepath.IsAbs(args[1]) || !filepath.IsAbs(args[2]) {
-		return fmt.Errorf("arguments")
+		return nil, "", "", fmt.Errorf("arguments")
+	}
+	expected := 0
+	switch args[0] {
+	case "link":
+		if host != "codex" {
+			return nil, "", "", fmt.Errorf("arguments")
+		}
+		expected = 4
+	case "confirm":
+		expected = 8
+		if host == "claude" {
+			expected = 7
+		}
+	case "read":
+		expected = 3
+	}
+	if expected == 0 || len(args) != expected {
+		return nil, "", "", fmt.Errorf("arguments")
+	}
+	return args, host, version, nil
+}
+
+func run(raw []string) error {
+	args, host, version, err := fixtureArguments(raw)
+	if err != nil {
+		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -70,13 +104,14 @@ func run(args []string) error {
 		})
 		return err
 	case "confirm":
-		if len(args) != 8 {
-			return fmt.Errorf("arguments")
-		}
-		preview, err := policy.Preview(ctx, hookstate.Context{Host: "codex", Scope: "project", Path: args[3], RuntimeVersion: "0.159.3", Surface: "local", Conflicts: []string{}, Artifacts: []hookstate.Artifact{
+		artifacts := []hookstate.Artifact{
 			{Role: "runtime", Path: args[4]}, {Role: "executable", Path: args[5]},
-			{Role: "definitions", Path: args[6]}, {Role: "configuration", Path: args[7]},
-		}})
+			{Role: "definitions", Path: args[6]},
+		}
+		if host == "codex" {
+			artifacts = append(artifacts, hookstate.Artifact{Role: "configuration", Path: args[7]})
+		}
+		preview, err := policy.Preview(ctx, hookstate.Context{Host: host, Scope: "project", Path: args[3], RuntimeVersion: version, Surface: "local", Conflicts: []string{}, Artifacts: artifacts})
 		if err != nil {
 			return err
 		}
@@ -92,7 +127,7 @@ func run(args []string) error {
 		if len(args) != 3 {
 			return fmt.Errorf("arguments")
 		}
-		receipts, err := service.HostReceipts(ctx, activity.HostReceiptFilter{Source: "codex"})
+		receipts, err := service.HostReceipts(ctx, activity.HostReceiptFilter{Source: host})
 		if err != nil {
 			return err
 		}
@@ -114,13 +149,20 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
+		captureReviews := 0
+		for _, review := range snapshot.CaptureReviews {
+			if review.Source == host {
+				captureReviews++
+			}
+		}
 		return json.NewEncoder(os.Stdout).Encode(struct {
 			Receipts           []activity.HostReceipt `json:"receipts"`
 			Actors             []actor                `json:"actors"`
 			Queued             int                    `json:"queued"`
 			Uncertainties      int                    `json:"uncertainties"`
 			UncertaintyDetails []uncertaintyDetail    `json:"uncertainty_details"`
-		}{receipts.Receipts, actors, snapshot.Worker.QueuedCount, len(snapshot.Uncertainties), details})
+			CaptureReviews     int                    `json:"capture_reviews"`
+		}{receipts.Receipts, actors, snapshot.Worker.QueuedCount, len(snapshot.Uncertainties), details, captureReviews})
 	default:
 		return fmt.Errorf("operation")
 	}
@@ -203,5 +245,66 @@ func TestUncertaintyProjectionIsBoundedAndAllowlisted(t *testing.T) {
 	projected, err = projectUncertainties([]activity.Uncertainty{u})
 	if err != nil || !projected[0].ResolutionPresent || !projected[0].Discarded {
 		t.Fatal("resolution flags lost")
+	}
+}
+
+func TestFixtureHostSelectorRejectsBeforeAccess(t *testing.T) {
+	for _, args := range [][]string{
+		{"read", "/unused-state", "/unused-policy", "--host", "unknown"},
+		{"read", "/unused-state", "/unused-policy", "--host"},
+		{"read", "/unused-state", "/unused-policy", "--host", "claude", "--runtime-version", "2.1.286"},
+		{"link", "/unused-state", "/unused-policy", "/unused-project", "--host", "claude"},
+	} {
+		if _, _, _, err := fixtureArguments(args); err == nil {
+			t.Errorf("unexpected selector accepted")
+		}
+	}
+	for _, tc := range []struct {
+		args          []string
+		host, version string
+	}{
+		{[]string{"read", "/unused-state", "/unused-policy"}, "codex", "0.159.3"},
+		{[]string{"read", "/unused-state", "/unused-policy", "--host", "claude"}, "claude", "2.1.286"},
+	} {
+		args, host, version, err := fixtureArguments(tc.args)
+		if err != nil || len(args) != 3 || host != tc.host || version != tc.version {
+			t.Fatal("valid selector contract rejected")
+		}
+	}
+}
+
+func TestFixtureClaudeConfirmsThreeArtifacts(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := filepath.Join(root, "project")
+	if err := os.Mkdir(project, 0700); err != nil {
+		t.Fatal(err)
+	}
+	state, policyPath := filepath.Join(root, "state"), filepath.Join(root, "metadata", "policy")
+	paths := []string{}
+	for _, name := range []string{"runtime", "tempo", "settings"} {
+		path := filepath.Join(root, name)
+		if err := os.WriteFile(path, []byte("inert fixture artifact"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, path)
+	}
+	args := append([]string{"confirm", state, policyPath, project}, paths...)
+	args = append(args, "--host", "claude")
+	if err := run(args); err != nil {
+		if problem, ok := err.(*hookstate.Error); ok {
+			t.Fatalf("genuine Claude profile confirmation: %s", problem.Code)
+		}
+		t.Fatal("genuine Claude profile confirmation failed")
+	}
+	policy := hookstate.New(hookstate.Options{Path: policyPath})
+	eligibility, err := policy.Eligibility(context.Background(), "claude", project)
+	if err != nil || !eligibility.CaptureEligible || eligibility.Basis != "operator_declared" {
+		t.Fatal("confirmed Claude policy not eligible")
+	}
+	if _, err := os.Stat(state); !os.IsNotExist(err) {
+		t.Fatal("profile confirmation created activity state")
 	}
 }

@@ -10,8 +10,10 @@ import (
 	"github.com/rbeene/tempo/internal/hookstate"
 )
 
+func hostSource(source string) bool { return source == "codex" || source == "claude" }
+
 func validateHost(e HostEvent) error {
-	if e.Source != "codex" {
+	if !hostSource(e.Source) {
 		return failure("unsupported_contract")
 	}
 	if !safeIdentifier(e.SessionID, 256) || !utf8.ValidString(e.SessionID) || !filepath.IsAbs(e.CWD) || !safeIdentifier(e.CWD, 4096) || e.ParentAgentID != "" {
@@ -24,6 +26,10 @@ func validateHost(e HostEvent) error {
 		}
 		switch e.SessionSource {
 		case "startup", "resume", "clear", "compact":
+		case "fork":
+			if e.Source != "claude" {
+				return failure("validation")
+			}
 		default:
 			return failure("validation")
 		}
@@ -31,7 +37,13 @@ func validateHost(e HostEvent) error {
 		if e.TurnID != "" || e.AgentID != "" {
 			return failure("validation")
 		}
-	case "UserPromptSubmit", "Stop", "Interrupt", "SubagentStart", "SubagentStop", "PreToolUse", "PostToolUse", "PermissionRequest", "PreCompact", "PostCompact":
+	case "UserPromptSubmit", "Stop", "Interrupt", "SubagentStart", "SubagentStop", "PreToolUse", "PostToolUse", "PostToolUseFailure", "StopFailure", "TaskCreated", "TaskCompleted", "PermissionRequest", "PreCompact", "PostCompact":
+		if e.Source == "claude" && (e.Kind == "Interrupt" || e.Kind == "PreCompact" || e.Kind == "PostCompact") {
+			return failure("unsupported_contract")
+		}
+		if e.Source == "codex" && (e.Kind == "PostToolUseFailure" || e.Kind == "StopFailure" || e.Kind == "TaskCreated" || e.Kind == "TaskCompleted") {
+			return failure("unsupported_contract")
+		}
 		if !safeIdentifier(e.TurnID, 256) || !utf8.ValidString(e.TurnID) {
 			return failure("validation")
 		}
@@ -43,16 +55,20 @@ func validateHost(e HostEvent) error {
 			return failure("validation")
 		}
 	} else if e.AgentID != "" {
-		switch e.Kind {
-		case "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "PreCompact", "PostCompact":
-			if !safeIdentifier(e.AgentID, 128) || !utf8.ValidString(e.AgentID) {
+		if !safeIdentifier(e.AgentID, 128) || !utf8.ValidString(e.AgentID) {
+			return failure("validation")
+		}
+		if e.Source == "codex" {
+			switch e.Kind {
+			case "UserPromptSubmit", "PreToolUse", "PostToolUse", "PermissionRequest", "PreCompact", "PostCompact":
+			default:
 				return failure("validation")
 			}
-		default:
+		} else if e.Kind == "UserPromptSubmit" {
 			return failure("validation")
 		}
 	}
-	if e.Kind == "PreToolUse" || e.Kind == "PostToolUse" {
+	if e.Kind == "PreToolUse" || e.Kind == "PostToolUse" || e.Kind == "PostToolUseFailure" {
 		if !safeIdentifier(e.ToolID, 256) || !safeIdentifier(e.ToolName, 256) {
 			return failure("validation")
 		}
@@ -67,17 +83,20 @@ func hostTarget(st *state, e HostEvent) *hostTurn {
 	if session == nil {
 		return nil
 	}
+	if ambiguousClaudeIdentity(st, session, e) {
+		return nil
+	}
 	if e.Kind == "SessionEnd" {
 		return st.HostTurns[session.RootTurn]
 	}
-	if e.Kind == "Stop" || e.Kind == "SubagentStop" || e.Kind == "Interrupt" || (e.Kind == "UserPromptSubmit" && e.AgentID != "") {
+	if e.Kind == "Stop" || e.Kind == "SubagentStop" || e.Kind == "Interrupt" || e.Kind == "StopFailure" || e.Kind == "TaskCreated" || e.Kind == "TaskCompleted" || (e.Kind == "UserPromptSubmit" && e.AgentID != "") {
 		candidates := historicalActors(st, e)
 		if len(candidates) == 1 {
 			return candidates[0]
 		}
 		return nil
 	}
-	if e.Kind == "PreToolUse" || e.Kind == "PostToolUse" || e.Kind == "PermissionRequest" || e.Kind == "PreCompact" || e.Kind == "PostCompact" {
+	if e.Kind == "PreToolUse" || e.Kind == "PostToolUse" || e.Kind == "PostToolUseFailure" || e.Kind == "PermissionRequest" || e.Kind == "PreCompact" || e.Kind == "PostCompact" {
 		candidates := toolCandidates(st, e)
 		if len(candidates) == 1 {
 			return candidates[0]
@@ -90,7 +109,7 @@ func hostTarget(st *state, e HostEvent) *hostTurn {
 func toolCandidates(st *state, e HostEvent) []*hostTurn {
 	var targets []*hostTurn
 	for _, t := range st.HostTurns {
-		if t.Source == e.Source && t.SessionID == e.SessionID && t.TurnID == e.TurnID && (e.AgentID == "" || t.AgentID == e.AgentID) {
+		if t.Source == e.Source && t.SessionID == e.SessionID && t.TurnID == e.TurnID && (t.AgentID == e.AgentID || (e.Source == "codex" && e.AgentID == "")) {
 			targets = append(targets, t)
 		}
 	}
@@ -102,12 +121,39 @@ func hostConflictKey(key, fingerprint string) string {
 
 func hostReceiptKey(st *state, session *hostSession, e HostEvent) string {
 	incarnation := session.ID
+	if ambiguousClaudeIdentity(st, session, e) {
+		// Preserve accepted receipts separately from later identity ambiguity.
+		return hostHash([]string{hostEventKey(session.ID, e), "ambiguous_native_identity"})
+	}
 	if e.Kind != "SessionStart" && (e.Kind != "UserPromptSubmit" || e.AgentID != "") && e.Kind != "SubagentStart" {
 		if target := hostTarget(st, e); target != nil {
 			incarnation = target.Session
 		}
 	}
 	return hostEventKey(incarnation, e)
+}
+
+func ambiguousClaudeIdentity(st *state, session *hostSession, e HostEvent) bool {
+	if e.Source != "claude" {
+		return false
+	}
+	switch e.Kind {
+	case "SessionEnd":
+		for _, turn := range st.HostTurns {
+			if turn.Source == e.Source && turn.SessionID == e.SessionID && turn.Session != session.ID {
+				return true
+			}
+		}
+	case "SubagentStart":
+		for _, turn := range historicalActors(st, e) {
+			if turn.Stopped || turn.Session != session.ID {
+				return true
+			}
+		}
+	case "Stop", "SubagentStop", "StopFailure", "PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest", "TaskCreated", "TaskCompleted":
+		return len(historicalActors(st, e)) > 1
+	}
+	return false
 }
 func historicalActors(st *state, e HostEvent) []*hostTurn {
 	var candidates []*hostTurn
@@ -278,6 +324,20 @@ func (s *Service) reduceHost(ctx context.Context, st *state, e HostEvent, p hook
 	result = committedHostReceipt(e, st.Revision, p)
 	turnKey := hostTurnKey(session.ID, e)
 	turn := hostTarget(st, e)
+	// Ambiguous callbacks cannot choose between reused native incarnations.
+	// Task observations likewise carry no timing or membership evidence.
+	if ambiguousClaudeIdentity(st, session, e) || e.Kind == "TaskCreated" || e.Kind == "TaskCompleted" {
+		if turn != nil {
+			result.Actor = turn.Actor
+		}
+		if result.Actor == nil {
+			result.Disposition, result.Ordering, result.DiagnosticCode = "review_required", "review_required", "ordering_unavailable"
+		} else if !p.CaptureEligible {
+			result.Disposition, result.Ordering, result.DiagnosticCode = "review_required", "review_required", p.DiagnosticCode
+		}
+		st.HostReceipts[key] = hostReceiptRecord{Fingerprint: hostFingerprint(e), Result: result}
+		return result, true, "", nil
+	}
 	safetyChanged := false
 	if !p.CaptureEligible && turn != nil && turn.Actor != nil {
 		if a := st.Actors[actorKey(turn.Actor.Key)]; a != nil && a.Ref == *turn.Actor {
@@ -286,7 +346,7 @@ func (s *Service) reduceHost(ctx context.Context, st *state, e HostEvent, p hook
 		safetyChanged = s.reviewHost(st, turn, &result, "ordering_unavailable") || safetyChanged
 		result.DiagnosticCode = p.DiagnosticCode
 	}
-	if e.Kind == "PreToolUse" || e.Kind == "PostToolUse" || e.Kind == "PermissionRequest" {
+	if e.Kind == "PreToolUse" || e.Kind == "PostToolUse" || e.Kind == "PostToolUseFailure" || e.Kind == "PermissionRequest" {
 		candidates := toolCandidates(st, e)
 		if len(candidates) > 1 {
 			for _, candidate := range candidates {
@@ -301,7 +361,7 @@ func (s *Service) reduceHost(ctx context.Context, st *state, e HostEvent, p hook
 		}
 	}
 
-	if e.Kind == "Stop" || e.Kind == "SubagentStop" || e.Kind == "Interrupt" || (e.Kind == "UserPromptSubmit" && e.AgentID != "") {
+	if e.Kind == "Stop" || e.Kind == "SubagentStop" || e.Kind == "Interrupt" || e.Kind == "StopFailure" || (e.Kind == "UserPromptSubmit" && e.AgentID != "") {
 		candidates := historicalActors(st, e)
 		if len(candidates) > 1 {
 			for _, candidate := range candidates {
@@ -319,6 +379,7 @@ func (s *Service) reduceHost(ctx context.Context, st *state, e HostEvent, p hook
 	}
 
 	var normalized *Event
+	wasWaiting := false
 	switch e.Kind {
 	case "SessionStart":
 
@@ -369,12 +430,12 @@ func (s *Service) reduceHost(ctx context.Context, st *state, e HostEvent, p hook
 			result.Disposition = "stale"
 			break
 		}
-		if a.State == "wait_children" && hostWaiting(turn) {
+		if hostPendingWait(st, a) && hostWaiting(turn) {
 			safetyChanged = fenceHostWait(a, &result, "incomplete_wait") || safetyChanged
 		}
 		normalized = &Event{ContractVersion: 1, Actor: a.Ref.Key, Generation: a.Ref.Generation, Sequence: bump(a.Sequence), EventID: result.ID, Kind: "wait_user"}
 		turn.Stopped = true
-	case "PreToolUse", "PostToolUse":
+	case "PreToolUse", "PostToolUse", "PostToolUseFailure":
 		if turn == nil || turn.Actor == nil {
 			result.Disposition = "review_required"
 			result.Ordering = "review_required"
@@ -383,7 +444,21 @@ func (s *Service) reduceHost(ctx context.Context, st *state, e HostEvent, p hook
 		}
 		result.Actor = turn.Actor
 		a := st.Actors[actorKey(turn.Actor.Key)]
-		if a == nil || a.Ref != *turn.Actor || turn.Stopped || terminal(a) || a.State != "working" && a.State != "wait_children" {
+		if a == nil || a.Ref != *turn.Actor || terminal(a) {
+			result.Disposition = "stale"
+			break
+		}
+		if turn.Stopped {
+			result.Disposition = "stale"
+			if e.Source == "claude" {
+				// A new tool edge contradicts a completed proposal; it cannot
+				// identify another Stop cycle or restore the old turn's continuity.
+				safetyChanged = fenceHostWait(a, &result, "source_loss_while_waiting") || safetyChanged
+			}
+			break
+		}
+		wasWaiting = hostPendingWait(st, a)
+		if a.State != "working" && !wasWaiting {
 			result.Disposition = "stale"
 			break
 		}
@@ -395,23 +470,41 @@ func (s *Service) reduceHost(ctx context.Context, st *state, e HostEvent, p hook
 			safetyChanged = s.reviewHost(st, turn, &result, "ordering_unavailable") || safetyChanged
 			break
 		}
-		if e.Kind == "PreToolUse" && known && phase.Phase == "post" {
+		if e.Kind == "PreToolUse" && known && phase.Phase != "pre" {
 			result.Disposition = "stale"
 			break
 		}
-		if e.Kind == "PostToolUse" && !known {
+		if e.Kind != "PreToolUse" && !known {
 			safetyChanged = s.reviewHost(st, turn, &result, "ordering_unavailable") || safetyChanged
 		}
 		next := "pre"
 		if e.Kind == "PostToolUse" {
 			next = "post"
+		} else if e.Kind == "PostToolUseFailure" {
+			next = "failed"
 		}
-		turn.Tools[e.ToolID] = hostTool{Name: e.ToolName, Phase: next}
+		if e.Source == "claude" && known && phase.Phase != "pre" && next != phase.Phase {
+			safetyChanged = s.reviewHost(st, turn, &result, "ordering_unavailable") || safetyChanged
+			break
+		}
+		nextTool := hostTool{Name: e.ToolName, Phase: next}
+		turn.Tools[e.ToolID] = nextTool
+		waiting := hostWaiting(turn)
+		if e.Source == "claude" && wasWaiting {
+			// Keep pending-question evidence visible to the reducer's clock
+			// validation. Commit the observed tool phase after that check.
+			if known {
+				turn.Tools[e.ToolID] = phase
+			} else {
+				delete(turn.Tools, e.ToolID)
+			}
+			defer func() { turn.Tools[e.ToolID] = nextTool }()
+		}
 		if a.Health == "continuous" {
 			kind := "observe_work"
-			if hostWaiting(turn) {
-				kind = "wait_children"
-			} else if a.State == "wait_children" {
+			if waiting {
+				kind = hostWaitState(e.Source)
+			} else if wasWaiting {
 				kind = "work"
 			}
 			normalized = &Event{ContractVersion: 1, Actor: a.Ref.Key, Generation: a.Ref.Generation, Sequence: bump(a.Sequence), EventID: result.ID, Kind: kind}
@@ -424,8 +517,8 @@ func (s *Service) reduceHost(ctx context.Context, st *state, e HostEvent, p hook
 			break
 		}
 		safetyChanged = s.reviewHost(st, turn, &result, "ordering_unavailable") || safetyChanged
-	case "Interrupt", "SessionEnd":
-		if e.Kind == "Interrupt" && turn == nil {
+	case "Interrupt", "StopFailure", "SessionEnd":
+		if (e.Kind == "Interrupt" || e.Kind == "StopFailure") && turn == nil {
 			turn = &hostTurn{Source: e.Source, SessionID: e.SessionID, Session: session.ID, TurnID: e.TurnID, AgentID: e.AgentID, CWD: cwd, Stopped: true}
 			st.HostTurns[turnKey] = turn
 		}
@@ -435,11 +528,13 @@ func (s *Service) reduceHost(ctx context.Context, st *state, e HostEvent, p hook
 		}
 		result.Actor = turn.Actor
 		a := st.Actors[actorKey(turn.Actor.Key)]
-		if a == nil || a.Ref != *turn.Actor || turn.Stopped || terminal(a) {
+		if a == nil || a.Ref != *turn.Actor || terminal(a) || turn.Stopped && !(e.Source == "claude" && e.Kind == "SessionEnd" && a.State == "wait_user") {
 			result.Disposition = "stale"
 			break
 		}
-		safetyChanged = s.reviewHost(st, turn, &result, "source_lost") || safetyChanged
+		if !(e.Source == "claude" && e.Kind == "SessionEnd" && a.State == "wait_user" && !hostPendingWait(st, a)) {
+			safetyChanged = s.reviewHost(st, turn, &result, "source_lost") || safetyChanged
+		}
 		// Interrupt is a native terminal boundary, but its unconfirmed tail remains
 		// uncertain. SessionEnd alone provides only loss, never a reliable finish.
 		if e.Kind == "Interrupt" && !captureReview(result) {
@@ -454,9 +549,10 @@ func (s *Service) reduceHost(ctx context.Context, st *state, e HostEvent, p hook
 	}
 	operationError := ""
 	if normalized != nil {
-		r, changed, err := s.reduce(ctx, st, *normalized)
+		guardWaitResume := e.Source == "claude" && wasWaiting && normalized.Kind == "work"
+		r, changed, err := s.reduceWithWaitGuard(ctx, st, *normalized, guardWaitResume)
 		if err != nil {
-			if a := st.Actors[actorKey(normalized.Actor)]; a != nil && a.Ref == *turn.Actor && a.State == "wait_children" {
+			if a := st.Actors[actorKey(normalized.Actor)]; a != nil && a.Ref == *turn.Actor && (wasWaiting || hostPendingWait(st, a)) {
 				safetyChanged = fenceHostWait(a, &result, "source_loss_while_waiting") || safetyChanged
 			}
 			if !changed && !safetyChanged {
@@ -494,7 +590,7 @@ func (s *Service) reviewHost(st *state, turn *hostTurn, result *HostReceipt, rea
 	if a == nil || a.Ref != *turn.Actor || terminal(a) {
 		return false
 	}
-	if a.State == "wait_children" {
+	if hostPendingWait(st, a) {
 		return fenceHostWait(a, result, "source_loss_while_waiting")
 	}
 	sample, _ := s.sample()

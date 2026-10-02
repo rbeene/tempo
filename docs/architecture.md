@@ -113,4 +113,13 @@ manager diagnostics never become user-visible error messages.
 
 `internal/hooks` decodes bounded native payloads into allowlisted metadata. `activity.Service.IngestHost` persists native incarnation/turn/tool mappings and receipts in the same transaction as the existing reducer. Root and child identities are separate; registered followups retain their context across cwd changes or link removal. `ObserveHost` resolves exactly one recorded native tuple and calls the same transaction-local recovery helper as `ObserveSource`. It rejects reused ambiguous identities without guessing a newer actor. Host receipts do not assert native delivery.
 
+Codex and Claude share this transaction with source-specific event and tool rules.
+Claude prompt IDs and optional child IDs retain exact identity. Pending
+`AskUserQuestion` phases distinguish question waits from completed-turn
+`wait_user`; both use the existing reducer, while lost question completion retains
+a capture review without billing waiting time. Native failure kinds remain
+distinct in receipts. Task callbacks carry no timing evidence. Ambiguous child
+restart and session-exit identities cannot allocate arrival-based generations or
+mutate a newer actor. See [Claude lifecycle capture](claude-hooks.md).
+
 `internal/hookstate.Service` owns a separate private 4 MiB hooks metadata file, one lock and a typed request ledger. It initializes retained operator-declared capture policy without initializing computer identity. Preview hashes bounded no-follow regular artifacts without retaining content. Confirmation, revocation and durable invalidation use revision-sensitive fingerprints and atomic commits; identical request replay reconciles uncertain durability without resurrection. This is the single metadata domain for later hook installation manifests and request types. It is not another timing store. See [Codex lifecycle capture](codex-hooks.md) for policy sampling races, supported hosts and residual delivery limits.

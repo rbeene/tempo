@@ -44,10 +44,23 @@ jobs:
       - name: Build native fixture setup and read helper
         run: go test -c -o bin/tempo-native-fixture.test ./internal/nativefixture
       - name: Native fixture safety and protocol tests (no host execution)
-        run: python3 -B scripts/native-hooks/test_codex_smoke.py
+        run: |
+          python3 -B scripts/native-hooks/test_codex_smoke.py
+          python3 -B scripts/native-hooks/test_claude_smoke.py
       - name: Native Codex hook acceptance (synthetic loopback provider)
         timeout-minutes: 5
         run: python3 -B scripts/native-hooks/codex_smoke.py --tempo bin/tempo --helper bin/tempo-native-fixture.test --evidence bin/native-codex-evidence.json
+      - name: Native Claude hook acceptance (synthetic loopback provider)
+        timeout-minutes: 5
+        run: python3 -B scripts/native-hooks/claude_smoke.py --tempo bin/tempo --helper bin/tempo-native-fixture.test --evidence bin/native-claude-evidence.json
+      - name: Upload allowlisted Claude native evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tempo-native-claude-${{ github.sha }}
+          path: bin/native-claude-evidence.json
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Upload allowlisted native evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
