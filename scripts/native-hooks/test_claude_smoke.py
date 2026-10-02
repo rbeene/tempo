@@ -766,7 +766,7 @@ class NativeApprovalDiagnosticTests(unittest.TestCase):
                     failure = smoke.FixtureFailure('fixture_cancelled')
                 model.read = lambda: {'receipts': []}
                 provider = types.SimpleNamespace(server=types.SimpleNamespace(server_port=43210),
-                    budget=types.SimpleNamespace(requests=0), error=None, close=lambda: None)
+                    budget=smoke.ProviderBudget(), error=None, close=lambda: None)
                 def bounded(argv, *_args, **_kwargs):
                     if argv[0] == str(runtime):
                         if argv[1:] == ['--version']:
@@ -806,6 +806,300 @@ class NativeApprovalDiagnosticTests(unittest.TestCase):
                 self.assertNotEqual(report.get('status'), 'passed')
                 self.assertEqual(os.environ['HOME'], real_home)
                 self.assertFalse(root.exists())
+
+
+class ProviderFirstRejectionTests(unittest.TestCase):
+    FAMILIES = ('messages', 'count_tokens', 'other')
+    CATEGORIES = ('unexpected_provider_endpoint', 'synthetic_provider_auth', 'unexpected_request_encoding',
+        'provider_header_contract', 'provider_request_bound', 'provider_input_deadline', 'provider_header_bound',
+        'provider_request_contract', 'provider_request_after_shutdown', 'provider_concurrency_bound',
+        'unexpected_provider_turn', 'provider_turn_ambiguous', 'actual_tool_result_missing',
+        'actual_tool_result_duplicate', 'actual_tool_result_invalid_error_flag', 'actual_tool_result_error',
+        'actual_read_result_missing', 'tool_schema_mismatch', 'required_tool_schema_unavailable',
+        'provider_response_bound', 'parent_stop_missing')
+
+    def provider(self, conversation=None):
+        return types.SimpleNamespace(conversation=conversation or smoke.Conversation(
+            lambda: snapshot([receipt('SessionStart'), receipt('UserPromptSubmit')]), Path('/tmp/project')),
+            budget=smoke.ProviderBudget(), shutdown=threading.Event(), deadline=time.monotonic()+2, error=None)
+
+    def handler(self, provider, body=None, path='/claude/v1/messages', raw=None, reader=None):
+        data = json.dumps(body if body is not None else request()).encode() if raw is None else raw
+        handler = smoke.make_handler(provider).__new__(smoke.make_handler(provider))
+        handler.path, handler.headers = path, {'Content-Length': str(len(data)), 'x-api-key': smoke.TOKEN}
+        handler.rfile, handler.wfile = reader or io.BytesIO(data), io.BytesIO()
+        handler.codes, handler.output_headers = [], []
+        handler.send_response = lambda code, *_: handler.codes.append(code)
+        handler.send_header = lambda *args: handler.output_headers.append(args)
+        handler.end_headers = lambda: None
+        return handler
+
+    def record(self, category, family='messages', stream='unavailable', model='unavailable'):
+        return {'category': category, 'endpoint_family': family, 'stream': stream, 'model': model}
+
+    def projected(self, provider):
+        return provider.budget.project_first_rejections()
+
+    def assert_empty_rejection(self, handler, code=400):
+        self.assertEqual(handler.codes, [code])
+        self.assertIn(('Connection', 'close'), handler.output_headers)
+        self.assertEqual(handler.wfile.getvalue(), b'')
+
+    def test_actual_handler_preserves_unread_auxiliary_and_earlier_messages_before_agent_error(self):
+        rows = [receipt('SessionStart'), receipt('UserPromptSubmit')]
+        conversation = smoke.Conversation(lambda: snapshot(rows), Path('/tmp/project'))
+        provider = self.provider(conversation)
+        class Unread:
+            def read(self, *_): raise AssertionError('auxiliary body was read for diagnostics')
+        aux = self.handler(provider, path='/claude/v1/messages/count_tokens?beta=true', reader=Unread())
+        aux.do_POST(); self.assert_empty_rejection(aux)
+        bad = self.handler(provider, dict(request(), stream=False, model='PRIVATE_CANARY_MODEL'))
+        bad.do_POST(); self.assert_empty_rejection(bad)
+        first = self.handler(provider); first.do_POST(); self.assertEqual(first.codes, [200])
+        rows.extend([receipt('PreToolUse', tool='tempo-read'), receipt('PostToolUse', tool='tempo-read')])
+        second = self.handler(provider, request(results=[result('tempo-read')]))
+        second.do_POST(); self.assertEqual(second.codes, [200])
+        agent = self.handler(provider, request(results=[dict(result('tempo-agent', 'PRIVATE_CANARY'), is_error=True)]))
+        agent.do_POST(); self.assert_empty_rejection(agent)
+        self.assertEqual(provider.error, 'agent_tool_error_unclassified_text_blocks')
+        self.assertEqual(conversation.counts, {'parent': 2})
+        self.assertEqual(provider.budget.requests, 5)
+        records = self.projected(provider)
+        self.assertEqual(records, {'messages': self.record('provider_request_contract', stream='false', model='other'),
+            'count_tokens': self.record('unexpected_provider_endpoint', 'count_tokens')})
+        self.assertEqual(list(records), ['messages', 'count_tokens'])
+        self.assertNotIn('PRIVATE_CANARY', json.dumps(records))
+
+    def test_successful_read_agent_and_completion_do_not_create_rejections(self):
+        rows = [receipt('SessionStart'), receipt('UserPromptSubmit')]
+        provider = self.provider(smoke.Conversation(lambda: snapshot(rows), Path('/tmp/project')))
+        first = self.handler(provider); first.do_POST()
+        rows.extend([receipt('PreToolUse', tool='tempo-read'), receipt('PostToolUse', tool='tempo-read')])
+        second = self.handler(provider, request(results=[result('tempo-read')])); second.do_POST()
+        rows.extend([receipt('PreToolUse', tool='tempo-agent'), receipt('PostToolUse', tool='tempo-agent')])
+        third = self.handler(provider, request(results=[result('tempo-agent')])); third.do_POST()
+        self.assertEqual([h.codes for h in (first, second, third)], [[200]]*3)
+        self.assertIsNone(provider.error)
+        self.assertEqual(self.projected(provider), {})
+
+    def test_actual_handler_exact_endpoint_families_without_auxiliary_body_read(self):
+        class Unread:
+            def read(self, *_): raise AssertionError('rejected endpoint body read')
+        cases = [('/claude/v1/messages', 'messages', False), ('/claude/v1/messages?beta=true', 'messages', False),
+            ('/claude/v1/messages/count_tokens', 'count_tokens', True),
+            ('/claude/v1/messages/count_tokens?beta=true', 'count_tokens', True),
+            ('/claude/v1/messages?PRIVATE_CANARY=yes', 'other', True),
+            ('/claude/v1/messages/count_tokens?beta=false', 'other', True),
+            ('/claude/v1/messages/count_tokens/PRIVATE_CANARY', 'other', True),
+            ('/PRIVATE_CANARY', 'other', True)]
+        for path, family, unread in cases:
+            with self.subTest(path=path):
+                provider = self.provider()
+                h = self.handler(provider, dict(request(), stream=False), path, reader=Unread() if unread else None)
+                h.do_POST(); self.assert_empty_rejection(h)
+                expected = self.record('unexpected_provider_endpoint', family) if unread else self.record(
+                    'provider_request_contract', family, 'false', 'fixture')
+                self.assertEqual(self.projected(provider), {family: expected})
+                self.assertNotIn('PRIVATE_CANARY', json.dumps(self.projected(provider)))
+
+    def test_actual_handler_unparsed_and_nondict_bodies_remain_unavailable(self):
+        for raw, category in ((b'{PRIVATE_CANARY', 'provider_protocol_failed'), (b'[]', 'provider_request_contract'),
+                (b'null', 'provider_request_contract'), (b'"PRIVATE_CANARY"', 'provider_request_contract'),
+                (b'', 'provider_request_bound')):
+            with self.subTest(raw=raw):
+                provider = self.provider(); h = self.handler(provider, raw=raw)
+                h.do_POST(); self.assert_empty_rejection(h)
+                self.assertEqual(self.projected(provider), {'messages': self.record(category)})
+        provider = self.provider(); h = self.handler(provider, raw=b'{}')
+        h.headers['Content-Length'] = '9'; h.do_POST()
+        self.assertEqual(self.projected(provider), {'messages': self.record('provider_request_bound')})
+
+    def test_actual_handler_stream_and_model_relations_are_exact_enums(self):
+        missing = object()
+        for value, stream in ((True, 'true'), (False, 'false'), (missing, 'missing'), (1, 'other'),
+                (0, 'other'), ('true', 'other'), (None, 'other'), ([], 'other')):
+            for model_value, model in ((smoke.MODEL, 'fixture'), ('PRIVATE_CANARY', 'other'),
+                    (missing, 'missing'), (1, 'other_type'), (None, 'other_type'), ({}, 'other_type')):
+                with self.subTest(stream=stream, model=model):
+                    body = {'stream': value, 'model': model_value}
+                    if value is missing: del body['stream']
+                    if model_value is missing: del body['model']
+                    provider = self.provider()
+                    # A deterministic later failure permits observing valid relations too.
+                    provider.conversation.respond = mock.Mock(side_effect=smoke.FixtureFailure('provider_request_contract'))
+                    h = self.handler(provider, body); h.do_POST(); self.assert_empty_rejection(h)
+                    self.assertEqual(self.projected(provider), {'messages': self.record(
+                        'provider_request_contract', stream=stream, model=model)})
+                    self.assertNotIn('PRIVATE_CANARY', json.dumps(self.projected(provider)))
+
+    def test_closed_category_table_agent_precedence_and_arbitrary_exception_fallbacks(self):
+        for category in self.CATEGORIES:
+            provider = self.provider()
+            smoke.record_failure(provider, smoke.FixtureFailure(category), '/claude/v1/messages', request())
+            self.assertEqual(self.projected(provider), {'messages': self.record(category, stream='true', model='fixture')})
+        failures = [(smoke.AgentToolFailure('agent_tool_error_unclassified_text_string', None), 'agent_result_error'),
+            (smoke.FixtureFailure('PRIVATE_CANARY'), 'fixture_oracle_failed'),
+            (smoke.FixtureFailure('provider_request_contract PRIVATE_CANARY'), 'fixture_oracle_failed'),
+            (RuntimeError('provider_request_contract'), 'provider_protocol_failed'),
+            (RuntimeError('PRIVATE_CANARY'), 'provider_protocol_failed')]
+        for failure, category in failures:
+            provider = self.provider(); smoke.record_failure(provider, failure)
+            self.assertEqual(self.projected(provider), {'other': self.record(category, 'other')})
+            self.assertNotIn('PRIVATE_CANARY', json.dumps(self.projected(provider)))
+
+    def test_all_seven_error_sites_keep_http_semantics_and_terminal_error_veto(self):
+        for site in ('log_error', 'send_error', 'handle', 'do_POST', 'reject', 'process_request', 'handle_error'):
+            with self.subTest(site=site):
+                if site in ('process_request', 'handle_error'):
+                    with mock.patch.object(smoke.http.server.ThreadingHTTPServer, '__init__', return_value=None), \
+                         mock.patch.object(smoke.threading.Thread, 'start'):
+                        provider = smoke.Provider(mock.Mock(), time.monotonic()+2)
+                    provider.server.shutdown_request = mock.Mock()
+                    if site == 'process_request':
+                        provider.budget.active = 4
+                        provider.server.process_request(object(), ('127.0.0.1', 1))
+                        provider.server.shutdown_request.assert_called_once()
+                        category = 'provider_concurrency_bound'
+                    else:
+                        provider.server.handle_error(object(), ('127.0.0.1', 1))
+                        category = 'provider_protocol_failed'
+                    family = 'other'
+                else:
+                    provider = self.provider(); h = self.handler(provider, path='/PRIVATE_CANARY')
+                    family, category = 'other', 'provider_protocol_failed'
+                    if site == 'log_error': h.log_error('PRIVATE_CANARY %s', 'PRIVATE_CANARY')
+                    elif site == 'send_error':
+                        h.request_version, h.command = 'HTTP/1.1', 'PATCH'
+                        h.send_error(501, 'PRIVATE_CANARY', 'PRIVATE_CANARY')
+                        self.assertEqual(h.codes, [501]); self.assertNotIn(b'PRIVATE_CANARY', h.wfile.getvalue())
+                    elif site == 'handle':
+                        with mock.patch.object(smoke.http.server.BaseHTTPRequestHandler, 'handle', side_effect=RuntimeError('PRIVATE_CANARY')):
+                            h.handle()
+                        self.assertTrue(h.close_connection)
+                    elif site == 'do_POST':
+                        h.do_POST(); self.assert_empty_rejection(h); category = 'unexpected_provider_endpoint'
+                    else:
+                        h.reject(); self.assert_empty_rejection(h, 404); category = 'unexpected_provider_endpoint'
+                self.assertEqual(provider.error, category)
+                self.assertEqual(self.projected(provider), {family: self.record(category, family)})
+
+    def test_actual_parser_failure_has_no_unavailable_path_or_body_canary(self):
+        class Socket:
+            def __init__(self, data): self.data, self.sent = data, []
+            def settimeout(self, *_): pass
+            def makefile(self, *_): return io.BytesIO(self.data)
+            def sendall(self, data): self.sent.append(data)
+        for data in (b'PRIVATE_CANARY\r\n', b'POST /PRIVATE_CANARY HTTP/7.8\r\n\r\n',
+                     b'POST /PRIVATE_CANARY HTTP/1.1\r\nX: '+b'a'*17000+b'\r\n\r\n'):
+            provider = self.provider(); sock = Socket(data)
+            smoke.make_handler(provider)(sock, ('127.0.0.1', 1), types.SimpleNamespace())
+            records = self.projected(provider)
+            self.assertEqual(list(records), ['other'])
+            self.assertEqual(records['other']['stream'], 'unavailable')
+            self.assertEqual(records['other']['model'], 'unavailable')
+            self.assertNotIn('PRIVATE_CANARY', json.dumps(records))
+            self.assertIsNotNone(provider.error)
+
+    def test_concurrent_winners_are_bounded_stable_and_detached_from_caller_state(self):
+        provider = self.provider(); barrier = threading.Barrier(13); errors = []
+        bodies = [{'stream': bool(i % 2), 'model': smoke.MODEL if i % 2 else 'PRIVATE_CANARY'} for i in range(12)]
+        paths = ['/claude/v1/messages', '/claude/v1/messages/count_tokens', '/PRIVATE_CANARY']
+        def worker(i):
+            try:
+                barrier.wait(2)
+                smoke.record_failure(provider, smoke.FixtureFailure(self.CATEGORIES[i]), paths[i % 3], bodies[i])
+            except BaseException as exc: errors.append(exc)
+        workers = [threading.Thread(target=worker, args=(i,)) for i in range(12)]
+        for w in workers: w.start()
+        barrier.wait(2)
+        for w in workers: w.join(2)
+        self.assertFalse(any(w.is_alive() for w in workers)); self.assertEqual(errors, [])
+        retained = self.projected(provider)
+        self.assertEqual(list(retained), list(self.FAMILIES)); self.assertEqual(len(retained), 3)
+        for family, row in retained.items():
+            self.assertEqual(set(row), {'category', 'endpoint_family', 'stream', 'model'})
+            self.assertEqual(row['endpoint_family'], family)
+            self.assertIn(row['category'], self.CATEGORIES)
+            winner = self.CATEGORIES.index(row['category'])
+            self.assertLess(winner, 12)
+            self.assertEqual(self.FAMILIES[winner % 3], family)
+            self.assertEqual(row['stream'], 'true' if winner % 2 else 'false')
+            self.assertEqual(row['model'], 'fixture' if winner % 2 else 'other')
+        for body in bodies: body.update(stream='PRIVATE_CANARY', model=[])
+        for path in paths: smoke.record_failure(provider, RuntimeError('PRIVATE_CANARY'), path, {})
+        self.assertEqual(self.projected(provider), retained)
+        detached = self.projected(provider); detached['messages']['category'] = 'PRIVATE_CANARY'
+        detached['PRIVATE_CANARY'] = {}
+        self.assertEqual(self.projected(provider), retained)
+        self.assertEqual(provider.error, 'provider_protocol_failed')
+
+    def run_report(self, injected=None, terminal=False):
+        with tempfile.TemporaryDirectory(prefix='tempo-provider-qa-') as tmp:
+            fixture = Path(tmp).resolve(); root, home = fixture/'owned', fixture/'home'; home.mkdir()
+            runtime, tempo, helper = (fixture/name for name in ('runtime', 'tempo', 'helper'))
+            for path in (runtime, tempo, helper): path.write_text('inert file')
+            model = smoke.Conversation(lambda: {'receipts': []}, fixture/'project')
+            provider = smoke.Provider.__new__(smoke.Provider)
+            provider.budget, provider.error, provider.shutdown = smoke.ProviderBudget(), None, threading.Event()
+            provider.server, provider.thread = mock.Mock(server_port=43210), mock.Mock()
+            def close_site():
+                if injected is not None: provider.budget.first_rejections = copy.deepcopy(injected)
+                if terminal: provider.error = 'provider_protocol_failed'
+            provider.server.server_close.side_effect = close_site
+            def bounded(argv, *_args, **_kwargs):
+                if argv[0] == str(runtime):
+                    return b'2.1.286 (Claude Code)\n' if argv[1:] == ['--version'] else b''
+                if argv[2] == 'confirm': return json.dumps({'basis': 'operator_declared', 'fingerprint': 'a'*64}).encode()
+                return b'{"receipts":[],"queued":0,"uncertainties":0,"capture_reviews":0}' if argv[2] == 'read' else b''
+            def owned_root(**_kwargs): root.mkdir(); return str(root)
+            real_home = os.environ['HOME']
+            def boundary_path(value): return home if str(value) == real_home else Path(value)
+            report = {}
+            with mock.patch.dict(os.environ, {'RUNNER_TEMP': str(fixture), 'GITHUB_SHA': 'd'*40}), \
+                 mock.patch.object(smoke, 'Path', side_effect=boundary_path), \
+                 mock.patch.object(smoke, 'hosted_precondition'), mock.patch.object(smoke, 'require_absent'), \
+                 mock.patch.object(smoke, 'child_environment', return_value={'TEMPO_STATE': str(root/'state'), 'TEMPO_HOOK_STATE': str(root/'policy')}), \
+                 mock.patch.object(smoke.tempfile, 'mkdtemp', side_effect=owned_root), \
+                 mock.patch.object(smoke, 'download_runtime', return_value=runtime), \
+                 mock.patch.object(smoke, 'bounded_run', side_effect=bounded), \
+                 mock.patch.object(smoke, 'Conversation', return_value=model), \
+                 mock.patch.object(smoke, 'Provider', return_value=provider), mock.patch.object(smoke, 'require_final'):
+                if terminal:
+                    with self.assertRaisesRegex(smoke.FixtureFailure, '^provider_protocol_failed$'):
+                        smoke.run(types.SimpleNamespace(tempo=str(tempo), helper=str(helper)), report)
+                else: smoke.run(types.SimpleNamespace(tempo=str(tempo), helper=str(helper)), report)
+            self.assertEqual(os.environ['HOME'], real_home); self.assertFalse(root.exists())
+            provider.server.shutdown.assert_called_once(); provider.server.server_close.assert_called_once()
+            provider.thread.join.assert_called_once(); self.assertTrue(provider.shutdown.is_set())
+            self.assertEqual(report.get('status') == 'passed', not terminal)
+            return report
+
+    def test_actual_run_finally_omits_empty_records_and_retains_late_rejections_with_cleanup(self):
+        self.assertNotIn('provider_first_rejections', self.run_report())
+        injected = {family: self.record('provider_protocol_failed', family) for family in reversed(self.FAMILIES)}
+        report = self.run_report(injected, terminal=True)
+        self.assertEqual(report['provider_first_rejections'], injected)
+        self.assertEqual(list(report['provider_first_rejections']), list(self.FAMILIES))
+
+    def test_actual_run_finally_drops_malformed_records_and_unhashable_values_without_leaks(self):
+        good = self.record('provider_request_contract', 'messages', 'false', 'other')
+        faults = [None, [], 'PRIVATE_CANARY', {'PRIVATE_CANARY': good},
+            {'messages': []}, {'messages': dict(good, endpoint_family='other')},
+            {'messages': {k: v for k, v in good.items() if k != 'model'}}]
+        for field in good:
+            for invalid in ('PRIVATE_CANARY', None, 1, True, [], {}):
+                faults.append({'messages': dict(good, **{field: invalid})})
+        for fault in faults:
+            with self.subTest(fault=fault):
+                report = self.run_report(fault, terminal=True)
+                self.assertNotIn('provider_first_rejections', report)
+                self.assertNotIn('PRIVATE_CANARY', json.dumps(report))
+        dirty = {'PRIVATE_CANARY': good, 'other': self.record('provider_protocol_failed', 'other'),
+            'messages': dict(good, PRIVATE_CANARY='PRIVATE_CANARY'), 'count_tokens': {'stream': []}}
+        report = self.run_report(dirty, terminal=True)
+        self.assertEqual(report['provider_first_rejections'], {'messages': good,
+            'other': self.record('provider_protocol_failed', 'other')})
+        self.assertNotIn('PRIVATE_CANARY', json.dumps(report))
 
 
 if __name__=='__main__':unittest.main()

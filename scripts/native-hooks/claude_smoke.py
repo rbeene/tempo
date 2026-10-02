@@ -463,9 +463,24 @@ class Conversation:
             return True
 
 
+PROVIDER_REJECTION_CATEGORIES = frozenset((
+    'unexpected_provider_endpoint', 'synthetic_provider_auth', 'unexpected_request_encoding',
+    'provider_header_contract', 'provider_request_bound', 'provider_input_deadline', 'provider_header_bound',
+    'provider_request_contract', 'provider_request_after_shutdown', 'provider_concurrency_bound',
+    'unexpected_provider_turn', 'provider_turn_ambiguous', 'actual_tool_result_missing',
+    'actual_tool_result_duplicate', 'actual_tool_result_invalid_error_flag', 'actual_tool_result_error',
+    'actual_read_result_missing', 'tool_schema_mismatch', 'required_tool_schema_unavailable',
+    'provider_response_bound', 'parent_stop_missing', 'agent_result_error', 'fixture_oracle_failed',
+    'provider_protocol_failed'))
+PROVIDER_ENDPOINT_FAMILIES = ('messages', 'count_tokens', 'other')
+PROVIDER_STREAM_RELATIONS = ('true', 'false', 'missing', 'other', 'unavailable')
+PROVIDER_MODEL_RELATIONS = ('fixture', 'other', 'missing', 'other_type', 'unavailable')
+
+
 class ProviderBudget:
     def __init__(self):
         self.lock, self.active, self.requests = threading.Lock(), 0, 0
+        self.first_rejections = {}
 
     def claim(self):
         with self.lock:
@@ -480,6 +495,52 @@ class ProviderBudget:
         with self.lock:
             self.requests += 1
             require(self.requests <= 8, 'provider_request_bound')
+
+    def project_first_rejections(self):
+        # Iterate fixed keys, never insertion order or caller-provided keys.
+        with self.lock:
+            projected = {}
+            if not isinstance(self.first_rejections, dict): return projected
+            for family in PROVIDER_ENDPOINT_FAMILIES:
+                row = self.first_rejections.get(family)
+                if not isinstance(row, dict): continue
+                category, endpoint, stream, model = (row.get(key) for key in
+                    ('category', 'endpoint_family', 'stream', 'model'))
+                if not all(type(value) is str for value in (category, endpoint, stream, model)): continue
+                if (category not in PROVIDER_REJECTION_CATEGORIES or endpoint != family
+                        or stream not in PROVIDER_STREAM_RELATIONS or model not in PROVIDER_MODEL_RELATIONS): continue
+                projected[family] = {'category': category, 'endpoint_family': endpoint,
+                                     'stream': stream, 'model': model}
+            return projected
+
+
+def record_failure(provider, exc, path=None, body=None):
+    # Preserve the terminal veto while retaining only closed, detached diagnostic values.
+    if isinstance(exc, FixtureFailure):
+        terminal = str(exc)
+        category = ('agent_result_error' if isinstance(exc, AgentToolFailure) else
+                    terminal if terminal in PROVIDER_REJECTION_CATEGORIES else 'fixture_oracle_failed')
+    elif type(exc) is str and exc in PROVIDER_REJECTION_CATEGORIES:
+        terminal = category = exc
+    else:
+        terminal = category = 'provider_protocol_failed'
+    family = 'other'
+    if type(path) is str:
+        if path in ('/claude/v1/messages', '/claude/v1/messages?beta=true'):
+            family = 'messages'
+        elif path in ('/claude/v1/messages/count_tokens', '/claude/v1/messages/count_tokens?beta=true'):
+            family = 'count_tokens'
+    stream = model = 'unavailable'
+    if isinstance(body, dict):
+        stream = ('missing' if 'stream' not in body else
+                  ('true' if body['stream'] else 'false') if type(body['stream']) is bool else 'other')
+        model = ('missing' if 'model' not in body else 'other_type' if type(body['model']) is not str else
+                 'fixture' if body['model'] == MODEL else 'other')
+    with provider.budget.lock:
+        if family not in provider.budget.first_rejections:
+            provider.budget.first_rejections[family] = {'category': category, 'endpoint_family': family,
+                                                       'stream': stream, 'model': model}
+        provider.error = terminal
 
 
 def validate_http_request(path, headers):
@@ -549,9 +610,9 @@ def make_handler(provider):
             super().setup()
             self.rfile = DeadlineReader(self.rfile, self.connection, time.monotonic() + 5)
         def log_message(self, *_): pass
-        def log_error(self, *_): provider.error = 'provider_protocol_failed'
+        def log_error(self, *_): record_failure(provider, 'provider_protocol_failed', getattr(self, 'path', None))
         def send_error(self, code, message=None, explain=None):
-            provider.error = 'provider_protocol_failed'
+            record_failure(provider, 'provider_protocol_failed', getattr(self, 'path', None))
             super().send_error(code, 'synthetic fixture rejected request', 'request rejected')
         def parse_request(self):
             require(len(self.raw_requestline) <= 2048, 'provider_header_bound')
@@ -562,9 +623,10 @@ def make_handler(provider):
         def handle(self):
             try: super().handle()
             except Exception as exc:
-                provider.error = str(exc) if isinstance(exc, FixtureFailure) else 'provider_protocol_failed'
+                record_failure(provider, exc, getattr(self, 'path', None))
                 self.close_connection = True
         def do_POST(self):
+            body = None
             try:
                 provider.budget.enter_request()
                 size = validate_http_request(self.path, self.headers)
@@ -587,10 +649,10 @@ def make_handler(provider):
                     self.wfile.write(('event: ' + event['type'] + '\ndata: ' + json.dumps(event) + '\n\n').encode())
                     self.wfile.flush()
             except Exception as exc:
-                provider.error = str(exc) if isinstance(exc, FixtureFailure) else 'provider_protocol_failed'
+                record_failure(provider, exc, self.path, body)
                 self.send_response(400); self.send_header('Connection', 'close'); self.end_headers()
         def reject(self):
-            provider.error = 'unexpected_provider_endpoint'
+            record_failure(provider, 'unexpected_provider_endpoint', self.path)
             self.send_response(404); self.send_header('Connection', 'close'); self.end_headers()
         do_GET = do_HEAD = do_PUT = do_DELETE = do_OPTIONS = reject
     return Handler
@@ -606,7 +668,7 @@ class Provider:
             block_on_close = True
             def process_request(self, request, address):
                 if not provider.budget.claim():
-                    provider.error = 'provider_concurrency_bound'
+                    record_failure(provider, 'provider_concurrency_bound')
                     self.shutdown_request(request)
                     return
                 try: super().process_request(request, address)
@@ -616,7 +678,7 @@ class Provider:
             def process_request_thread(self, request, address):
                 try: super().process_request_thread(request, address)
                 finally: provider.budget.release()
-            def handle_error(self, *_): provider.error = 'provider_protocol_failed'
+            def handle_error(self, *_): record_failure(provider, 'provider_protocol_failed')
         self.server = Server(('127.0.0.1', 0), make_handler(self))
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         try: self.thread.start()
@@ -750,7 +812,10 @@ def run(args, report):
             if provider is not None: provider.close()
         finally:
             try:
-                if provider is not None: report['provider_entry_count'] = min(provider.budget.requests, 9)
+                if provider is not None:
+                    report['provider_entry_count'] = min(provider.budget.requests, 9)
+                    rejections = provider.budget.project_first_rejections()
+                    if rejections: report['provider_first_rejections'] = rejections
                 if conversation is not None:
                     if conversation.error_domains is not None:
                         report['agent_error_domains'] = project_error_domains(conversation.error_domains)
