@@ -61,13 +61,31 @@ class HarnessTests(unittest.TestCase):
                     self.assertTrue(terminal.input_probe["enter_sent"])
                     self.assertTrue(terminal.input_probe["cursor_at_echo_end"])
 
+    def test_command_accepts_actual_composer_echo_without_raw_model_slug(self):
+        for text, row in (("› /quit", 0), ("OpenAI Codex\nmodel: GPT-6.1\n› /quit", 2)):
+            terminal = smoke.Terminal.__new__(smoke.Terminal)
+            terminal.input_probe = {}
+            terminal.send = mock.Mock()
+            def until(predicate, category, seconds):
+                terminal.screen = smoke.Screen()
+                terminal.screen.feed(text.replace("\n", "\r\n").encode())
+                terminal.screen.row, terminal.screen.col = row, 7
+                self.assertTrue(predicate(terminal.screen.text()))
+                return text
+            terminal.until = until
+            terminal.command("/quit")
+            self.assertEqual(terminal.send.call_args_list, [mock.call(b"\x1b[200~/quit\x1b[201~"), mock.call(b"\r")])
+            self.assertFalse(terminal.input_probe["model_label_present"])
+            self.assertTrue(terminal.input_probe["cursor_row_exact_echo"])
+            self.assertTrue(terminal.input_probe["cursor_at_echo_end"])
+            self.assertTrue(terminal.input_probe["enter_sent"])
+
     def test_command_never_submits_partial_historical_popup_or_modal_echo(self):
         value = "/quit"
         cases = [("gpt-6.1-sol\n› /qui", 1, 6),
                  ("gpt-6.1-sol\n› /quit\n› empty", 2, 7),
                  ("gpt-6.1-sol\n› /quit  exit Codex", 1, 19),
-                 ("gpt-6.1-sol\n› /quit", 1, 0),
-                 ("› /quit", 0, 7)]
+                 ("gpt-6.1-sol\n› /quit", 1, 0)]
         for title in ("Trust this folder?", "Hooks need review", "Lifecycle hooks from config and enabled plugins.", "Stop hooks"):
             cases.append(("gpt-6.1-sol\n" + title + "\n› /quit", 2, 7))
         for text, row, col in cases:

@@ -387,7 +387,7 @@ class Terminal:
         def echoed(_):
             self.input_probe.clear()
             self.input_probe.update(command_input_probe(self.screen, value))
-            return (self.input_probe["model_label_present"] and not self.input_probe["modal_present"]
+            return (not self.input_probe["modal_present"]
                     and self.input_probe["cursor_row_exact_echo"] and self.input_probe["cursor_at_echo_end"])
         self.until(echoed, "command_echo_unavailable", seconds=5)
         self.send(b"\r")
