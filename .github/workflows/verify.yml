@@ -69,6 +69,8 @@ jobs:
           path: bin/native-codex-evidence.json
           if-no-files-found: ignore
           retention-days: 7
+      - name: Worker Stop pressure evidence
+        run: go test -race -v -count=1 -run '^(TestQAStopControlWaitsForOwnedSocketDrain|TestQAStopPinnedOwnershipAndCancellation|TestQAStopSuccessfulSendWaitsForOwnerRelease)$' ./internal/worker
       - run: go test -race -coverpkg=./internal/... -coverprofile=coverage.out ./...
       - run: sh scripts/test-install.sh
       - run: sh scripts/test-release-version.sh
@@ -89,3 +91,45 @@ jobs:
             bin/tempo
             coverage.out
           retention-days: 7
+  verify-macos:
+    if: github.event_name == 'pull_request'
+    name: Native macOS race and snapshot
+    runs-on: macos-14
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      HARVEST_TOKEN: ''
+      HARVEST_ACCOUNT_ID: ''
+      GOMAXPROCS: '2'
+      GOFLAGS: '-p=2'
+      CGO_ENABLED: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.27.1'
+          cache: false
+      - name: Format, vet, race and native offline contract
+        run: |
+          go version
+          test -z "$(gofmt -l cmd internal)"
+          go vet ./...
+          go test -race -count=1 ./...
+          go build -trimpath -ldflags="-s -w -X github.com/rbeene/tempo/internal/cli.Version=${GITHUB_SHA}" -o bin/tempo ./cmd/tempo
+          bin/tempo version
+          bin/tempo help
+          bin/tempo schema > "$RUNNER_TEMP/tempo-schema.json"
+          cmp docs/cli-schema.json "$RUNNER_TEMP/tempo-schema.json"
+      - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
+        with:
+          version: v2.18.2
+          install-only: true
+      - name: Validate native archive without publishing
+        run: |
+          goreleaser check --config .goreleaser.macos.yaml
+          goreleaser release --config .goreleaser.macos.yaml --snapshot --clean --skip=publish --parallelism=1
+          (cd dist/macos && shasum -a 256 -c checksums-darwin.txt)

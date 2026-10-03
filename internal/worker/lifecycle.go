@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"time"
@@ -69,27 +70,109 @@ func (s *Service) lifecycle(ctx context.Context, action string, d definition) er
 	return nil
 }
 func (s *Service) stopInstance(ctx context.Context) error {
-	live, e := s.instanceLive()
-	if e != nil {
-		return e
+	root, dirInfo, e := privatefs.OpenDirectory(filepath.Dir(s.options.StatePath), false)
+	if errors.Is(e, os.ErrNotExist) {
+		return nil
 	}
-	if live {
-		if e = sendNotification(ctx, s.options.StatePath, "stop"); e != nil {
+	if e != nil {
+		return issue("state_corrupt")
+	}
+	defer root.Close()
+	name := filepath.Base(s.options.StatePath) + ".worker"
+	lock, e := privatefs.OpenNoFollow(root, name+".lock", os.O_RDONLY, 0)
+	if errors.Is(e, os.ErrNotExist) {
+		return nil
+	}
+	if e != nil {
+		return issue("state_corrupt")
+	}
+	defer lock.Close()
+	// Retain the observed lock and directory identities. Reopening the namespace
+	// between retries could select a replacement worker instead of this owner.
+	verifyOwner := func() error {
+		dir, e := os.Lstat(filepath.Dir(s.options.StatePath))
+		fi, e2 := lock.Stat()
+		named, e3 := root.Lstat(name + ".lock")
+		if e != nil || e2 != nil || e3 != nil || !privatefs.PrivateInfo(dir, true) || !os.SameFile(dirInfo, dir) || !privatefs.PrivateInfo(fi, false) || !os.SameFile(fi, named) {
+			return issue("state_corrupt")
+		}
+		return nil
+	}
+	var socketInfo os.FileInfo
+	var conn net.Conn
+	defer func() {
+		if conn != nil {
+			conn.Close()
+		}
+	}()
+	sent := false
+	for {
+		if e = verifyOwner(); e != nil {
 			return e
 		}
-	}
-	for live {
+		free, e := privatefs.TryLock(lock)
+		if e != nil {
+			return issue("state_corrupt")
+		}
+		if free {
+			privatefs.Unlock(lock)
+			return verifyOwner()
+		}
+		if ctx.Err() != nil {
+			return issue("manager")
+		}
+		fi, e := root.Lstat(name + ".sock")
+		present := e == nil
+		if socketInfo == nil {
+			if e != nil || !privatefs.SocketInfo(fi) {
+				return issue("manager")
+			}
+			socketInfo = fi
+		} else if present {
+			if !privatefs.SocketInfo(fi) || !os.SameFile(socketInfo, fi) {
+				return issue("state_corrupt")
+			}
+		} else if !os.IsNotExist(e) {
+			return issue("state_corrupt")
+		}
+		// Endpoint removal can precede release of the instance lock during
+		// cleanup. Wait for release without selecting another endpoint.
+		if !sent && present {
+			attempt, cancel := context.WithTimeout(ctx, 25*time.Millisecond)
+			if conn == nil {
+				d := net.Dialer{}
+				conn, e = d.DialContext(attempt, "unixgram", s.options.StatePath+".worker.sock")
+			}
+			if e == nil && attempt.Err() == nil {
+				if e = verifyOwner(); e != nil {
+					cancel()
+					return e
+				}
+				again, statErr := root.Lstat(name + ".sock")
+				if statErr != nil || !privatefs.SocketInfo(again) || !os.SameFile(socketInfo, again) {
+					cancel()
+					return issue("state_corrupt")
+				}
+				deadline, _ := attempt.Deadline()
+				if e = conn.SetWriteDeadline(deadline); e == nil {
+					_, e = conn.Write([]byte("stop"))
+				}
+				if e == nil {
+					sent = true
+				}
+			}
+			cancel()
+		}
+		// Stop is an idempotent local control. Unlike Wake/Recheck hints, a
+		// failed send is retried only against the pinned owner and endpoint,
+		// within the existing lifecycle/caller budget. A successful send is
+		// never repeated; completion still requires the owner lock to end.
 		select {
 		case <-ctx.Done():
 			return issue("manager")
 		case <-time.After(10 * time.Millisecond):
 		}
-		live, e = s.instanceLive()
-		if e != nil {
-			return e
-		}
 	}
-	return nil
 }
 
 func (s *Service) instanceLive() (bool, error) {
