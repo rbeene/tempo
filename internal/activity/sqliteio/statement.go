@@ -83,7 +83,8 @@ func (c *Conn) prepareRaw(sql string, phase Phase) (uintptr, error) {
 	}
 	return stmt, nil
 }
-func (t *Tx) Prepare(sql string, values ...Value) (*Stmt, error) {
+func (t *Tx) Prepare(sql string, values ...Value) (_ *Stmt, err error) {
+	defer func() { t.readFailure(err) }()
 	if err := t.check(PreparePhase); err != nil {
 		return nil, err
 	}
@@ -154,7 +155,12 @@ func (s *Stmt) bind(index int32, v Value) error {
 	}
 	return nil
 }
-func (s *Stmt) Step() (bool, error) {
+func (s *Stmt) Step() (_ bool, err error) {
+	defer func() {
+		if s != nil {
+			s.tx.readFailure(err)
+		}
+	}()
 	if s == nil || s.ptr == 0 {
 		return false, safeError(StepPhase, ErrClosed)
 	}
@@ -177,7 +183,6 @@ func (s *Stmt) Step() (bool, error) {
 	if lib.Xsqlite3_get_autocommit(c.tls, c.db) != 0 {
 		s.tx.nativeLost = true
 	}
-	var err error
 	if rc != lib.SQLITE_ROW && rc != lib.SQLITE_DONE {
 		err = engineError(StepPhase, rc, s.tx.ctx)
 	}
@@ -203,7 +208,12 @@ func (s *Stmt) ColumnCount() int {
 	}
 	return int(lib.Xsqlite3_column_count(s.tx.conn.tls, s.ptr))
 }
-func (s *Stmt) Kind(index int) (Kind, error) {
+func (s *Stmt) Kind(index int) (_ Kind, err error) {
+	defer func() {
+		if s != nil {
+			s.tx.readFailure(err)
+		}
+	}()
 	if s == nil || s.ptr == 0 || !s.row || index < 0 || index >= s.ColumnCount() {
 		return NullKind, misuse(StepPhase)
 	}
@@ -220,7 +230,12 @@ func (s *Stmt) Kind(index int) (Kind, error) {
 		return NullKind, misuse(StepPhase)
 	}
 }
-func (s *Stmt) expect(index int, want Kind) error {
+func (s *Stmt) expect(index int, want Kind) (err error) {
+	defer func() {
+		if s != nil {
+			s.tx.readFailure(err)
+		}
+	}()
 	kind, err := s.Kind(index)
 	if err != nil {
 		return err
@@ -237,7 +252,12 @@ func (s *Stmt) Int64(index int) (int64, error) {
 	}
 	return lib.Xsqlite3_column_int64(s.tx.conn.tls, s.ptr, int32(index)), nil
 }
-func (s *Stmt) bytes(index int, kind Kind) ([]byte, error) {
+func (s *Stmt) bytes(index int, kind Kind) (_ []byte, err error) {
+	defer func() {
+		if s != nil {
+			s.tx.readFailure(err)
+		}
+	}()
 	if err := s.expect(index, kind); err != nil {
 		return nil, err
 	}
@@ -266,7 +286,12 @@ func (s *Stmt) Text(index int) (string, error) {
 	return string(b), err
 }
 func (s *Stmt) Blob(index int) ([]byte, error) { return s.bytes(index, BlobKind) }
-func (s *Stmt) Close() error {
+func (s *Stmt) Close() (err error) {
+	defer func() {
+		if s != nil {
+			s.tx.readFailure(err)
+		}
+	}()
 	if s == nil || s.ptr == 0 {
 		return nil
 	}
@@ -274,7 +299,6 @@ func (s *Stmt) Close() error {
 	rc := lib.Xsqlite3_finalize(c.tls, s.ptr)
 	s.ptr, s.row, s.done = 0, false, true
 	delete(s.tx.statements, s)
-	var err error
 	if rc != lib.SQLITE_OK {
 		err = engineError(FinalizePhase, rc, s.tx.ctx)
 	}

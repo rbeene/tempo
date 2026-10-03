@@ -14,7 +14,8 @@ const maxSchemaBytes = 1 << 20
 
 // InstallSchema executes trusted embedded source within the caller's write
 // transaction. The caller must roll back on failure; this method never commits.
-func (t *Tx) InstallSchema(ddl string) error {
+func (t *Tx) InstallSchema(ddl string) (err error) {
+	defer func() { t.readFailure(err) }()
 	if ddl == "" || len(ddl) > maxSchemaBytes || len(ddl) >= 2147483647 || strings.ContainsRune(ddl, 0) {
 		return &Error{Phase: PreparePhase, Category: Invalid}
 	}
@@ -87,7 +88,8 @@ func (t *Tx) InstallSchema(ddl string) error {
 
 // CheckForeignKeys audits the owned transaction without exposing a general
 // PRAGMA path or returning potentially sensitive table/row information.
-func (t *Tx) CheckForeignKeys() error {
+func (t *Tx) CheckForeignKeys() (err error) {
+	defer func() { t.readFailure(err) }()
 	if err := t.check(VerifyPhase); err != nil {
 		return err
 	}
