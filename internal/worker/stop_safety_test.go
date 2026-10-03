@@ -22,6 +22,7 @@ type qaStopSafetyFixture struct {
 	owner      *heldFile
 	conn       *net.UnixConn
 	closeOwner sync.Once
+	queuedWake int
 }
 
 func qaStopSafetyNew(t *testing.T) *qaStopSafetyFixture {
@@ -67,17 +68,7 @@ func (f *qaStopSafetyFixture) pressure(t *testing.T) {
 	if err := Notify(context.Background(), f.o.StatePath, Wake); err != nil {
 		t.Fatal("initial owned Wake failed")
 	}
-	accepted := 1
-	for i := 0; i < 40; i++ {
-		err := Notify(context.Background(), f.o.StatePath, Wake)
-		if err != nil {
-			qaWorkerCode(t, err, "manager")
-			t.Logf("owned paused receiver accepted %d notifications before bounded pressure", accepted)
-			return
-		}
-		accepted++
-	}
-	t.Fatal("bounded safety fixture did not establish pressure")
+	f.queuedWake = qaStopAdmitPressure(t, f.o.StatePath)
 }
 
 type qaStopSafetyOutcome struct {
@@ -155,17 +146,23 @@ func qaStopSafetyPending(t *testing.T, o Options, id string) {
 		t.Error("safety failure lost exact pending identity or invented completion")
 	}
 }
-func qaStopSafetyNoStop(t *testing.T, conn *net.UnixConn) {
+func qaStopSafetyNoStop(t *testing.T, conn *net.UnixConn, queuedWake int) {
 	t.Helper()
-	if err := conn.SetReadDeadline(time.Now().Add(30 * time.Millisecond)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
 		t.Fatal("owned receiver deadline failed")
 	}
 	var buf [16]byte
-	for i := 0; i < 64; i++ {
+	// Inspect every admitted Wake and one more slot for an unexpected Stop.
+	for i := 0; i <= queuedWake; i++ {
+		if i == queuedWake {
+			if err := conn.SetReadDeadline(time.Now().Add(30 * time.Millisecond)); err != nil {
+				t.Fatal("owned receiver final inspection deadline failed")
+			}
+		}
 		n, _, err := conn.ReadFromUnix(buf[:])
 		if err != nil {
 			var ne net.Error
-			if errors.As(err, &ne) && ne.Timeout() {
+			if errors.As(err, &ne) && ne.Timeout() && i == queuedWake {
 				return
 			}
 			t.Fatal("owned receiver inspection failed")
@@ -253,9 +250,9 @@ func TestQAStopPinnedOwnershipAndCancellation(t *testing.T) {
 			}
 			// Endpoint delivery inspection runs even when the typed result is
 			// unexpected, so a replacement delivery cannot hide behind Fatal.
-			qaStopSafetyNoStop(t, f.conn)
+			qaStopSafetyNoStop(t, f.conn, f.queuedWake)
 			if replacement != nil {
-				qaStopSafetyNoStop(t, replacement)
+				qaStopSafetyNoStop(t, replacement, 0)
 			}
 			qaWorkerCode(t, got.err, want)
 			qaStopSafetyPending(t, journalOptions, id)
@@ -292,7 +289,7 @@ func TestQAStopSuccessfulSendWaitsForOwnerRelease(t *testing.T) {
 			qaStopSafetyPending(t, f.o, id)
 			// Inspect the still-connected original receiver after successful
 			// delivery, including when its pathname was removed. No resend.
-			qaStopSafetyNoStop(t, f.conn)
+			qaStopSafetyNoStop(t, f.conn, f.queuedWake)
 			f.unlock()
 			got := qaStopSafetyGet(t, ctx, out)
 			if got.err != nil {

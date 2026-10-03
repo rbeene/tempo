@@ -9,10 +9,56 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+// Linux AF_UNIX ignores SO_RCVBUF. Its unconnected receiver backlog is a
+// packet count copied from max_dgram_qlen when the socket is created. The
+// kernel considers the queue full only above that count. After the first
+// admitted Wake, qlen+1 additional attempts include the first blocked send.
+func qaStopAdmitPressure(t *testing.T, statePath string) int {
+	t.Helper()
+	limit := 40
+	expectedQueued := 0
+	if runtime.GOOS == "linux" {
+		raw, err := os.ReadFile("/proc/sys/net/unix/max_dgram_qlen")
+		if err != nil {
+			t.Fatal("Linux Unix datagram queue threshold unavailable for pressure fixture")
+		}
+		qlen, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+		if err != nil || qlen < 0 || qlen > 4096 {
+			t.Fatal("Linux Unix datagram queue threshold outside bounded fixture range 0..4096")
+		}
+		limit = qlen + 1
+		expectedQueued = qlen + 1
+		t.Logf("Linux Unix datagram queue threshold=%d; additional pressure attempt cap=%d", qlen, limit)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	accepted := 1 // The caller already admitted one Wake on this receiver.
+	for i := 0; i < limit; i++ {
+		err := Notify(ctx, statePath, Wake)
+		if ctx.Err() != nil {
+			t.Fatal("bounded fixture pressure setup deadline expired")
+		}
+		if err != nil {
+			qaWorkerCode(t, err, "manager")
+			if expectedQueued != 0 && accepted != expectedQueued {
+				t.Fatal("Linux fixture send failed before its declared receiver queue filled")
+			}
+			t.Logf("owned paused receiver accepted %d notifications before bounded pressure", accepted)
+			return accepted
+		}
+		accepted++
+	}
+	t.Fatal("bounded fixture did not establish socket pressure")
+	return 0
+}
 
 // An independently controlled synthetic foreground owner holds the same real
 // worker lock and socket namespace as Run. No product seam or manager is used.
@@ -88,23 +134,7 @@ func TestQAStopControlWaitsForOwnedSocketDrain(t *testing.T) {
 				t.Fatal("initial owned notification failed before pressure")
 			}
 			if pressure {
-				accepted, blocked := 1, false
-				for i := 0; i < 40; i++ {
-					err = Notify(context.Background(), o.StatePath, Wake)
-					if err != nil {
-						var safe *Error
-						if !errors.As(err, &safe) || safe.Code != "manager" {
-							t.Fatal("pressure produced unrelated failure")
-						}
-						blocked = true
-						break
-					}
-					accepted++
-				}
-				if !blocked {
-					t.Fatal("bounded fixture did not establish socket pressure")
-				}
-				t.Logf("owned paused receiver accepted %d notifications before bounded pressure", accepted)
+				qaStopAdmitPressure(t, o.StatePath)
 			}
 			controller := qaWorkerNew(t, o)
 			reserved := make(chan struct{})

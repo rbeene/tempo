@@ -69,6 +69,8 @@ jobs:
           path: bin/native-codex-evidence.json
           if-no-files-found: ignore
           retention-days: 7
+      - name: Worker Stop pressure evidence
+        run: go test -race -v -count=1 -run '^(TestQAStopControlWaitsForOwnedSocketDrain|TestQAStopPinnedOwnershipAndCancellation|TestQAStopSuccessfulSendWaitsForOwnerRelease)$' ./internal/worker
       - run: go test -race -coverpkg=./internal/... -coverprofile=coverage.out ./...
       - run: sh scripts/test-install.sh
       - run: sh scripts/test-release-version.sh
