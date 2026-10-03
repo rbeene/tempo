@@ -791,6 +791,8 @@ CREATE INDEX actor_clock ON actors(computer_id,state,actor_key) WHERE health = '
 CREATE INDEX actor_parent ON actors(parent_key,parent_generation);
 CREATE INDEX actor_segment ON actors(segment_id);
 CREATE INDEX actor_uncertainty_ref ON actor_uncertainties(uncertainty_id,actor_key);
+CREATE INDEX host_session_root ON host_sessions(root_turn_key)
+WHERE root_turn_key<>'';
 CREATE INDEX turn_native ON host_turns(source,native_session,turn_id,agent_id,incarnation);
 CREATE INDEX turn_tool_target ON host_turns(source,native_session,turn_id,incarnation,agent_id);
 CREATE INDEX turn_incarnation ON host_turns(incarnation,source,native_session);
