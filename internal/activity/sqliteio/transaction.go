@@ -209,6 +209,14 @@ func (t *Tx) finish(outcome Outcome, err, cleanup error) {
 			t.outcome = Unknown
 		}
 	}
+	// A durable acknowledgement requires a clean real writer COMMIT, not merely
+	// an autocommit connection or a successful read/checkpoint.
+	if t.mode == Write && outcome == Committed && err == nil && cleanup == nil &&
+		t.ctx.Err() == nil && len(t.statements) == 0 && !t.conn.poisoned &&
+		lib.Xsqlite3_get_autocommit(t.conn.tls, t.conn.db) != 0 &&
+		lib.Xsqlite3_next_stmt(t.conn.tls, t.conn.db, 0) == 0 && validateRoot(t.conn.root) == nil {
+		t.conn.cleanWrite = true
+	}
 	t.conn.unlock()
 }
 func (t *Tx) abortBeforeCommit(cause error) (Outcome, error) {
