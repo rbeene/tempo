@@ -54,12 +54,13 @@ type rootEntry struct {
 var registry = struct {
 	sync.Mutex
 	roots        map[string]*rootEntry
+	syncGuards   map[syncGuardKey]*syncGuardEntry
 	active       int
 	nativeActive int
 	rejected     []int
 	poisoned     bool
 	fatal        bool
-}{roots: make(map[string]*rootEntry)}
+}{roots: make(map[string]*rootEntry), syncGuards: make(map[syncGuardKey]*syncGuardEntry)}
 
 // Private observations are nil in production and installed only by package tests.
 // hooks run synchronously; use another goroutine/process for coordination.
@@ -97,6 +98,7 @@ func emit(e event) {
 type registryStats struct {
 	Active, Entries, RejectedFDs int
 	NativeActive, Guards         int
+	SyncGuards, SyncEntries      int
 	Poisoned, Fatal              bool
 }
 
@@ -109,7 +111,13 @@ func statsForTest() registryStats {
 			guards++
 		}
 	}
-	return registryStats{Active: registry.active, Entries: len(registry.roots), RejectedFDs: len(registry.rejected), NativeActive: registry.nativeActive, Guards: guards, Poisoned: registry.poisoned, Fatal: registry.fatal}
+	syncGuards := 0
+	for _, g := range registry.syncGuards {
+		if g.fd >= 0 && g.id != (identity{}) {
+			syncGuards++
+		}
+	}
+	return registryStats{SyncGuards: syncGuards, SyncEntries: len(registry.syncGuards), Active: registry.active, Entries: len(registry.roots), RejectedFDs: len(registry.rejected), NativeActive: registry.nativeActive, Guards: guards, Poisoned: registry.poisoned, Fatal: registry.fatal}
 }
 
 func privateDirectory(s *unix.Stat_t) bool {
@@ -247,11 +255,27 @@ func releaseRoot(r *rootEntry) error {
 	return first
 }
 
-// A retained guard/lease is not a native lock owner. Admissions remain poisoned
-// until the last actual native handle (including failed opens) has closed.
+// Directory-only leases are not lock owners. Actual initial/sync guards and
+// unknown dispositions also prevent closing a potentially aliasing rejected FD.
+func rejectedDrainReadyLocked() bool {
+	if registry.nativeActive != 0 || registry.fatal {
+		return false
+	}
+	for _, r := range registry.roots {
+		if r.guardFD >= 0 && r.guardID != (identity{}) {
+			return false
+		}
+	}
+	for _, g := range registry.syncGuards {
+		if g.fd >= 0 || g.unknown {
+			return false
+		}
+	}
+	return true
+}
 func drainRejected() error {
 	registry.Lock()
-	ready := registry.nativeActive == 0 && len(registry.rejected) != 0
+	ready := rejectedDrainReadyLocked() && len(registry.rejected) != 0
 	registry.Unlock()
 	if !ready {
 		return nil
@@ -259,7 +283,7 @@ func drainRejected() error {
 	emit(event{Op: "quarantine", Phase: "before-drain", FD: -1})
 	registry.Lock()
 	var first error
-	if registry.nativeActive == 0 && len(registry.rejected) != 0 {
+	if rejectedDrainReadyLocked() && len(registry.rejected) != 0 {
 		for _, fd := range registry.rejected {
 			if err := unix.Close(fd); err != nil {
 				first = joinCleanup(first, safeError(ClosePhase, err))

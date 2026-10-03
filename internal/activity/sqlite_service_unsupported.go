@@ -1,0 +1,45 @@
+//go:build (!darwin && !linux) || (!amd64 && !arm64)
+
+package activity
+
+import "context"
+
+func (s *Service) linkSQLite(context.Context, LinkInput, LinkDependencies) (BindingResult, error) {
+	return BindingResult{}, failure("unsupported_contract")
+}
+
+func (s *Service) ingestSQLite(context.Context, Event) (EventResult, error) {
+	return EventResult{}, failure("unsupported_contract")
+}
+
+func (s *Service) ingestHostSQLite(context.Context, HostEvent) (HostReceipt, error) {
+	return HostReceipt{}, failure("unsupported_contract")
+}
+
+func (s *Service) statusSQLite(context.Context) (ActivitySnapshot, error) {
+	return ActivitySnapshot{}, failure("unsupported_contract")
+}
+
+func (s *Service) syncConfigureSQLite(context.Context, SyncConfigureInput, SyncDependencies) (SyncConfigurationResult, error) {
+	return SyncConfigurationResult{}, failure("unsupported_contract")
+}
+
+func (s *Service) syncControlSQLite(context.Context, string, bool) (MutationResult, error) {
+	return MutationResult{}, failure("unsupported_contract")
+}
+
+func (s *Service) syncNowSQLite(context.Context, SyncRunInput, SyncDependencies) (SyncRun, error) {
+	return SyncRun{}, failure("unsupported_contract")
+}
+
+func (s *Service) listBindingsSQLite(context.Context) (BindingList, error) {
+	return BindingList{}, failure("unsupported_contract")
+}
+
+func (s *Service) showBindingSQLite(context.Context, ShowBindingInput) (BindingList, error) {
+	return BindingList{}, failure("unsupported_contract")
+}
+
+func (s *Service) syncStatusSQLite(context.Context) (SyncStatus, error) {
+	return SyncStatus{}, failure("unsupported_contract")
+}

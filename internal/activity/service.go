@@ -11,11 +11,12 @@ import (
 )
 
 type Service struct {
-	store         *fileStore
-	clock         Clock
-	resolve       BindingResolver
-	observeWorker WorkerObserver
-	policies      *hookstate.Service
+	store              *fileStore
+	clock              Clock
+	nativeCaptureClock bool
+	resolve            BindingResolver
+	observeWorker      WorkerObserver
+	policies           *hookstate.Service
 }
 
 func New(o Options) *Service {
@@ -27,27 +28,23 @@ func New(o Options) *Service {
 	if p == nil {
 		p = hookstate.New(hookstate.Options{})
 	}
-	return &Service{store: &fileStore{path: o.Path, timeout: o.LockTimeout}, clock: c, resolve: o.ResolveBinding, observeWorker: o.ObserveWorker, policies: p}
+	return &Service{store: &fileStore{path: o.Path, timeout: o.LockTimeout}, clock: c, nativeCaptureClock: o.Clock == nil, resolve: o.ResolveBinding, observeWorker: o.ObserveWorker, policies: p}
 }
 func (s *Service) sample() (ClockSample, error) {
 	v, err := s.clock.Sample()
+	var fallback time.Time
 	if v.WallUTC.IsZero() {
-		v.WallUTC = time.Now().UTC()
+		fallback = time.Now().UTC()
 	}
-	v.WallUTC = v.WallUTC.UTC()
-	if _, _, ok := sampleValues(v); err != nil || !ok {
-		v.Capability = "unavailable"
-		v.Epoch = nil
-		v.ElapsedNS = nil
-		v.AwakeNS = nil
-		return v, failure("clock_unavailable")
-	}
-	return v, nil
+	return normalizeActivitySample(v, err, fallback)
 }
 func baseResult(e Event, revision, disposition string) EventResult {
 	return EventResult{ContractVersion: 1, SnapshotRevision: revision, Disposition: disposition, Actor: ActorRef{Key: e.Actor, Generation: e.Generation}, UncertaintyIDs: []string{}}
 }
 func (s *Service) Ingest(ctx context.Context, e Event) (EventResult, error) {
+	if s.store.sqliteOnly {
+		return s.ingestSQLite(ctx, e)
+	}
 	if err := validateEvent(e); err != nil {
 		return EventResult{}, err
 	}

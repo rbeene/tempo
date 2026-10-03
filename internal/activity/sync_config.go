@@ -116,6 +116,9 @@ func validateSyncConfig(in SyncConfigureInput) error {
 	return nil
 }
 func (s *Service) SyncConfigure(ctx context.Context, in SyncConfigureInput, d SyncDependencies) (SyncConfigurationResult, error) {
+	if s.store.sqliteOnly {
+		return s.syncConfigureSQLite(ctx, in, d)
+	}
 	if e := validateSyncConfig(in); e != nil {
 		return SyncConfigurationResult{}, e
 	}
@@ -184,9 +187,15 @@ func (s *Service) SyncConfigure(ctx context.Context, in SyncConfigureInput, d Sy
 	return result, nil
 }
 func (s *Service) SyncPause(ctx context.Context, id string) (MutationResult, error) {
+	if s.store.sqliteOnly {
+		return s.syncControlSQLite(ctx, id, false)
+	}
 	return s.syncControl(ctx, id, false)
 }
 func (s *Service) SyncResume(ctx context.Context, id string) (MutationResult, error) {
+	if s.store.sqliteOnly {
+		return s.syncControlSQLite(ctx, id, true)
+	}
 	return s.syncControl(ctx, id, true)
 }
 func (s *Service) syncControl(ctx context.Context, id string, enabled bool) (MutationResult, error) {

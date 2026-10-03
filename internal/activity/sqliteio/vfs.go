@@ -188,12 +188,20 @@ func openVFS(tls *libc.TLS, vfs, name, file uintptr, flags int32, out uintptr) i
 }
 
 func aliasLocked(id identity, owner *rootEntry, name string) bool {
-	for _, other := range registry.roots {
-		if !other.active {
-			continue
+	if id == (identity{}) {
+		return false
+	}
+	for _, guard := range registry.syncGuards {
+		if guard.id == id {
+			return true
 		}
+	}
+	for _, other := range registry.roots {
 		if other.guardID == id && id != (identity{}) && (other != owner || name != other.guardName) {
 			return true
+		}
+		if !other.active {
+			continue
 		}
 		for otherName, known := range other.known {
 			if known == id && (other != owner || otherName != name) {
