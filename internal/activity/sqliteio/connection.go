@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -113,6 +114,8 @@ func safeError(phase Phase, cause error) *Error {
 		e.Category, e.Cause = Unsafe, ErrUnsafe
 	case errors.Is(cause, ErrClosed):
 		e.Category, e.Cause = Closed, ErrClosed
+	case errors.Is(cause, syscall.ENOSPC):
+		e.Cause = syscall.ENOSPC
 	}
 	return e
 }
