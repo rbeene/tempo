@@ -34,6 +34,7 @@ type Tx struct {
 	stopInterrupt         func()
 	terminal              bool
 	nativeLost            bool
+	readFailed            bool
 	outcome               Outcome
 	commitErr, cleanupErr error
 }
@@ -59,6 +60,9 @@ func (c *Conn) Begin(ctx context.Context, mode Mode) (*Tx, error) {
 	}
 	if c.readOnly && mode == Write {
 		return nil, misuse(BeginPhase)
+	}
+	if c.oversize && mode == Write {
+		return nil, &Error{Phase: BeginPhase, Category: Full}
 	}
 	if err := validateRoot(c.root); err != nil {
 		return nil, safeError(VerifyPhase, err)
@@ -103,9 +107,22 @@ func (c *Conn) Begin(ctx context.Context, mode Mode) (*Tx, error) {
 		return nil, e
 	}
 	owned = true
+	if mode == Write {
+		if _, err = t.PageInfo(); err != nil {
+			e := safeError(BeginPhase, err)
+			e.Cleanup = joinCleanup(e.Cleanup, t.Rollback())
+			return nil, e
+		}
+	}
 	return t, nil
 }
-func (t *Tx) check(phase Phase) error {
+func (t *Tx) readFailure(err error) {
+	if err != nil && t != nil && !t.terminal && t.mode == Read {
+		t.readFailed = true
+	}
+}
+func (t *Tx) check(phase Phase) (err error) {
+	defer func() { t.readFailure(err) }()
 	if t == nil || t.conn == nil || t.terminal {
 		return safeError(phase, ErrClosed)
 	}
@@ -180,6 +197,18 @@ func (t *Tx) finish(outcome Outcome, err, cleanup error) {
 	}
 	t.terminal, t.outcome, t.cleanupErr = true, outcome, cleanup
 	t.commitErr = err
+	// The read witness is set only after all native ownership and cancellation
+	// cleanup ended conclusively; ordinary writes never grant it.
+	if t.mode == Read && !t.readFailed && outcome == Committed && err == nil && cleanup == nil &&
+		t.ctx.Err() == nil && len(t.statements) == 0 &&
+		lib.Xsqlite3_get_autocommit(t.conn.tls, t.conn.db) != 0 && !t.conn.poisoned {
+		if verify := validateRoot(t.conn.root); verify == nil {
+			t.conn.cleanRead = true
+		} else {
+			t.commitErr = safeError(VerifyPhase, verify)
+			t.outcome = Unknown
+		}
+	}
 	t.conn.unlock()
 }
 func (t *Tx) abortBeforeCommit(cause error) (Outcome, error) {
@@ -199,7 +228,9 @@ func (t *Tx) Commit() (Outcome, error) {
 		return t.outcome, t.commitErr
 	}
 	if len(t.statements) != 0 {
-		return NotAttempted, misuse(CommitPhase)
+		err := misuse(CommitPhase)
+		t.readFailure(err)
+		return NotAttempted, err
 	}
 	if err := t.check(CommitPhase); err != nil {
 		return t.abortBeforeCommit(err)

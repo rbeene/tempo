@@ -19,21 +19,23 @@ import (
 type Options struct {
 	Create, ReadOnly bool
 	AcquireDeadline  time.Time
+	testMaxPages     int64
 }
 type Phase string
 
 const (
-	Admission     Phase = "admission"
-	OpenPhase     Phase = "open"
-	BeginPhase    Phase = "begin"
-	PreparePhase  Phase = "prepare"
-	BindPhase     Phase = "bind"
-	StepPhase     Phase = "step"
-	CommitPhase   Phase = "commit"
-	VerifyPhase   Phase = "verify"
-	RollbackPhase Phase = "rollback"
-	FinalizePhase Phase = "finalize"
-	ClosePhase    Phase = "close"
+	Admission       Phase = "admission"
+	OpenPhase       Phase = "open"
+	BeginPhase      Phase = "begin"
+	PreparePhase    Phase = "prepare"
+	BindPhase       Phase = "bind"
+	StepPhase       Phase = "step"
+	CommitPhase     Phase = "commit"
+	VerifyPhase     Phase = "verify"
+	RollbackPhase   Phase = "rollback"
+	FinalizePhase   Phase = "finalize"
+	ClosePhase      Phase = "close"
+	CheckpointPhase Phase = "checkpoint"
 )
 
 type Category string
@@ -143,6 +145,8 @@ type Conn struct {
 	root                   *rootEntry
 	acquireDeadline        time.Time
 	readOnly               bool
+	maxPages               int64
+	oversize, cleanRead    bool
 	used, closed, poisoned bool
 	closeErr               error
 }
@@ -204,7 +208,8 @@ func Open(ctx context.Context, directory, basename string, opts Options) (*Conn,
 		return nil, safeError(Admission, err)
 	}
 	if opts.Create && opts.ReadOnly || basename == "" || basename == "." || basename == ".." ||
-		strings.ContainsAny(basename, "/\x00?") || len(basename)+len("-journal") > 255 {
+		strings.ContainsAny(basename, "/\x00?") || len(basename)+len("-journal") > 255 ||
+		opts.testMaxPages < 0 || opts.testMaxPages > MaxPages {
 		return nil, &Error{Phase: OpenPhase, Category: Invalid}
 	}
 	r, err := acquireRoot(ctx, directory, basename, opts.Create, opts.AcquireDeadline)
@@ -220,7 +225,10 @@ func Open(ctx context.Context, directory, basename string, opts Options) (*Conn,
 		return nil, e
 	}
 	c := &Conn{tls: libc.NewTLS(), root: r, gate: make(chan struct{}, 1),
-		acquireDeadline: opts.AcquireDeadline, readOnly: opts.ReadOnly}
+		acquireDeadline: opts.AcquireDeadline, readOnly: opts.ReadOnly, maxPages: MaxPages}
+	if opts.testMaxPages != 0 {
+		c.maxPages = opts.testMaxPages
+	}
 	c.gate <- struct{}{}
 	name, err := libc.CString(r.key + "/" + r.databaseName)
 	if err != nil {
@@ -331,6 +339,9 @@ func (c *Conn) setup(ctx context.Context, create bool) error {
 		if _, err := c.control(ctx, sql, authPragma, OpenPhase); err != nil {
 			return err
 		}
+	}
+	if err := c.setupPagePolicy(ctx); err != nil {
+		return err
 	}
 	if create {
 		if _, err := c.control(ctx, "PRAGMA journal_mode=WAL", authPragma, OpenPhase); err != nil {
