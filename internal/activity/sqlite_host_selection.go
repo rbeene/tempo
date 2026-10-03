@@ -11,21 +11,17 @@ import (
 	"github.com/rbeene/tempo/internal/activity/sqliteio"
 )
 
-// This first composer covers the Codex root/child start and stop route. Other
-// native event families and fresh incarnation boundaries remain explicit.
+// Keep the input contract source-specific. Compaction notifications have no
+// lifecycle reducer in the existing contract; SessionStart(compact) does.
 func sqliteHostSupported(e HostEvent) bool {
-	if e.Source != "codex" {
+	if validateHost(e) != nil {
 		return false
 	}
 	switch e.Kind {
-	case "SessionStart":
-		return e.SessionSource == "startup"
-	case "UserPromptSubmit":
-		return e.AgentID == ""
-	case "SubagentStart", "Stop", "SubagentStop":
-		return true
+	case "PreCompact", "PostCompact":
+		return false
 	}
-	return false
+	return true
 }
 
 type sqliteHostPolicy struct {
@@ -33,28 +29,40 @@ type sqliteHostPolicy struct {
 	Basis, Revision, Fingerprint, DiagnosticCode string
 }
 type sqliteHostFacts struct {
-	ComputerID string
-	Session    *sqliteHostSessionRow
-	Turn       *sqliteHostTurnRow
-	Historical []sqliteHostTurnRow
-	Actor      *sqliteActorLocalRow
-	RootTurn   *sqliteHostTurnRow
-	RootActor  *sqliteActorLocalRow
-	Highest    *ActorRef
-	ReceiptKey string
-	Receipt    *sqliteHostReceiptRow
-	Conflict   *sqliteHostReceiptRow
+	ComputerID          string
+	Session             *sqliteHostSessionRow
+	Turn                *sqliteHostTurnRow
+	Historical          []sqliteHostTurnRow
+	Actor               *sqliteActorLocalRow
+	RootTurn            *sqliteHostTurnRow
+	RootActor           *sqliteActorLocalRow
+	Highest             *ActorRef
+	ReceiptKey          string
+	Receipt             *sqliteHostReceiptRow
+	Conflict            *sqliteHostReceiptRow
+	Ambiguous, Boundary bool
+	Tool                *sqliteHostToolRow
+	Pending             map[string]hostTool
+	Observed            *sqliteCaptureClockActor
+	Candidates          []sqliteCaptureClockActor
+	Live                []sqliteCaptureClockActor
 }
 type sqliteHostPrepared struct {
-	Facts                                   sqliteHostFacts
-	CWD                                     string
-	Policy                                  sqliteHostPolicy
-	Admission                               sqliteCaptureBinding
-	Normalized                              *Event
-	Capture                                 sqliteCapturePreparation
-	Clock                                   sqliteCaptureClock
-	ReceiptID, NewIncarnation, BaseRevision string
-	ObservedAt                              time.Time
+	Facts                                       sqliteHostFacts
+	CWD                                         string
+	Policy                                      sqliteHostPolicy
+	Admission                                   sqliteCaptureBinding
+	Normalized                                  *Event
+	Capture                                     sqliteCapturePreparation
+	Clock                                       sqliteCaptureClock
+	ReceiptID, NewIncarnation, BaseRevision     string
+	ObservedAt                                  time.Time
+	Extended                                    bool
+	Reviews                                     []sqliteHostReviewPlan
+	ToolAfter                                   *sqliteHostToolRow
+	WasWaiting, StopTurn, Early, Stale, Missing bool
+	FenceCode                                   string
+	ClockFacts                                  []sqliteCaptureClockActor
 }
 
 const sqliteHostHighestGenerationSQL = "SELECT actor_key,generation,computer_id,source,session_id,agent_id FROM actor_generations WHERE actor_key=? ORDER BY generation DESC LIMIT 1"
@@ -128,35 +136,87 @@ func sqliteReadHostFacts(tx *sqliteio.Tx, meta sqliteStoreMeta, e HostEvent) (f 
 	}
 	f.Session = &session
 	incarnation := session.Value.ID
+	if e.Kind == "SessionStart" && (e.SessionSource == "resume" || e.SessionSource == "clear") {
+		f.Boundary, err = sqliteHostExists(tx, "SELECT turn_key FROM host_turns WHERE incarnation=? AND actor_key IS NOT NULL LIMIT 1", sqliteio.Text(incarnation))
+		if err != nil {
+			return f, err
+		}
+	}
 	if e.Kind != "SessionStart" {
-		if e.Kind == "Stop" || e.Kind == "SubagentStop" {
+		switch e.Kind {
+		case "SessionEnd":
+			if session.Value.RootTurn != "" {
+				row, ok, x := sqliteReadHostTurn(tx, meta.ComputerID, session.Value.RootTurn)
+				if x != nil {
+					return f, x
+				}
+				if !ok || row.Incarnation != session.Value.ID || row.Source != session.Value.Source || row.NativeSession != session.Value.NativeID || row.AgentID != "" || row.Actor == nil {
+					return f, failure("state_corrupt")
+				}
+				f.Turn = &row
+			}
+		case "PreToolUse", "PostToolUse", "PostToolUseFailure", "PermissionRequest":
+			f.Historical, err = sqliteToolHostTurns(tx, meta.ComputerID, e)
+		case "Stop", "SubagentStop", "Interrupt", "StopFailure", "TaskCreated", "TaskCompleted":
 			f.Historical, err = sqliteHistoricalHostTurns(tx, meta.ComputerID, e)
+		default:
+			if e.Kind == "UserPromptSubmit" && e.AgentID != "" || e.Source == "claude" && e.Kind == "SubagentStart" {
+				f.Historical, err = sqliteHistoricalHostTurns(tx, meta.ComputerID, e)
+			} else {
+				row, ok, x := sqliteReadHostTurn(tx, meta.ComputerID, hostTurnKey(incarnation, e))
+				if x != nil {
+					return f, x
+				}
+				if ok {
+					f.Turn = &row
+				}
+			}
+		}
+		if err != nil {
+			return f, err
+		}
+		if len(f.Historical) == 1 {
+			row := f.Historical[0]
+			f.Turn = &row
+		}
+		if e.Source == "claude" {
+			switch e.Kind {
+			case "SessionEnd":
+				f.Ambiguous, err = sqliteHostExists(tx, "SELECT turn_key FROM host_turns WHERE source=? AND native_session=? AND incarnation<? LIMIT 1", sqliteio.Text(e.Source), sqliteio.Text(e.SessionID), sqliteio.Text(incarnation))
+				if err == nil && !f.Ambiguous {
+					f.Ambiguous, err = sqliteHostExists(tx, "SELECT turn_key FROM host_turns WHERE source=? AND native_session=? AND incarnation>? LIMIT 1", sqliteio.Text(e.Source), sqliteio.Text(e.SessionID), sqliteio.Text(incarnation))
+				}
+			case "SubagentStart":
+				for _, t := range f.Historical {
+					if t.Stopped || t.Incarnation != incarnation {
+						f.Ambiguous = true
+					}
+				}
+			default:
+				f.Ambiguous = len(f.Historical) > 1
+			}
 			if err != nil {
 				return f, err
 			}
-			if len(f.Historical) == 1 {
-				row := f.Historical[0]
-				f.Turn = &row
-				incarnation = row.Incarnation
+			if f.Ambiguous {
+				f.Turn = nil
 			}
-		} else {
-			row, ok, x := sqliteReadHostTurn(tx, meta.ComputerID, hostTurnKey(incarnation, e))
-			if x != nil {
-				return f, x
-			}
-			if ok {
-				f.Turn = &row
-			}
+		}
+		if f.Turn != nil && e.Kind != "SubagentStart" && (e.Kind != "UserPromptSubmit" || e.AgentID != "") {
+			incarnation = f.Turn.Incarnation
 		}
 	}
 	f.ReceiptKey = hostEventKey(incarnation, e)
+	if f.Ambiguous {
+		f.ReceiptKey = hostHash([]string{hostEventKey(session.Value.ID, e), "ambiguous_native_identity"})
+	}
 	receipt, found, err := sqliteReadHostReceipt(tx, meta.ComputerID, meta.Revision, f.ReceiptKey)
 	if err != nil {
 		return f, err
 	}
 	if found {
 		f.Receipt = &receipt
-		if receipt.Record.Fingerprint == hostFingerprint(e) {
+		if receipt.Record.Fingerprint == hostFingerprint(e) && (!f.Boundary || receipt.Record.ErrorCode != "") {
 			return f, nil
 		}
 		conflict, ok, x := sqliteReadHostReceipt(tx, meta.ComputerID, meta.Revision, hostConflictKey(f.ReceiptKey, hostFingerprint(e)))
@@ -165,7 +225,9 @@ func sqliteReadHostFacts(tx *sqliteio.Tx, meta sqliteStoreMeta, e HostEvent) (f 
 		}
 		if ok {
 			f.Conflict = &conflict
-			return f, nil
+			if !f.Boundary || conflict.Record.ErrorCode != "" {
+				return f, nil
+			}
 		}
 	}
 	var key *ActorKey
@@ -190,12 +252,12 @@ func sqliteReadHostFacts(tx *sqliteio.Tx, meta sqliteStoreMeta, e HostEvent) (f 
 	// A new child inherits only the exact actor selected by this session's root
 	// turn. Keep the owned turn and current actor (including absence) for the
 	// writer; the session's root key alone cannot prove that these facts stayed put.
-	if e.Kind == "SubagentStart" && f.Turn == nil && session.Value.RootTurn != "" {
+	if (e.Kind == "SubagentStart" && f.Turn == nil || f.Boundary) && session.Value.RootTurn != "" {
 		root, ok, x := sqliteReadHostTurn(tx, meta.ComputerID, session.Value.RootTurn)
 		if x != nil {
 			return f, x
 		}
-		if !ok || root.AgentID != "" || root.Incarnation != session.Value.ID || root.Source != session.Value.Source || root.NativeSession != session.Value.NativeID || root.Actor == nil || root.Actor.Key.Source != root.Source {
+		if !ok || root.AgentID != "" || root.Incarnation != session.Value.ID || root.Source != session.Value.Source || root.NativeSession != session.Value.NativeID || root.Actor == nil || !f.Boundary && root.Actor.Key.Source != root.Source {
 			return f, failure("state_corrupt")
 		}
 		f.RootTurn = &root
@@ -204,18 +266,83 @@ func sqliteReadHostFacts(tx *sqliteio.Tx, meta sqliteStoreMeta, e HostEvent) (f 
 			return f, err
 		}
 	}
+	needsWait := e.Kind == "PreToolUse" || e.Kind == "PostToolUse" || e.Kind == "PostToolUseFailure" || e.Kind == "PermissionRequest" || e.Kind == "Interrupt" || e.Kind == "StopFailure" || e.Kind == "SessionEnd"
+	// A registered prompt is an observation, not new work. Its policy review
+	// needs the exact current actor's waiting provenance before choosing a clock.
+	if (e.Kind == "UserPromptSubmit" || e.Kind == "SubagentStart") && f.Turn != nil && f.Actor != nil && !sqliteCaptureTerminal(*f.Actor) {
+		needsWait = true
+	}
+	if (e.Kind == "Stop" || e.Kind == "SubagentStop") && f.Actor != nil && (f.Actor.State == "wait_children" || f.Actor.State == "wait_user" && e.Source == "claude") {
+		needsWait = true
+	}
+	if needsWait && f.Turn != nil && f.Turn.Actor != nil && f.Actor != nil && f.Actor.Ref == *f.Turn.Actor {
+		observed, x := sqliteCaptureObserveActor(tx, meta.ComputerID, meta.Revision, *f.Actor)
+		if x != nil {
+			return f, x
+		}
+		f.Observed = &observed
+	}
+	if f.Turn != nil && (e.Kind == "PreToolUse" || e.Kind == "PostToolUse" || e.Kind == "PostToolUseFailure" || (e.Kind == "Stop" || e.Kind == "SubagentStop") && f.Observed != nil && sqliteCapturePendingWait(*f.Observed)) {
+		f.Pending, err = sqlitePendingHostTools(tx, meta.ComputerID, f.Turn.Key)
+		if err != nil {
+			return f, err
+		}
+		if e.ToolID != "" {
+			row, ok, x := sqliteReadHostTool(tx, meta.ComputerID, f.Turn.Key, e.ToolID)
+			if x != nil {
+				return f, x
+			}
+			if ok {
+				f.Tool = &row
+			}
+		}
+	}
+	refs := []ActorRef{}
+	if len(f.Historical) > 1 && !f.Ambiguous {
+		for _, t := range f.Historical {
+			if t.Actor != nil {
+				refs = append(refs, *t.Actor)
+			}
+		}
+	}
+	if f.Receipt != nil && f.Receipt.Record.Fingerprint != hostFingerprint(e) && f.Receipt.Record.Result.Actor != nil {
+		refs = append(refs, *f.Receipt.Record.Result.Actor)
+	}
+	for _, ref := range refs {
+		a, x := sqliteCaptureReadActor(tx, meta.ComputerID, meta.Revision, ref.Key)
+		if x != nil {
+			return f, x
+		}
+		if a != nil && a.Ref == ref {
+			v, x := sqliteCaptureObserveActor(tx, meta.ComputerID, meta.Revision, *a)
+			if x != nil {
+				return f, x
+			}
+			f.Candidates = append(f.Candidates, v)
+		}
+	}
+	if f.Boundary {
+		f.Live, err = sqliteHostLiveHeads(tx, meta, session.Value.ID)
+		if err != nil {
+			return f, err
+		}
+	}
 	return f, nil
 }
 func sqliteHostExact(f sqliteHostFacts, e HostEvent) *sqliteHostReceiptRow {
-	if f.Receipt != nil && f.Receipt.Record.Fingerprint == hostFingerprint(e) {
+	if f.Receipt != nil && f.Receipt.Record.Fingerprint == hostFingerprint(e) && (!f.Boundary || f.Receipt.Record.ErrorCode != "") {
 		return f.Receipt
 	}
-	if f.Conflict != nil && f.Conflict.Record.Fingerprint == hostFingerprint(e) {
+	if f.Conflict != nil && f.Conflict.Record.Fingerprint == hostFingerprint(e) && (!f.Boundary || f.Conflict.Record.ErrorCode != "") {
 		return f.Conflict
 	}
 	return nil
 }
 func sqliteHostSameFacts(a, b sqliteHostFacts) (bool, error) {
+	if a.Ambiguous != b.Ambiguous || a.Boundary != b.Boundary || !reflect.DeepEqual(a.Tool, b.Tool) || !reflect.DeepEqual(a.Pending, b.Pending) || !reflect.DeepEqual(a.Observed, b.Observed) || !reflect.DeepEqual(a.Candidates, b.Candidates) || !reflect.DeepEqual(a.Live, b.Live) {
+		return false, nil
+	}
+
 	if a.ComputerID != b.ComputerID || a.ReceiptKey != b.ReceiptKey || !reflect.DeepEqual(a.Session, b.Session) || !reflect.DeepEqual(a.Turn, b.Turn) || !reflect.DeepEqual(a.Historical, b.Historical) || !reflect.DeepEqual(a.Highest, b.Highest) || !reflect.DeepEqual(a.RootTurn, b.RootTurn) {
 		return false, nil
 	}
@@ -387,17 +514,14 @@ func (s *Service) sqlitePrepareHost(ctx context.Context, e HostEvent, a sqliteCa
 	if sqliteHostExact(p.Facts, e) != nil {
 		return p, true, nil
 	}
-	// Ambiguity/conflict quarantine and boundary rotation are separate native
-	// branches, not guessed choices in this first root/child composition slice.
-	if p.Facts.Receipt != nil || len(p.Facts.Historical) > 1 {
-		return p, true, failure("unsupported_contract")
-	}
-	if p.Facts.Session == nil && e.Kind != "SessionStart" {
+	if p.Facts.Session == nil && (e.Kind != "SessionStart" || e.SessionSource == "compact") {
 		return p, true, failure("unsupported_contract")
 	}
 	p.CWD = e.CWD
 	if p.Facts.Turn != nil {
 		p.CWD = p.Facts.Turn.CWD
+	} else if e.Kind == "SessionEnd" && p.Facts.Session != nil {
+		p.CWD = p.Facts.Session.Value.CWD
 	}
 	if p.Facts.Turn == nil || p.Facts.Turn.Actor == nil {
 		p.Admission, err = s.sqlitePrepareHostAdmission(ctx, p.CWD, a)
@@ -418,8 +542,13 @@ func (s *Service) sqlitePrepareHost(ctx context.Context, e HostEvent, a sqliteCa
 	}
 	p.ReceiptID = newID()
 	p.ObservedAt = time.Now().UTC()
-	if p.Facts.Session == nil {
+	if p.Facts.Session == nil || p.Facts.Boundary {
 		p.NewIncarnation = newID()
+	}
+	p.Extended = sqliteHostExtended(e, p.Facts)
+	if p.Extended {
+		err = s.sqlitePrepareHostEffects(ctx, e, a, &p)
+		return p, true, err
 	}
 	switch e.Kind {
 	case "UserPromptSubmit", "SubagentStart":

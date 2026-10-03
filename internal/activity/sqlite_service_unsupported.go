@@ -43,3 +43,27 @@ func (s *Service) showBindingSQLite(context.Context, ShowBindingInput) (BindingL
 func (s *Service) syncStatusSQLite(context.Context) (SyncStatus, error) {
 	return SyncStatus{}, failure("unsupported_contract")
 }
+
+func (s *Service) unlinkSQLite(context.Context, UnlinkInput) (MutationResult, error) {
+	return MutationResult{}, failure("unsupported_contract")
+}
+
+func (s *Service) repairBindingSQLite(context.Context, RepairBindingInput) (BindingResult, error) {
+	return BindingResult{}, failure("unsupported_contract")
+}
+
+func (s *Service) observeSourceSQLite(context.Context, SourceObservation) (MutationResult, error) {
+	return MutationResult{}, failure("unsupported_contract")
+}
+
+func (s *Service) observeClockSQLite(context.Context, ClockObservation) (MutationResult, error) {
+	return MutationResult{}, failure("unsupported_contract")
+}
+
+func (s *Service) observeHostSQLite(context.Context, HostObservation) (MutationResult, error) {
+	return MutationResult{}, failure("unsupported_contract")
+}
+
+func (s *Service) hostReceiptsSQLite(context.Context, HostReceiptFilter) (HostReceiptList, error) {
+	return HostReceiptList{}, failure("unsupported_contract")
+}

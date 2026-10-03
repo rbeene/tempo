@@ -198,6 +198,9 @@ func mutableRecord(st *state, id, revision string) (bindingRecord, error) {
 	return r, nil
 }
 func (s *Service) Unlink(ctx context.Context, in UnlinkInput) (MutationResult, error) {
+	if s.store.sqliteOnly {
+		return s.unlinkSQLite(ctx, in)
+	}
 	if err := validateBindingMutation(in.BindingID, in.IfRevision, in.RequestID, in.Confirmed); err != nil {
 		return MutationResult{}, err
 	}
@@ -242,6 +245,9 @@ func (s *Service) Unlink(ctx context.Context, in UnlinkInput) (MutationResult, e
 	return result, nil
 }
 func (s *Service) RepairBinding(ctx context.Context, in RepairBindingInput) (BindingResult, error) {
+	if s.store.sqliteOnly {
+		return s.repairBindingSQLite(ctx, in)
+	}
 	if err := validateBindingMutation(in.BindingID, in.IfRevision, in.RequestID, in.Confirmed); err != nil {
 		return BindingResult{}, err
 	}

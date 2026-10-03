@@ -52,6 +52,9 @@ type HostObservation struct {
 }
 
 func (s *Service) HostReceipts(ctx context.Context, filter HostReceiptFilter) (HostReceiptList, error) {
+	if s.store.sqliteOnly {
+		return s.hostReceiptsSQLite(ctx, filter)
+	}
 	if filter.Source != "" && filter.Source != "codex" && filter.Source != "claude" || filter.SessionID != "" && !safeIdentifier(filter.SessionID, 256) {
 		return HostReceiptList{}, failure("validation")
 	}
@@ -78,6 +81,9 @@ func (s *Service) HostReceipts(ctx context.Context, filter HostReceiptFilter) (H
 }
 
 func (s *Service) ObserveHost(ctx context.Context, in HostObservation) (MutationResult, error) {
+	if s.store.sqliteOnly {
+		return s.observeHostSQLite(ctx, in)
+	}
 	if !hostSource(in.Source) || !safeIdentifier(in.SessionID, 256) || !safeIdentifier(in.TurnID, 256) || in.AgentID != "" && !safeIdentifier(in.AgentID, 128) {
 		return MutationResult{}, failure("validation")
 	}

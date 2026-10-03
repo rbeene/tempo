@@ -18,15 +18,16 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// Only semantic flows opt into the existing instrumented-build allowance.
+// The default fixture, acquisition/deadline tests and production stay unchanged.
+func hiQASemanticFlowBudget(h *hiQAFixture) {
+	h.s = New(Options{Path: h.path, LockTimeout: sqliteFlowTestLockTimeout(), HookPolicies: h.policies, Clock: h.s.clock})
+}
+
 func TestSQLiteHostIngressH01RootChildAndIndependentProjectUnions(t *testing.T) {
-	// Only this functional flow opts into the instrumented-build budget. Keep
-	// the fixture's clock and policy objects; ordinary builds still select 0.
-	useFlowBudget := func(h *hiQAFixture) {
-		h.s = New(Options{Path: h.path, LockTimeout: sqliteFlowTestLockTimeout(), HookPolicies: h.policies, Clock: h.s.clock})
-	}
 	t.Run("root-child-reopen-replay", func(t *testing.T) {
 		h := hiQANew(t, "codex", 1)
-		useFlowBudget(h)
+		hiQASemanticFlowBudget(h)
 		start := h.event("SessionStart", "", "")
 		start.SessionSource = "startup"
 		events := []HostEvent{start, h.event("UserPromptSubmit", "root-turn", ""), h.event("SubagentStart", "child-turn", "child"), h.event("Stop", "root-turn", ""), h.event("SubagentStop", "child-turn", "child")}
@@ -53,7 +54,7 @@ func TestSQLiteHostIngressH01RootChildAndIndependentProjectUnions(t *testing.T) 
 			t.Fatal("host/normalized receipt or union allocation count", before.Rows)
 		}
 		h.reopen()
-		useFlowBudget(h)
+		hiQASemanticFlowBudget(h)
 		h.revoke()
 		h.clockErr = errors.New("exact historical replay must not sample this clock")
 		for n, e := range events {
@@ -74,7 +75,7 @@ func TestSQLiteHostIngressH01RootChildAndIndependentProjectUnions(t *testing.T) 
 	})
 	t.Run("independent-projects", func(t *testing.T) {
 		h := hiQANew(t, "codex", 2)
-		useFlowBudget(h)
+		hiQASemanticFlowBudget(h)
 		h.start()
 		q := h.event("SessionStart", "", "")
 		q.SessionID, q.CWD, q.SessionSource = "independent-Q", h.cwd[1], "startup"
@@ -141,6 +142,7 @@ func TestSQLiteHostIngressH02AbsentUnlinkedAndDeniedDoNotAdmit(t *testing.T) {
 
 func TestSQLiteHostIngressH03PrecommitFailureRollsBackBothReceipts(t *testing.T) {
 	h := hiQANew(t, "codex", 1)
+	hiQASemanticFlowBudget(h)
 	h.start()
 	h.calibrateHook()
 	before := h.snapshot()
@@ -165,6 +167,7 @@ func TestSQLiteHostIngressH03PrecommitFailureRollsBackBothReceipts(t *testing.T)
 
 func TestSQLiteHostIngressH04CommittedUnknownReceiptFencesExactReplay(t *testing.T) {
 	h := hiQANew(t, "codex", 1)
+	hiQASemanticFlowBudget(h)
 	h.start()
 	h.calibrateHook()
 	reached, committed := false, false
@@ -191,6 +194,7 @@ func TestSQLiteHostIngressH04CommittedUnknownReceiptFencesExactReplay(t *testing
 		t.Fatal("actual COMMIT split host/normalized capture")
 	}
 	h.reopen()
+	hiQASemanticFlowBudget(h)
 	h.revoke()
 	h.clockErr = errors.New("unknown exact replay cannot depend on clock")
 	calls := h.clockCalls
@@ -203,9 +207,10 @@ func TestSQLiteHostIngressH04CommittedUnknownReceiptFencesExactReplay(t *testing
 
 func TestSQLiteHostIngressH05WinnerDuringPreparationAllocatesOnce(t *testing.T) {
 	h := hiQANew(t, "codex", 1)
+	hiQASemanticFlowBudget(h)
 	h.start()
 	e := h.event("UserPromptSubmit", "winner", "")
-	other := New(Options{Path: h.path, HookPolicies: h.policies, Clock: ClockFunc(func() (ClockSample, error) { return h.sample, nil })})
+	other := New(Options{Path: h.path, LockTimeout: sqliteFlowTestLockTimeout(), HookPolicies: h.policies, Clock: ClockFunc(func() (ClockSample, error) { return h.sample, nil })})
 	var winner HostReceipt
 	fired := false
 	h.s.clock = ClockFunc(func() (ClockSample, error) {
@@ -235,6 +240,7 @@ func TestSQLiteHostIngressH05WinnerDuringPreparationAllocatesOnce(t *testing.T) 
 
 func TestSQLiteHostIngressH06SafetyOnlyPromptReservesGeneration(t *testing.T) {
 	h := hiQANew(t, "codex", 1)
+	hiQASemanticFlowBudget(h)
 	h.start()
 	first := h.send(0, h.event("UserPromptSubmit", "A", ""))
 	if first.Actor == nil || first.Actor.Generation != "1" {
@@ -270,6 +276,7 @@ func TestSQLiteHostIngressH06SafetyOnlyPromptReservesGeneration(t *testing.T) {
 
 func TestSQLiteHostIngressH07PolicyLossPreservesCapturedContext(t *testing.T) {
 	h := hiQANew(t, "codex", 2)
+	hiQASemanticFlowBudget(h)
 	h.start()
 	root := h.send(0, h.event("UserPromptSubmit", "root", ""))
 	h.revoke()
@@ -288,6 +295,7 @@ func TestSQLiteHostIngressH07PolicyLossPreservesCapturedContext(t *testing.T) {
 
 func TestSQLiteHostIngressH08ClaudeQuestionOverlapExcludesWaiting(t *testing.T) {
 	h := hiQANew(t, "claude", 1)
+	hiQASemanticFlowBudget(h)
 	h.start()
 	root := h.send(0, h.event("UserPromptSubmit", "prompt", ""))
 	question := h.event("PreToolUse", "prompt", "")
@@ -320,6 +328,7 @@ func TestSQLiteHostIngressH09MatchedQuestionDiscontinuityCannotResume(t *testing
 	for _, mode := range []string{"epoch", "suspend"} {
 		t.Run(mode, func(t *testing.T) {
 			h := hiQANew(t, "claude", 1)
+			hiQASemanticFlowBudget(h)
 			h.start()
 			root := h.send(0, h.event("UserPromptSubmit", "prompt", ""))
 			e := h.event("PreToolUse", "prompt", "")
@@ -345,6 +354,7 @@ func TestSQLiteHostIngressH09MatchedQuestionDiscontinuityCannotResume(t *testing
 				t.Fatal("known idle question wait became working uncertainty")
 			}
 			h.reopen()
+			hiQASemanticFlowBudget(h)
 			_, _ = h.s.ingestHostSQLite(context.Background(), e)
 			if h.actor(root.Actor).Health == "continuous" {
 				t.Fatal("late matching replay healed lost question continuity")
@@ -355,6 +365,7 @@ func TestSQLiteHostIngressH09MatchedQuestionDiscontinuityCannotResume(t *testing
 
 func TestSQLiteHostIngressH10ConflictReplaysOriginalTargetAndError(t *testing.T) {
 	h := hiQANew(t, "codex", 1)
+	hiQASemanticFlowBudget(h)
 	h.start()
 	root := h.send(0, h.event("UserPromptSubmit", "turn", ""))
 	e := h.event("PreToolUse", "turn", "")
@@ -369,6 +380,7 @@ func TestSQLiteHostIngressH10ConflictReplaysOriginalTargetAndError(t *testing.T)
 	}
 	before := h.snapshot()
 	h.reopen()
+	hiQASemanticFlowBudget(h)
 	h.clockErr = errors.New("conflict replay must precede current clock")
 	got, err := h.s.ingestHostSQLite(context.Background(), e)
 	qaCode(t, err, "event_conflict")
@@ -380,6 +392,7 @@ func TestSQLiteHostIngressH10ConflictReplaysOriginalTargetAndError(t *testing.T)
 
 func TestSQLiteHostIngressH11ResumeCapsOnlyRootUnknownTail(t *testing.T) {
 	h := hiQANew(t, "codex", 1)
+	hiQASemanticFlowBudget(h)
 	h.start()
 	root := h.send(0, h.event("UserPromptSubmit", "root", ""))
 	child := h.send(10, h.event("SubagentStart", "child", "child"))

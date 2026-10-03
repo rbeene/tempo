@@ -23,8 +23,7 @@ func sqliteHostUnknown(cause error) error {
 	return errors.Join(failure("local_write_unknown"), sqliteCaptureError(cause))
 }
 
-// Inactive private operation. Public IngestHost continues to use its existing
-// route until the other host families and public consumers are integrated.
+// SQLite host ingress shares one capture transaction with native normalization.
 func (s *Service) ingestHostSQLite(ctx context.Context, e HostEvent) (HostReceipt, error) {
 	result := hostBase(e, "0")
 	if err := validateHost(e); err != nil {
@@ -221,11 +220,11 @@ func sqliteReduceHostFacts(tx *sqliteio.Tx, meta sqliteStoreMeta, e HostEvent, p
 	if !same {
 		return result, failure("state_busy")
 	}
-	if facts.Receipt != nil || len(facts.Historical) > 1 {
-		return result, failure("unsupported_contract")
-	}
 	if err = sqliteCaptureCheckBinding(tx, meta, Event{CWD: p.CWD}, p.Admission); err != nil {
 		return result, err
+	}
+	if p.Extended {
+		return sqliteReduceHostEffects(tx, meta, e, p, facts)
 	}
 	next := meta.Revision
 	if next != "18446744073709551615" {
@@ -356,7 +355,7 @@ func sqliteReduceHostFacts(tx *sqliteio.Tx, meta sqliteStoreMeta, e HostEvent, p
 			turn = &row
 			receipt.Actor = &ref
 			m.transition.Dependencies.ChangedHostTurnKeys = append(m.transition.Dependencies.ChangedHostTurnKeys, row.Key)
-			if e.Kind == "UserPromptSubmit" {
+			if e.Kind == "UserPromptSubmit" && e.AgentID == "" {
 				afterSession.Value.RootTurn = row.Key
 			}
 		}
