@@ -177,15 +177,23 @@ func openVFS(tls *libc.TLS, vfs, name, file uintptr, flags int32, out uintptr) i
 	if base == r.databaseName+"-shm" || flags&allowed == 0 {
 		return lib.SQLITE_CANTOPEN
 	}
+	if refuseInitialSidecar(r, base, "vfs-open") {
+		return lib.SQLITE_CANTOPEN
+	}
 	emit(pathEvent(r, base, "vfs-open", "role", int(flags), -1, nil))
 	fn := *(*func(*libc.TLS, uintptr, uintptr, uintptr, int32, uintptr) int32)(unsafe.Pointer(&originalOpen))
-	return fn(tls, vfs, name, file, flags, out)
+	rc := fn(tls, vfs, name, file, flags, out)
+	emit(event{Namespace: r.key, Role: role(r, base), Op: "vfs-open", Phase: "returned", Flags: int(flags), FD: -1, Code: rc})
+	return rc
 }
 
 func aliasLocked(id identity, owner *rootEntry, name string) bool {
 	for _, other := range registry.roots {
 		if !other.active {
 			continue
+		}
+		if other.guardID == id && id != (identity{}) && (other != owner || name != other.guardName) {
+			return true
 		}
 		for otherName, known := range other.known {
 			if known == id && (other != owner || otherName != name) {
@@ -213,14 +221,31 @@ func openPath(tls *libc.TLS, p uintptr, rawFlags, _ int32) int32 {
 	if err != nil {
 		return setError(tls, err)
 	}
+	if refuseInitialSidecar(r, name, "open") {
+		return setError(tls, ErrUnsafe)
+	}
 	if flags&unix.O_TRUNC != 0 || flags&unix.O_CREAT != 0 && name == r.databaseName && !r.create {
 		return setError(tls, ErrUnsafe)
 	}
+	if name == r.databaseName && r.exclusive {
+		if err = exclusiveAttempt(r, flags); err != nil {
+			return setError(tls, err)
+		}
+		flags |= unix.O_RDWR | unix.O_CREAT | unix.O_EXCL
+	}
 	if err = preflight(r, name, flags&unix.O_CREAT != 0); err != nil {
+		refuseExclusive(r, name, err)
 		emit(pathEvent(r, name, "open", "preflight-refused", flags, -1, err))
 		return setError(tls, err)
 	}
 	emit(pathEvent(r, name, "open", "before", flags, -1, nil))
+	var injected error
+	if name == r.databaseName && r.exclusive {
+		injected = sqlEvent(sqlTestEvent{Phase: "exclusive-open-before", Operation: "exclusive-open"})
+		if injected != nil && !errors.Is(injected, unix.EINTR) && !errors.Is(injected, unix.EIO) {
+			injected = unix.EIO
+		}
+	}
 	registry.Lock()
 	if registry.poisoned || registry.fatal || r.poisoned {
 		registry.Unlock()
@@ -229,10 +254,28 @@ func openPath(tls *libc.TLS, p uintptr, rawFlags, _ int32) int32 {
 	// Keep admission/rejection serialized across stores. A rejected FD must not
 	// close while it could alias an inode with this process's live POSIX locks.
 	flags |= unix.O_NOFOLLOW | unix.O_CLOEXEC
-	fd, err := unix.Openat(r.fd, name, flags, 0600)
+	fd := -1
+	if name == r.databaseName && r.exclusive {
+		if err = admissionError(r.openContext, r.openDeadline); err != nil || r.exclusiveRefused || r.exclusiveCreated {
+			injected = unix.EIO
+		}
+		if injected == nil {
+			injected = noSidecars(r)
+		}
+	}
+	err = injected
+	if err == nil {
+		fd, err = unix.Openat(r.fd, name, flags, 0600)
+	}
 	if err != nil {
+		if name == r.databaseName && r.exclusive && !errors.Is(err, unix.EINTR) {
+			r.exclusiveRefused = true
+		}
 		registry.Unlock()
 		emit(pathEvent(r, name, "open", "after", flags, -1, err))
+		if name == r.databaseName && r.exclusive && !errors.Is(err, unix.EINTR) {
+			emit(pathEvent(r, name, "exclusive", "refused", flags, -1, err))
+		}
 		return setError(tls, err)
 	}
 	var actual, named unix.Stat_t
@@ -241,19 +284,34 @@ func openPath(tls *libc.TLS, p uintptr, rawFlags, _ int32) int32 {
 	id := fileIdentity(&actual)
 	expected := r.known[name]
 	bad := e1 != nil || e2 != nil || !privateFile(&actual) || !privateFile(&named) || id != fileIdentity(&named) || expected != (identity{}) && id != expected || aliasLocked(id, r, name)
+	if name == r.databaseName && r.exclusive && noSidecars(r) != nil {
+		bad = true
+	}
 	if bad {
 		registry.rejected = append(registry.rejected, fd)
 		registry.poisoned, r.poisoned = true, true
+		if name == r.databaseName && r.exclusive {
+			r.exclusiveRefused = true
+		}
 		registry.Unlock()
 		emit(pathEvent(r, name, "open", "quarantined", flags, fd, ErrUnsafe))
+		if name == r.databaseName && r.exclusive {
+			emit(pathEvent(r, name, "exclusive", "refused", flags, fd, ErrUnsafe))
+		}
 		return setError(tls, ErrUnsafe)
 	}
 	r.known[name] = id
 	if name == r.databaseName {
 		r.main = id
+		if r.exclusive {
+			r.exclusiveCreated = true
+		}
 	}
 	registry.Unlock()
 	emit(pathEvent(r, name, "open", "validated", flags, fd, nil))
+	if name == r.databaseName && r.exclusive {
+		emit(pathEvent(r, name, "exclusive", "created", flags, fd, nil))
+	}
 	return int32(fd)
 }
 
@@ -263,6 +321,7 @@ func statPath(tls *libc.TLS, p, output uintptr) int32 {
 		return setError(tls, err)
 	}
 	if err = preflight(r, name, true); err != nil {
+		refuseExclusive(r, name, err)
 		emit(pathEvent(r, name, "stat", "preflight-refused", 0, -1, err))
 		return setError(tls, err)
 	}
@@ -281,8 +340,16 @@ func statPath(tls *libc.TLS, p, output uintptr) int32 {
 	id := identity{uint64(st.Fst_dev), uint64(st.Fst_ino)}
 	registry.Lock()
 	expected := r.known[name]
-	bad := registry.poisoned || registry.fatal || r.poisoned
+	bad := registry.poisoned || registry.fatal || r.poisoned || aliasLocked(id, r, name)
+	exclusiveBad := name == r.databaseName && r.exclusive && (!r.exclusiveCreated || r.exclusiveRefused)
+	if exclusiveBad {
+		r.exclusiveRefused = true
+	}
 	registry.Unlock()
+	if exclusiveBad {
+		emit(pathEvent(r, name, "exclusive", "refused", 0, -1, ErrUnsafe))
+		return setError(tls, ErrUnsafe)
+	}
 	if bad || uint64(st.Fst_mode)&unix.S_IFMT != unix.S_IFREG || uint64(st.Fst_mode)&0777 != 0600 || uint64(st.Fst_uid) != uint64(unix.Geteuid()) || st.Fst_nlink != 1 || expected != (identity{}) && id != expected {
 		return setError(tls, ErrUnsafe)
 	}
@@ -315,6 +382,9 @@ func accessPath(tls *libc.TLS, p uintptr, mode int32) int32 {
 func unlinkPath(tls *libc.TLS, p uintptr) int32 {
 	r, name, err := lookupPath(libc.GoString(p))
 	if err != nil || name == r.databaseName {
+		return setError(tls, ErrUnsafe)
+	}
+	if refuseInitialSidecar(r, name, "unlink") {
 		return setError(tls, ErrUnsafe)
 	}
 	if err = preflight(r, name, false); err != nil {
