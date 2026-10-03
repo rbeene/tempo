@@ -788,12 +788,18 @@ CREATE INDEX generation_latest ON actor_generations(actor_key,generation DESC);
 CREATE INDEX actor_binding ON actors(binding_id,actor_key);
 CREATE INDEX actor_timer ON actors(computer_id,account_id,project_id,state,health,actor_key);
 CREATE INDEX actor_clock ON actors(computer_id,state,actor_key) WHERE health = 'continuous';
+CREATE INDEX actor_live ON actors(computer_id,state,actor_key,generation)
+WHERE state NOT IN ('finished','interrupted');
 CREATE INDEX actor_parent ON actors(parent_key,parent_generation);
 CREATE INDEX actor_segment ON actors(segment_id);
 CREATE INDEX actor_uncertainty_ref ON actor_uncertainties(uncertainty_id,actor_key);
+CREATE INDEX actor_uncertainty_member ON actor_uncertainties(actor_key,uncertainty_id,ordinal);
 CREATE INDEX turn_native ON host_turns(source,native_session,turn_id,agent_id,incarnation);
+CREATE INDEX turn_native_incarnation ON host_turns(source,native_session,incarnation);
 CREATE INDEX turn_tool_target ON host_turns(source,native_session,turn_id,incarnation,agent_id);
 CREATE INDEX turn_incarnation ON host_turns(incarnation,source,native_session);
+CREATE INDEX turn_incarnation_actor ON host_turns(incarnation)
+WHERE actor_key IS NOT NULL;
 CREATE INDEX turn_actor ON host_turns(actor_key,actor_generation,turn_key);
 CREATE INDEX tool_pending ON host_tools(turn_key,name,tool_id) WHERE phase = 'pre';
 CREATE INDEX host_actor_latest ON host_receipts(actor_key,actor_generation,snapshot_revision DESC,receipt_id DESC);
@@ -803,7 +809,11 @@ CREATE INDEX segment_actor ON segments(actor_key,actor_generation,start_sec,star
 CREATE INDEX segment_epoch ON segments(epoch_id);
 CREATE INDEX segment_uncertainty ON segments(uncertainty_id);
 CREATE INDEX uncertainty_actor ON uncertainties(actor_key,actor_generation,state,lower_bound_sec,lower_bound_nsec);
+CREATE INDEX uncertainty_open_actor ON uncertainties(actor_key,uncertainty_id)
+WHERE state='unresolved' AND upper_bound_sec IS NULL;
 CREATE INDEX uncertainty_segment ON uncertainties(segment_id);
+CREATE INDEX uncertainty_timer_open ON uncertainties(computer_id,account_id,project_id,lower_bound_sec,lower_bound_nsec)
+WHERE state='unresolved' AND upper_bound_sec IS NULL;
 CREATE INDEX uncertainty_timer_lower ON uncertainties(computer_id,account_id,project_id,lower_bound_sec,lower_bound_nsec) WHERE state = 'unresolved';
 CREATE INDEX uncertainty_timer_upper ON uncertainties(computer_id,account_id,project_id,upper_bound_sec,upper_bound_nsec) WHERE state = 'unresolved';
 CREATE INDEX event_actor_ref ON event_receipts(actor_key,actor_generation);
