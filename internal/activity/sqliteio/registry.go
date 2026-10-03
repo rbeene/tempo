@@ -30,27 +30,35 @@ type identity struct{ dev, ino uint64 }
 func fileIdentity(s *unix.Stat_t) identity { return identity{uint64(s.Dev), uint64(s.Ino)} }
 
 type rootEntry struct {
-	key          string
-	databaseName string
-	path         string
-	fd           int
-	id           identity
-	main         identity
-	known        map[string]identity
-	gate         chan struct{}
-	refs         int
-	active       bool
-	poisoned     bool
-	create       bool
+	key                                           string
+	databaseName                                  string
+	path                                          string
+	fd                                            int
+	id                                            identity
+	main                                          identity
+	known                                         map[string]identity
+	gate                                          chan struct{}
+	refs                                          int
+	active                                        bool
+	poisoned                                      bool
+	create                                        bool
+	guardName                                     string
+	guardFD                                       int
+	guardID                                       identity
+	exclusive, exclusiveCreated, exclusiveRefused bool
+	initialProbe, initialProbeRefused             bool
+	openContext                                   context.Context
+	openDeadline                                  time.Time
 }
 
 var registry = struct {
 	sync.Mutex
-	roots    map[string]*rootEntry
-	active   int
-	rejected []int
-	poisoned bool
-	fatal    bool
+	roots        map[string]*rootEntry
+	active       int
+	nativeActive int
+	rejected     []int
+	poisoned     bool
+	fatal        bool
 }{roots: make(map[string]*rootEntry)}
 
 // Private observations are nil in production and installed only by package tests.
@@ -63,6 +71,7 @@ type event struct {
 	Flags     int
 	FD        int
 	Errno     int
+	Code      int32
 }
 type hooks struct{ Observe func(event) }
 
@@ -87,13 +96,20 @@ func emit(e event) {
 
 type registryStats struct {
 	Active, Entries, RejectedFDs int
+	NativeActive, Guards         int
 	Poisoned, Fatal              bool
 }
 
 func statsForTest() registryStats {
 	registry.Lock()
 	defer registry.Unlock()
-	return registryStats{registry.active, len(registry.roots), len(registry.rejected), registry.poisoned, registry.fatal}
+	guards := 0
+	for _, r := range registry.roots {
+		if r.guardFD >= 0 && r.guardID != (identity{}) {
+			guards++
+		}
+	}
+	return registryStats{Active: registry.active, Entries: len(registry.roots), RejectedFDs: len(registry.rejected), NativeActive: registry.nativeActive, Guards: guards, Poisoned: registry.poisoned, Fatal: registry.fatal}
 }
 
 func privateDirectory(s *unix.Stat_t) bool {
@@ -161,7 +177,7 @@ func acquireRoot(ctx context.Context, path, basename string, create bool, deadli
 		return nil, ErrUnsafe
 	}
 	if r == nil {
-		r = &rootEntry{key: key, databaseName: basename, id: id, fd: -1, gate: make(chan struct{}, 1)}
+		r = &rootEntry{key: key, databaseName: basename, id: id, fd: -1, guardFD: -1, gate: make(chan struct{}, 1)}
 		r.gate <- struct{}{}
 		registry.roots[key] = r
 	}
@@ -185,6 +201,10 @@ func acquireRoot(ctx context.Context, path, basename string, create bool, deadli
 			r.fd, r.path, r.create = fd, filepath.Clean(path), create
 			r.main, r.known = identity{}, make(map[string]identity)
 			r.active, r.poisoned = true, false
+			r.guardName, r.guardFD, r.guardID = "", -1, identity{}
+			r.exclusive, r.exclusiveCreated, r.exclusiveRefused = false, false, false
+			r.initialProbe, r.initialProbeRefused = false, false
+			r.openContext, r.openDeadline = ctx, deadline
 			registry.active++
 		}
 		registry.Unlock()
@@ -207,6 +227,7 @@ func acquireRoot(ctx context.Context, path, basename string, create bool, deadli
 // releaseRoot is called only after conclusive sqlite3_close success, including
 // all SQLite cleanup callbacks. It never frees a BUSY/zombie connection.
 func releaseRoot(r *rootEntry) error {
+	first := closeGuard(r)
 	registry.Lock()
 	r.active = false
 	registry.active--
@@ -216,36 +237,43 @@ func releaseRoot(r *rootEntry) error {
 	if r.refs == 0 {
 		delete(registry.roots, r.key)
 	}
-	last := registry.active == 0 && len(registry.rejected) != 0
 	registry.Unlock()
-	if last {
-		emit(event{Op: "quarantine", Phase: "before-drain", FD: -1})
+	first = joinCleanup(first, drainRejected())
+	if err := unix.Close(fd); err != nil {
+		first = joinCleanup(first, safeError(ClosePhase, err))
 	}
+	r.gate <- struct{}{}
+	emit(event{Namespace: r.key, Role: "root", Op: "lease", Phase: "released", FD: fd})
+	return first
+}
+
+// A retained guard/lease is not a native lock owner. Admissions remain poisoned
+// until the last actual native handle (including failed opens) has closed.
+func drainRejected() error {
+	registry.Lock()
+	ready := registry.nativeActive == 0 && len(registry.rejected) != 0
+	registry.Unlock()
+	if !ready {
+		return nil
+	}
+	emit(event{Op: "quarantine", Phase: "before-drain", FD: -1})
 	registry.Lock()
 	var first error
-	// New admissions remain barred by registry.poisoned until this drain ends.
-	if registry.active == 0 && len(registry.rejected) != 0 {
-		for _, rejected := range registry.rejected {
-			if err := unix.Close(rejected); err != nil && first == nil {
-				first = err
+	if registry.nativeActive == 0 && len(registry.rejected) != 0 {
+		for _, fd := range registry.rejected {
+			if err := unix.Close(fd); err != nil {
+				first = joinCleanup(first, safeError(ClosePhase, err))
 			}
 		}
 		registry.rejected = nil
 		if first != nil {
 			registry.fatal = true
-		} else {
+		} else if !registry.fatal {
 			registry.poisoned = false
 		}
 	}
 	registry.Unlock()
-	if err := unix.Close(fd); err != nil && first == nil {
-		first = err
-	}
-	r.gate <- struct{}{}
-	if last {
-		emit(event{Op: "quarantine", Phase: "drained", FD: -1})
-	}
-	emit(event{Namespace: r.key, Role: "root", Op: "lease", Phase: "released", FD: fd})
+	emit(event{Op: "quarantine", Phase: "drained", FD: -1})
 	return first
 }
 
@@ -264,6 +292,9 @@ func lookupPath(path string) (*rootEntry, string, error) {
 	return r, name, nil
 }
 func role(r *rootEntry, name string) string {
+	if name == r.guardName && name != "" {
+		return "guard"
+	}
 	if name == r.databaseName {
 		return "main"
 	}
@@ -294,6 +325,9 @@ func validateRoot(r *rootEntry) error {
 	known := make(map[string]identity, len(r.known))
 	for name, id := range r.known {
 		known[name] = id
+	}
+	if r.guardID != (identity{}) {
+		known[r.guardName] = r.guardID
 	}
 	registry.Unlock()
 	if poisoned {

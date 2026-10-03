@@ -18,6 +18,7 @@ import (
 
 type Options struct {
 	Create, ReadOnly bool
+	ExclusiveCreate  bool
 	AcquireDeadline  time.Time
 	testMaxPages     int64
 }
@@ -137,18 +138,20 @@ func joinCleanup(earlier, later error) error {
 }
 
 type Conn struct {
-	gate                   chan struct{}
-	tls                    *libc.TLS
-	db                     uintptr
-	authMode               uintptr
-	cancelFlag             uintptr
-	root                   *rootEntry
-	acquireDeadline        time.Time
-	readOnly               bool
-	maxPages               int64
-	oversize, cleanRead    bool
-	used, closed, poisoned bool
-	closeErr               error
+	gate                         chan struct{}
+	tls                          *libc.TLS
+	db                           uintptr
+	authMode                     uintptr
+	cancelFlag                   uintptr
+	root                         *rootEntry
+	acquireDeadline              time.Time
+	readOnly                     bool
+	maxPages                     int64
+	oversize, cleanRead          bool
+	used, closed, poisoned       bool
+	closeErr                     error
+	nativeCounted                bool
+	cleanWrite, durableAttempted bool
 }
 
 const (
@@ -207,7 +210,7 @@ func Open(ctx context.Context, directory, basename string, opts Options) (*Conn,
 	if err := admissionError(ctx, opts.AcquireDeadline); err != nil {
 		return nil, safeError(Admission, err)
 	}
-	if opts.Create && opts.ReadOnly || basename == "" || basename == "." || basename == ".." ||
+	if opts.Create && opts.ReadOnly || opts.ExclusiveCreate && (!opts.Create || opts.ReadOnly) || basename == "" || basename == "." || basename == ".." ||
 		strings.ContainsAny(basename, "/\x00?") || len(basename)+len("-journal") > 255 ||
 		opts.testMaxPages < 0 || opts.testMaxPages > MaxPages {
 		return nil, &Error{Phase: OpenPhase, Category: Invalid}
@@ -224,78 +227,15 @@ func Open(ctx context.Context, directory, basename string, opts Options) (*Conn,
 		}
 		return nil, e
 	}
-	c := &Conn{tls: libc.NewTLS(), root: r, gate: make(chan struct{}, 1),
-		acquireDeadline: opts.AcquireDeadline, readOnly: opts.ReadOnly, maxPages: MaxPages}
-	if opts.testMaxPages != 0 {
-		c.maxPages = opts.testMaxPages
-	}
-	c.gate <- struct{}{}
-	name, err := libc.CString(r.key + "/" + r.databaseName)
-	if err != nil {
-		return failOpen(c, safeError(OpenPhase, err))
-	}
-	flags := int32(lib.SQLITE_OPEN_READWRITE | lib.SQLITE_OPEN_FULLMUTEX | lib.SQLITE_OPEN_NOFOLLOW | lib.SQLITE_OPEN_PRIVATECACHE)
-	if opts.ReadOnly {
-		flags &^= lib.SQLITE_OPEN_READWRITE
-		flags |= lib.SQLITE_OPEN_READONLY
-	}
-	if opts.Create {
-		flags |= lib.SQLITE_OPEN_CREATE
-	}
-	output := lib.Xsqlite3_malloc64(c.tls, uint64(unsafe.Sizeof(uintptr(0))))
-	if output == 0 {
-		libc.Xfree(c.tls, name)
-		return failOpen(c, engineError(OpenPhase, lib.SQLITE_NOMEM, nil))
-	}
-	*(*uintptr)(unsafe.Pointer(output)) = 0
-	if err = admissionError(ctx, opts.AcquireDeadline); err != nil {
-		lib.Xsqlite3_free(c.tls, output)
-		libc.Xfree(c.tls, name)
-		return failOpen(c, safeError(Admission, err))
-	}
-	rc := lib.Xsqlite3_open_v2(c.tls, name, output, flags, vfsNameMemory)
-	c.db = *(*uintptr)(unsafe.Pointer(output))
-	lib.Xsqlite3_free(c.tls, output)
-	libc.Xfree(c.tls, name)
-	if rc != lib.SQLITE_OK {
-		return failOpen(c, engineError(OpenPhase, rc, ctx))
-	}
-	if rc = lib.Xsqlite3_extended_result_codes(c.tls, c.db, 1); rc != lib.SQLITE_OK {
-		return failOpen(c, engineError(OpenPhase, rc, ctx))
-	}
-	c.authMode = lib.Xsqlite3_malloc64(c.tls, 4)
-	if c.authMode == 0 {
-		return failOpen(c, engineError(OpenPhase, lib.SQLITE_NOMEM, nil))
-	}
-	*(*uint32)(unsafe.Pointer(c.authMode)) = authApplication
-	if rc = lib.Xsqlite3_set_authorizer(c.tls, c.db, functionPointer(authorizerValue), c.authMode); rc != lib.SQLITE_OK {
-		return failOpen(c, engineError(OpenPhase, rc, ctx))
-	}
-	c.cancelFlag = lib.Xsqlite3_malloc64(c.tls, 4)
-	if c.cancelFlag == 0 {
-		return failOpen(c, engineError(OpenPhase, lib.SQLITE_NOMEM, nil))
-	}
-	atomic.StoreUint32((*uint32)(unsafe.Pointer(c.cancelFlag)), 0)
-	lib.Xsqlite3_progress_handler(c.tls, c.db, 1000, functionPointer(progressValue), c.cancelFlag)
-	for _, op := range []int32{lib.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, lib.SQLITE_DBCONFIG_DEFENSIVE} {
-		v, e := c.config(op, 1)
-		if e != nil {
-			return failOpen(c, e)
-		}
-		if !v {
-			return failOpen(c, safeError(OpenPhase, ErrUnsafe))
+	c := newConnection(r, opts)
+	if opts.ExclusiveCreate {
+		if err = armExclusive(r); err != nil {
+			return failOpen(c, safeError(Admission, err))
 		}
 	}
-	for _, op := range []int32{lib.SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION, lib.SQLITE_DBCONFIG_TRUSTED_SCHEMA, lib.SQLITE_DBCONFIG_DQS_DDL, lib.SQLITE_DBCONFIG_DQS_DML} {
-		v, e := c.config(op, 0)
-		if e != nil {
-			return failOpen(c, e)
-		}
-		if v {
-			return failOpen(c, safeError(OpenPhase, ErrUnsafe))
-		}
+	if err = c.openNative(ctx, opts); err != nil {
+		return failOpen(c, err)
 	}
-	lib.Xsqlite3_limit(c.tls, c.db, lib.SQLITE_LIMIT_ATTACHED, 0)
 	setupCtx, cancel := context.WithDeadline(ctx, opts.AcquireDeadline)
 	finish := c.interruptWith(setupCtx)
 	err = c.setup(setupCtx, opts.Create)
@@ -309,10 +249,115 @@ func Open(ctx context.Context, directory, basename string, opts Options) (*Conn,
 	}
 	return c, nil
 }
+
+func newConnection(r *rootEntry, opts Options) *Conn {
+	c := &Conn{root: r, gate: make(chan struct{}, 1),
+		acquireDeadline: opts.AcquireDeadline, readOnly: opts.ReadOnly, maxPages: MaxPages}
+	if opts.testMaxPages != 0 {
+		c.maxPages = opts.testMaxPages
+	}
+	c.gate <- struct{}{}
+	return c
+}
+
+// A native handle may exist even on sqlite3_open_v2 failure. Count before entry
+// and relinquish only after checked sqlite3_close, never at lease handoff.
+func (c *Conn) openNative(ctx context.Context, opts Options) error {
+	c.tls = libc.NewTLS()
+	c.readOnly = opts.ReadOnly
+	r := c.root
+	name, err := libc.CString(r.key + "/" + r.databaseName)
+	if err != nil {
+		return safeError(OpenPhase, err)
+	}
+	flags := int32(lib.SQLITE_OPEN_READWRITE | lib.SQLITE_OPEN_FULLMUTEX | lib.SQLITE_OPEN_NOFOLLOW | lib.SQLITE_OPEN_PRIVATECACHE)
+	if opts.ReadOnly {
+		flags &^= lib.SQLITE_OPEN_READWRITE
+		flags |= lib.SQLITE_OPEN_READONLY
+	}
+	if opts.Create {
+		flags |= lib.SQLITE_OPEN_CREATE
+	}
+	output := lib.Xsqlite3_malloc64(c.tls, uint64(unsafe.Sizeof(uintptr(0))))
+	if output == 0 {
+		libc.Xfree(c.tls, name)
+		return engineError(OpenPhase, lib.SQLITE_NOMEM, nil)
+	}
+	*(*uintptr)(unsafe.Pointer(output)) = 0
+	if err = admissionError(ctx, opts.AcquireDeadline); err != nil {
+		lib.Xsqlite3_free(c.tls, output)
+		libc.Xfree(c.tls, name)
+		return safeError(Admission, err)
+	}
+	registry.Lock()
+	if registry.poisoned || registry.fatal || r.poisoned {
+		registry.Unlock()
+		lib.Xsqlite3_free(c.tls, output)
+		libc.Xfree(c.tls, name)
+		return safeError(OpenPhase, ErrUnsafe)
+	}
+	registry.nativeActive++
+	c.nativeCounted = true
+	registry.Unlock()
+	rc := lib.Xsqlite3_open_v2(c.tls, name, output, flags, vfsNameMemory)
+	c.db = *(*uintptr)(unsafe.Pointer(output))
+	lib.Xsqlite3_free(c.tls, output)
+	libc.Xfree(c.tls, name)
+	if rc != lib.SQLITE_OK {
+		return engineError(OpenPhase, rc, ctx)
+	}
+	registry.Lock()
+	badExclusive := r.exclusive && (!r.exclusiveCreated || r.exclusiveRefused || r.main == (identity{}))
+	registry.Unlock()
+	if badExclusive {
+		return safeError(OpenPhase, ErrUnsafe)
+	}
+	if rc = lib.Xsqlite3_extended_result_codes(c.tls, c.db, 1); rc != lib.SQLITE_OK {
+		return engineError(OpenPhase, rc, ctx)
+	}
+	c.authMode = lib.Xsqlite3_malloc64(c.tls, 4)
+	if c.authMode == 0 {
+		return engineError(OpenPhase, lib.SQLITE_NOMEM, nil)
+	}
+	*(*uint32)(unsafe.Pointer(c.authMode)) = authApplication
+	if rc = lib.Xsqlite3_set_authorizer(c.tls, c.db, functionPointer(authorizerValue), c.authMode); rc != lib.SQLITE_OK {
+		return engineError(OpenPhase, rc, ctx)
+	}
+	c.cancelFlag = lib.Xsqlite3_malloc64(c.tls, 4)
+	if c.cancelFlag == 0 {
+		return engineError(OpenPhase, lib.SQLITE_NOMEM, nil)
+	}
+	atomic.StoreUint32((*uint32)(unsafe.Pointer(c.cancelFlag)), 0)
+	lib.Xsqlite3_progress_handler(c.tls, c.db, 1000, functionPointer(progressValue), c.cancelFlag)
+	for _, op := range []int32{lib.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, lib.SQLITE_DBCONFIG_DEFENSIVE} {
+		v, e := c.config(op, 1)
+		if e != nil {
+			return e
+		}
+		if !v {
+			return safeError(OpenPhase, ErrUnsafe)
+		}
+	}
+	for _, op := range []int32{lib.SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION, lib.SQLITE_DBCONFIG_TRUSTED_SCHEMA, lib.SQLITE_DBCONFIG_DQS_DDL, lib.SQLITE_DBCONFIG_DQS_DML} {
+		v, e := c.config(op, 0)
+		if e != nil {
+			return e
+		}
+		if v {
+			return safeError(OpenPhase, ErrUnsafe)
+		}
+	}
+	lib.Xsqlite3_limit(c.tls, c.db, lib.SQLITE_LIMIT_ATTACHED, 0)
+	return nil
+}
+
 func failOpen(c *Conn, cause error) (*Conn, error) {
 	if err := c.Close(context.Background()); err != nil {
 		e := safeError(OpenPhase, cause)
 		e.Cleanup = joinCleanup(e.Cleanup, err)
+		if c.closed {
+			return nil, e
+		}
 		return c, e
 	}
 	return nil, cause
@@ -540,31 +585,69 @@ func (c *Conn) Close(ctx context.Context) error {
 	if err := sqlEvent(sqlTestEvent{Phase: "close-before", Operation: "close"}); err != nil {
 		return safeError(ClosePhase, err)
 	}
+	if err := c.closeNative(); err != nil {
+		if c.db != 0 || c.nativeCounted {
+			return combineClose(err, c.closeErr)
+		}
+		c.finishRelease(combineClose(c.closeErr, err))
+		return c.closeErr
+	}
+	c.finishRelease(c.closeErr)
+	emit(event{Namespace: c.root.key, Role: "main", Op: "close", Phase: "closed", FD: -1})
+	if err := sqlEvent(sqlTestEvent{Phase: "close-after", Operation: "close"}); err != nil {
+		c.closeErr = combineClose(c.closeErr, safeError(ClosePhase, err))
+	}
+	return c.closeErr
+}
+
+// No watcher or statement owner may coexist with this call: all callers hold
+// the connection gate, and Tx.finish/initial probe join their watcher first.
+func (c *Conn) closeNative() error {
 	emit(event{Namespace: c.root.key, Role: "main", Op: "close", Phase: "before", FD: -1})
 	if c.db != 0 {
 		if rc := lib.Xsqlite3_close(c.tls, c.db); rc != lib.SQLITE_OK {
 			return engineError(ClosePhase, rc, nil)
 		}
+		c.db = 0
 	}
-	c.db, c.closed = 0, true
-	if c.authMode != 0 {
-		lib.Xsqlite3_free(c.tls, c.authMode)
-		c.authMode = 0
+	if c.tls != nil {
+		if c.authMode != 0 {
+			lib.Xsqlite3_free(c.tls, c.authMode)
+			c.authMode = 0
+		}
+		if c.cancelFlag != 0 {
+			lib.Xsqlite3_free(c.tls, c.cancelFlag)
+			c.cancelFlag = 0
+		}
+		c.tls.Close()
+		c.tls = nil
 	}
-	if c.cancelFlag != 0 {
-		lib.Xsqlite3_free(c.tls, c.cancelFlag)
-		c.cancelFlag = 0
+	registry.Lock()
+	if c.nativeCounted {
+		registry.nativeActive--
+		c.nativeCounted = false
 	}
-	c.tls.Close()
-	c.tls = nil
-	if err := releaseRoot(c.root); err != nil {
-		c.closeErr = safeError(ClosePhase, err)
+	registry.Unlock()
+	return drainRejected()
+}
+
+func combineClose(primary, cleanup error) error {
+	if primary == nil {
+		return cleanup
 	}
-	emit(event{Namespace: c.root.key, Role: "main", Op: "close", Phase: "closed", FD: -1})
-	if err := sqlEvent(sqlTestEvent{Phase: "close-after", Operation: "close"}); err != nil && c.closeErr == nil {
-		c.closeErr = safeError(ClosePhase, err)
+	if cleanup == nil {
+		return primary
 	}
-	return c.closeErr
+	e := safeError(ClosePhase, primary)
+	e.Cleanup = joinCleanup(e.Cleanup, cleanup)
+	return e
+}
+func (c *Conn) finishRelease(primary error) {
+	if c.closed {
+		return
+	}
+	c.closeErr = combineClose(primary, releaseRoot(c.root))
+	c.closed = true
 }
 
 type sqlTestEvent struct {
