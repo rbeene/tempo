@@ -24,6 +24,7 @@ CREATE TABLE store_meta (
     database_basename TEXT NOT NULL,
     migration_id TEXT,
     backup_sha256 TEXT,
+    logical_bytes INTEGER NOT NULL CHECK (logical_bytes >= 0),
     CHECK (revision IS NULL OR (length(revision) = 8 AND revision != X'0000000000000000')),
     CHECK (sync_enabled IN (0,1)),
     PRIMARY KEY (singleton),
