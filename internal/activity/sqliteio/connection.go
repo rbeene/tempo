@@ -569,35 +569,43 @@ func (c *Conn) interruptWith(ctx context.Context) func() {
 	}
 }
 func (c *Conn) Close(ctx context.Context) error {
+	_, err := c.CloseChecked(ctx)
+	return err
+}
+
+// CloseChecked reports terminal caller ownership under the same gate as Close.
+// A true result does not erase cleanup errors or certify durability. A false
+// result leaves terminal ownership unproved; the caller retains this pointer.
+func (c *Conn) CloseChecked(ctx context.Context) (terminal bool, err error) {
 	if c == nil {
-		return nil
+		return true, nil
 	}
 	if c.gate == nil {
-		return safeError(ClosePhase, ErrClosed)
+		return false, safeError(ClosePhase, ErrClosed)
 	}
 	if err := c.lockContext(ctx, time.Time{}); err != nil {
-		return err
+		return false, err
 	}
 	defer c.unlock()
 	if c.closed {
-		return c.closeErr
+		return true, c.closeErr
 	}
 	if err := sqlEvent(sqlTestEvent{Phase: "close-before", Operation: "close"}); err != nil {
-		return safeError(ClosePhase, err)
+		return false, safeError(ClosePhase, err)
 	}
 	if err := c.closeNative(); err != nil {
 		if c.db != 0 || c.nativeCounted {
-			return combineClose(err, c.closeErr)
+			return false, combineClose(err, c.closeErr)
 		}
 		c.finishRelease(combineClose(c.closeErr, err))
-		return c.closeErr
+		return true, c.closeErr
 	}
 	c.finishRelease(c.closeErr)
 	emit(event{Namespace: c.root.key, Role: "main", Op: "close", Phase: "closed", FD: -1})
 	if err := sqlEvent(sqlTestEvent{Phase: "close-after", Operation: "close"}); err != nil {
 		c.closeErr = combineClose(c.closeErr, safeError(ClosePhase, err))
 	}
-	return c.closeErr
+	return true, c.closeErr
 }
 
 // No watcher or statement owner may coexist with this call: all callers hold
