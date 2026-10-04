@@ -6,7 +6,7 @@ import (
 	"github.com/rbeene/tempo/internal/activity"
 )
 
-const hookAdmissionDiagnosticPrefix = "\ntempo hook diagnostics v1: "
+const hookAdmissionDiagnosticPrefix = "\ntempo hook diagnostics v2: "
 
 func hookAdmissionDiagnosticContext(d *activity.HostCaptureDiagnostics) string {
 	rows := d.Snapshot()
@@ -14,6 +14,9 @@ func hookAdmissionDiagnosticContext(d *activity.HostCaptureDiagnostics) string {
 		return ""
 	}
 	for _, row := range rows {
+		if row.Eligibility == nil || row.Eligibility.D {
+			return ""
+		}
 		if row.StartUS < 0 || row.EndUS < row.StartUS || row.EndUS > 120000000 || row.DeadlineUS < -1 || row.DeadlineUS > 120000000 || row.CallerDeadlineUS < -1 || row.CallerDeadlineUS > 120000000 {
 			return ""
 		}

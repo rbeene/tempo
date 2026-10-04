@@ -207,6 +207,16 @@ func applicable(root, cwd string) bool {
 	return true
 }
 func (s *Service) eligibility(ctx context.Context, disk *metadata, host, cwd string) (Profile, error) {
+	diagnostic, _ := ctx.Value(eligibilityDiagnosticKey{}).(*EligibilityDiagnostics)
+	if diagnostic != nil && !diagnostic.active {
+		diagnostic = nil
+	}
+	selectionStart, selectedDone := diagnostic.now(), false
+	defer func() {
+		if !selectedDone {
+			diagnostic.phase(1, selectionStart)
+		}
+	}()
 	if host != "codex" && host != "claude" || !filepath.IsAbs(cwd) || !safeText(cwd, 4096) {
 		return Profile{}, problem("validation")
 	}
@@ -220,20 +230,34 @@ func (s *Service) eligibility(ctx context.Context, disk *metadata, host, cwd str
 			selected = p
 		}
 	}
+	diagnostic.phase(1, selectionStart)
+	selectedDone = true
 	if !selected.CaptureEligible {
 		return selected, nil
 	}
+	sampleStart := diagnostic.now()
 	current, hashErr := sampleContext(ctx, selected.Context)
-	if selected.Context.InventoryVersion == installedInventoryVersion && !s.normalHostRoot(host) {
-		hashErr = problem("unsupported_contract")
+	diagnostic.phase(2, sampleStart)
+	if selected.Context.InventoryVersion == installedInventoryVersion {
+		rootStart := diagnostic.now()
+		if !s.normalHostRoot(host) {
+			hashErr = problem("unsupported_contract")
+		}
+		diagnostic.phase(3, rootStart)
 	}
-	if hashErr == nil && contextFingerprint(current) == contextFingerprint(selected.Context) {
-		return selected, nil
+	if hashErr == nil {
+		fingerprintStart := diagnostic.now()
+		same := contextFingerprint(current) == contextFingerprint(selected.Context)
+		diagnostic.phase(4, fingerprintStart)
+		if same {
+			return selected, nil
+		}
 	}
 	if ctx.Err() != nil {
 		return Profile{}, problem("state_busy")
 	}
 	key := profileKey(selected.Context.Host, selected.Context.Scope, selected.Context.Path)
+	updateStart := diagnostic.now()
 	err = s.update(ctx, func(d *metadata) (bool, error) {
 		p, ok := d.Profiles[key]
 		if !ok || p.Revision != selected.Revision {
@@ -246,5 +270,6 @@ func (s *Service) eligibility(ctx context.Context, disk *metadata, host, cwd str
 		selected = p
 		return true, nil
 	})
+	diagnostic.phase(5, updateStart)
 	return selected, err
 }

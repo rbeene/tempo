@@ -3,30 +3,34 @@ package activity
 import (
 	"context"
 	"time"
+
+	"github.com/rbeene/tempo/internal/hookstate"
 )
 
 // HostCaptureDiagnostics is an opt-in, per-hook numeric observation. It never
 // invokes a callback, writes state, changes deadlines or retains event data.
 // The CLI owns it across at most three synchronous capture attempts.
 type HostCaptureDiagnostics struct {
-	start time.Time
-	count int
-	rows  [3]HostCaptureDiagnosticAttempt
+	start  time.Time
+	count  int
+	rows   [3]HostCaptureDiagnosticAttempt
+	policy [3]*hookstate.EligibilityDiagnostics
 }
 
 type HostCaptureDiagnosticAttempt struct {
-	Ordinal          int      `json:"ordinal"`
-	StartUS          int64    `json:"start_us"`
-	EndUS            int64    `json:"end_us"`
-	DeadlineUS       int64    `json:"deadline_us"`
-	CallerDeadlineUS int64    `json:"caller_deadline_us"`
-	PhaseUS          [8]int64 `json:"phase_us"`
-	Caller           string   `json:"caller"`
-	Retry            bool     `json:"retry"`
-	NativePhase      string   `json:"native_phase"`
-	NativeCategory   string   `json:"native_category"`
-	NativeCode       int32    `json:"native_code"`
-	NativeCleanup    bool     `json:"native_cleanup"`
+	Ordinal          int                              `json:"ordinal"`
+	StartUS          int64                            `json:"start_us"`
+	EndUS            int64                            `json:"end_us"`
+	DeadlineUS       int64                            `json:"deadline_us"`
+	CallerDeadlineUS int64                            `json:"caller_deadline_us"`
+	PhaseUS          [8]int64                         `json:"phase_us"`
+	Caller           string                           `json:"caller"`
+	Retry            bool                             `json:"retry"`
+	NativePhase      string                           `json:"native_phase"`
+	NativeCategory   string                           `json:"native_category"`
+	NativeCode       int32                            `json:"native_code"`
+	NativeCleanup    bool                             `json:"native_cleanup"`
+	Eligibility      *hookstate.EligibilityDiagnostic `json:"eligibility,omitempty"`
 }
 
 type hostCaptureDiagnosticKey struct{}
@@ -64,6 +68,7 @@ func (d *HostCaptureDiagnostics) Begin(ctx context.Context) context.Context {
 	for p := range d.rows[i].PhaseUS {
 		d.rows[i].PhaseUS[p] = -1
 	}
+	ctx, d.policy[i] = hookstate.WithEligibilityDiagnostics(ctx)
 	return context.WithValue(ctx, hostCaptureDiagnosticKey{}, hostCaptureDiagnosticSlot{d, i})
 }
 
@@ -74,6 +79,8 @@ func (d *HostCaptureDiagnostics) End(ctx context.Context, retry bool) {
 	}
 	r := &d.rows[slot.index]
 	r.EndUS, r.Retry, r.Caller = time.Since(d.start).Microseconds(), retry, "live"
+	value := d.policy[slot.index].Snapshot()
+	r.Eligibility = &value
 	switch ctx.Err() {
 	case context.Canceled:
 		r.Caller = "canceled"
@@ -86,7 +93,14 @@ func (d *HostCaptureDiagnostics) Snapshot() []HostCaptureDiagnosticAttempt {
 	if d == nil {
 		return nil
 	}
-	return append([]HostCaptureDiagnosticAttempt(nil), d.rows[:d.count]...)
+	rows := append([]HostCaptureDiagnosticAttempt(nil), d.rows[:d.count]...)
+	for i := range rows {
+		if rows[i].Eligibility != nil {
+			value := *rows[i].Eligibility
+			rows[i].Eligibility = &value
+		}
+	}
+	return rows
 }
 
 func hostCaptureTraceMark(ctx context.Context, phase int) {

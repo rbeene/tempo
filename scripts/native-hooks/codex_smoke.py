@@ -752,6 +752,7 @@ CAPTURE_CONTEXT_PATTERN = re.compile(
 
 
 HOOK_DIAGNOSTIC_PREFIX = "\ntempo hook diagnostics v1: "
+HOOK_DIAGNOSTIC_V2_PREFIX = "\ntempo hook diagnostics v2: "
 HOOK_DIAGNOSTIC_PHASES = frozenset(("none", "other", "admission", "open", "begin", "prepare", "bind", "step", "commit", "verify", "rollback", "finalize", "close", "checkpoint"))
 HOOK_DIAGNOSTIC_CATEGORIES = frozenset(("none", "other", "invalid", "busy", "canceled", "unsafe", "corrupt", "full", "constraint", "io", "closed", "misuse"))
 HOOK_DIAGNOSTIC_KEYS = frozenset(("ordinal", "start_us", "end_us", "deadline_us", "caller_deadline_us", "phase_us", "caller", "retry", "native_phase", "native_category", "native_code", "native_cleanup"))
@@ -760,9 +761,13 @@ HOOK_DIAGNOSTIC_KEYS = frozenset(("ordinal", "start_us", "end_us", "deadline_us"
 def hook_diagnostic_text(text):
     # A complete fixed envelope is required before extracting the unchanged
     # three-field public first line. Never search arbitrary model/user text.
-    if not isinstance(text, str) or len(text) > 4096 or text.count(HOOK_DIAGNOSTIC_PREFIX) != 1:
+    if not isinstance(text, str) or len(text) > 4096:
         return text, None
-    public, encoded = text.split(HOOK_DIAGNOSTIC_PREFIX)
+    prefixes = (HOOK_DIAGNOSTIC_PREFIX, HOOK_DIAGNOSTIC_V2_PREFIX)
+    if sum(text.count(prefix) for prefix in prefixes) != 1: return text, None
+    prefix = next(prefix for prefix in prefixes if prefix in text)
+    version = 2 if prefix == HOOK_DIAGNOSTIC_V2_PREFIX else 1
+    public, encoded = text.split(prefix)
     match = CAPTURE_CONTEXT_PATTERN.fullmatch(public)
     if not match or match[2] != "state_busy" or match[3] != "not_committed" or len(encoded) > 3072:
         return text, None
@@ -779,7 +784,8 @@ def hook_diagnostic_text(text):
     if not isinstance(rows, list) or not 1 <= len(rows) <= 3: return text, None
     previous_end = 0
     for ordinal, row in enumerate(rows, 1):
-        if not isinstance(row, dict) or set(row) != HOOK_DIAGNOSTIC_KEYS: return text, None
+        keys = HOOK_DIAGNOSTIC_KEYS | {"eligibility"} if version == 2 else HOOK_DIAGNOSTIC_KEYS
+        if not isinstance(row, dict) or set(row) != keys: return text, None
         if any(type(row[key]) is not int for key in ("ordinal", "start_us", "end_us", "deadline_us", "caller_deadline_us", "native_code")): return text, None
         if row["ordinal"] != ordinal or not previous_end <= row["start_us"] <= row["end_us"] <= 120000000: return text, None
         if not -1 <= row["deadline_us"] <= 120000000 or not -1 <= row["caller_deadline_us"] <= 120000000 or not -(2**31) <= row["native_code"] < 2**31: return text, None
@@ -787,8 +793,57 @@ def hook_diagnostic_text(text):
         if not isinstance(row["native_phase"], str) or not isinstance(row["native_category"], str) or row["native_phase"] not in HOOK_DIAGNOSTIC_PHASES or row["native_category"] not in HOOK_DIAGNOSTIC_CATEGORIES: return text, None
         stamps = row["phase_us"]
         if not isinstance(stamps, list) or len(stamps) != 8 or any(type(stamp) is not int or stamp < -1 or stamp > row["end_us"] for stamp in stamps): return text, None
+        if version == 2 and not valid_eligibility_diagnostic(row["eligibility"]): return text, None
         previous_end = row["end_us"]
-    return public, {"kind": match[1], "attempts": rows}
+    record = {"kind": match[1], "attempts": rows}
+    if version == 2: record["version"] = 2
+    return public, record
+
+
+def valid_eligibility_diagnostic(value):
+    if not isinstance(value, dict) or set(value) != {"p", "r", "c", "d"} or value["d"] is not False: return False
+    phases, roles, cpu = value["p"], value["r"], value["c"]
+    if not isinstance(phases, list) or len(phases) != 7 or any(type(n) is not int or not -1 <= n <= 120000000 for n in phases): return False
+    if not isinstance(roles, list) or len(roles) != 6: return False
+    for role in roles:
+        if not isinstance(role, list) or len(role) != 9: return False
+        if any(type(n) is not int or not 0 <= n <= (1 << 40 if i < 4 else 120000000) for i, n in enumerate(role)): return False
+        if role[0] > 128 or role[1] > role[0]: return False
+    if sum(role[0] for role in roles) > 128: return False
+    if not isinstance(cpu, list) or len(cpu) != 2 or any(type(n) is not int or not -1 <= n <= 120000000 for n in cpu): return False
+    if (cpu[0] == -1) != (cpu[1] == -1): return False
+    if phases[6] == -1:
+        return all(n == -1 for n in phases) and all(n == 0 for role in roles for n in role) and cpu == [-1, -1]
+    return all(n <= phases[6] for n in phases)
+
+
+CPU_DIAGNOSTIC_FLAGS = ("sha_ni", "avx", "avx2", "bmi2", "sse4_1", "ssse3")
+
+
+def observe_cpu_flags(joined):
+    unavailable = {"status": "unavailable", "flags": {}}
+    if joined is not True or platform.system() != "Linux": return unavailable
+    try:
+        # Fixed, bounded OS capability read only after all owned host/model joins.
+        # Never export CPU descriptions or infer the crypto implementation used.
+        with Path("/proc/cpuinfo").open("rb") as stream:
+            raw = stream.read(1048577)
+        if len(raw) > 1048576: return unavailable
+        values = {name: True for name in CPU_DIAGNOSTIC_FLAGS}
+        count = 0
+        for line in raw.decode("ascii").splitlines():
+            name, separator, content = line.partition(":")
+            if name.strip() != "flags" or not separator: continue
+            count += 1
+            if count > 4096: return unavailable
+            words = content.split()
+            for flag in values: values[flag] = values[flag] and flag in words
+        if not count: return unavailable
+        return {"status": "observed", "flags": values}
+    except FixtureFailure:
+        raise
+    except Exception:
+        return unavailable
 
 
 def capture_admission_diagnostics(body):
@@ -1455,6 +1510,7 @@ def run(args, report):
     finally:
         primary_failure = sys.exc_info()[0] is not None
         joined = close_native(terminal, model, primary_failure=primary_failure)
+        report["cpu_capability_probe"] = observe_cpu_flags(joined)
         report["initial_receipt_probe"] = model.initial_receipt_probe
         report["capture_context_probe"] = {
             "status": "observed" if joined and model.capture_contexts else "not_observed" if joined else "unavailable",

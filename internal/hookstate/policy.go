@@ -111,10 +111,14 @@ func (s *Service) Revoke(ctx context.Context, in RevokeInput) (Profile, error) {
 // Eligibility selects the scoped policy and invalidates known artifact drift.
 // It does not create an absent store or establish source-session continuity.
 func (s *Service) Eligibility(ctx context.Context, host, cwd string) (Profile, error) {
+	diagnostic := beginEligibilityDiagnostic(ctx)
+	defer diagnostic.finish()
 	if ctx.Err() != nil {
 		return Profile{}, &Error{Code: "state_busy", Retryable: true}
 	}
+	readStart := diagnostic.now()
 	disk, exists, err := s.read(ctx)
+	diagnostic.phase(0, readStart)
 	if err != nil {
 		return Profile{}, err
 	}

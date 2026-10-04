@@ -865,6 +865,126 @@ class HarnessTests(unittest.TestCase):
         body["input"].append({"type": "function_call_output", "call_id": "tempo-plan", "output": "Plan updated"})
         with self.assertRaises(smoke.FixtureFailure): model.respond(body)
 
+    def eligibility_cost_context(self):
+        public, rows = self.diagnostic_context()
+        rows[0]["eligibility"] = {
+            "p": [100, 200, 237000, 5, 20, -1, 237500],
+            "r": [[1, 1, 287086056, 2192, 80, 70000, 166000, 5, 236200],
+                  [1, 1, 12000, 2, 10, 8, 15, 2, 40],
+                  [1, 1, 4000, 2, 10, 5, 8, 2, 30],
+                  [0]*9, [0]*9, [0]*9],
+            "c": [220000, 15000], "d": False}
+        return public, rows
+
+    def test_eligibility_v2_preserves_zero_receipt_gate(self):
+        public, rows = self.eligibility_cost_context()
+        text = public + "\ntempo hook diagnostics v2: " + json.dumps(rows, separators=(",", ":"))
+        model = self.model([])
+        model.session = None
+        model.baseline = frozenset()
+        body = self.request()
+        body["input"].insert(0, {"role": "developer", "content": [{"type": "input_text", "text": text}]})
+        with mock.patch.object(smoke.subprocess, "Popen", side_effect=AssertionError("unexpected process")), \
+             mock.patch.object(smoke.threading.Thread, "start", side_effect=AssertionError("unexpected thread")), \
+             mock.patch.object(smoke.http.server, "ThreadingHTTPServer", side_effect=AssertionError("unexpected socket")):
+            with self.assertRaisesRegex(smoke.FixtureFailure, "measured_session_ambiguous"):
+                model.respond(body)
+        # Subtests retain every genuine refusal postcondition during old-parser RED.
+        with self.subTest("fixed_public_tuple"):
+            self.assertEqual(model.capture_contexts, {("SessionStart", "state_busy", "not_committed")})
+        with self.subTest("fixed_numeric_policy_observation"):
+            self.assertEqual(getattr(model, "admission_diagnostics", []), [{"kind":"SessionStart", "attempts":rows, "version":2}])
+        self.assertEqual(model.initial_receipt_probe["accepted_session_starts"], 0)
+        self.assertEqual(model.counts, {})
+        self.assertEqual(model.entry_count, 1)
+
+    def test_eligibility_v2_rejects_shapes_and_retains_v1(self):
+        public, rows = self.eligibility_cost_context()
+        def body(values, role="developer"):
+            return {"input":[{"role":role,"content":[{"type":"input_text","text":public+"\ntempo hook diagnostics v2: "+json.dumps(values,separators=(",",":"))}]}]}
+        with self.subTest("valid_v2"):
+            self.assertEqual(smoke.capture_admission_diagnostics(body(rows)), [{"kind":"SessionStart","attempts":rows,"version":2}])
+        legacy_public, legacy_rows = self.diagnostic_context()
+        legacy = {"input":[{"role":"developer","content":[{"type":"input_text","text":legacy_public+"\ntempo hook diagnostics v1: "+json.dumps(legacy_rows)}]}]}
+        self.assertEqual(smoke.capture_admission_diagnostics(legacy), [{"kind":"SessionStart","attempts":legacy_rows}])
+        cases = [
+            lambda v:v["p"].__setitem__(0,True),
+            lambda v:v.update(path="PRIVATE-PATH"),
+            lambda v:v["r"][0].__setitem__(0,129),
+            lambda v:v["r"][0].__setitem__(2,-1),
+            lambda v:v["r"].append([0]*9),
+            lambda v:v.update(c=[-1,0]),
+            lambda v:v["p"].__setitem__(6,120000001),
+            lambda v:v.update(d=True),
+        ]
+        for mutate in cases:
+            candidate = copy.deepcopy(rows); mutate(candidate[0]["eligibility"])
+            with self.subTest("rejected_shape"):
+                self.assertEqual(smoke.capture_admission_diagnostics(body(candidate)), [])
+                self.assertEqual(smoke.capture_context_tuples(body(candidate)), set())
+        self.assertEqual(smoke.capture_admission_diagnostics(body(rows, "user")), [])
+        raw = public+"\ntempo hook diagnostics v2: "+"["*3073
+        self.assertEqual(smoke.hook_diagnostic_text(raw), (raw,None))
+
+    def test_cpu_capability_probe_is_bounded_post_join_projection(self):
+        cases = [
+            (b"processor : 0\nflags : sha_ni avx avx2 bmi2 sse4_1 ssse3 PRIVATE-CONTENT\n", "observed"),
+            (b"flags : avx sha_ni\nflags : avx\n", "observed"),
+            (b"processor : PRIVATE-CONTENT\n", "unavailable"),
+            (b"flags : \xff\n", "unavailable"),
+            (b"x"*1048577, "unavailable"),
+        ]
+        for raw, expected in cases:
+            with self.subTest(status=expected):
+                stream = mock.MagicMock()
+                stream.__enter__.return_value = stream
+                stream.read.return_value = raw
+                path = mock.Mock(); path.open.return_value = stream
+                with mock.patch.object(smoke.platform, "system", return_value="Linux"), \
+                     mock.patch.object(smoke, "Path", return_value=path) as constructor, \
+                     mock.patch.object(smoke.subprocess, "Popen", side_effect=AssertionError("unexpected process")), \
+                     mock.patch.object(smoke.threading.Thread, "start", side_effect=AssertionError("unexpected thread")):
+                    self.assertEqual(smoke.observe_cpu_flags(False), {"status":"unavailable","flags":{}})
+                    constructor.assert_not_called()
+                    result = smoke.observe_cpu_flags(True)
+                constructor.assert_called_once_with("/proc/cpuinfo")
+                path.open.assert_called_once_with("rb")
+                stream.read.assert_called_once_with(1048577)
+                stream.__exit__.assert_called_once()
+                self.assertEqual(result["status"], expected)
+                self.assertNotIn("PRIVATE", json.dumps(result))
+                if expected == "observed":
+                    self.assertEqual(set(result["flags"]), {"sha_ni","avx","avx2","bmi2","sse4_1","ssse3"})
+                    self.assertTrue(all(type(value) is bool for value in result["flags"].values()))
+                    if raw.count(b"flags") == 2: self.assertFalse(result["flags"]["sha_ni"])
+                else: self.assertEqual(result["flags"], {})
+        with mock.patch.object(smoke.platform, "system", return_value="Linux"), \
+             mock.patch.object(smoke, "Path", side_effect=OSError("PRIVATE-ERROR")):
+            self.assertEqual(smoke.observe_cpu_flags(True), {"status":"unavailable","flags":{}})
+        for code in ("overall_deadline", "fixture_cancelled"):
+            with self.subTest(fixture_failure=code):
+                failure = smoke.FixtureFailure(code)
+                stream = mock.MagicMock()
+                stream.__enter__.return_value = stream
+                stream.__exit__.return_value = False
+                stream.read.side_effect = failure
+                path = mock.Mock(); path.open.return_value = stream
+                with mock.patch.object(smoke.platform, "system", return_value="Linux"), \
+                     mock.patch.object(smoke, "Path", return_value=path) as constructor, \
+                     mock.patch.object(smoke.subprocess, "Popen", side_effect=AssertionError("unexpected process")), \
+                     mock.patch.object(smoke.threading.Thread, "start", side_effect=AssertionError("unexpected thread")), \
+                     mock.patch.object(smoke.http.server, "ThreadingHTTPServer", side_effect=AssertionError("unexpected socket")):
+                    raised = None
+                    try:
+                        smoke.observe_cpu_flags(True)
+                    except smoke.FixtureFailure as exc:
+                        raised = exc
+                constructor.assert_called_once_with("/proc/cpuinfo")
+                path.open.assert_called_once_with("rb")
+                stream.read.assert_called_once_with(1048577)
+                stream.__exit__.assert_called_once_with(smoke.FixtureFailure, failure, mock.ANY)
+                self.assertIs(raised, failure)
+
     def diagnostic_context(self):
         rows = [{"ordinal": 1, "start_us": 0, "end_us": 260000, "deadline_us": 250000,
                  "caller_deadline_us": 900000, "phase_us": [10000, 11000, 12000, 20000, 21000, 259000, 259100, 259200],
@@ -1236,6 +1356,7 @@ class InstallIntegrationTests(unittest.TestCase):
                 model.counts, model.entry_count, model.title_count = {}, 0, 0
                 model.initial_receipt_probe = {"status": "not_observed"}
                 model.capture_contexts = set()
+                model.admission_diagnostics, model.admission_diagnostics_saturated = [], False
                 # No environment variable is changed and no process is started.
                 # Only the Path returned for this read is redirected to an inert
                 # fixture; all other reads/writes remain inside our temp tree.
@@ -1250,6 +1371,7 @@ class InstallIntegrationTests(unittest.TestCase):
                      mock.patch.object(smoke, "bounded_run", side_effect=bounded), \
                      mock.patch.object(smoke, "Model", return_value=model), \
                      mock.patch.object(smoke, "Terminal", Terminal), mock.patch.object(smoke, "normal_trust", side_effect=trust), \
+                     mock.patch.object(smoke, "observe_cpu_flags", return_value={"status":"unavailable","flags":{}}, create=True), \
                      mock.patch.object(smoke, "close_native"):
                     args = mock.Mock(tempo=str(source), helper=str(helper))
                     if invalid_install:
@@ -1401,6 +1523,7 @@ class InstallIntegrationTests(unittest.TestCase):
                      mock.patch.object(smoke, "bounded_run", side_effect=bounded), \
                      mock.patch.object(smoke, "Model", return_value=model), \
                      mock.patch.object(smoke, "Terminal", Terminal), mock.patch.object(smoke, "normal_trust"), \
+                     mock.patch.object(smoke, "observe_cpu_flags", return_value={"status":"unavailable","flags":{}}, create=True), \
                      mock.patch.object(smoke, "close_native", side_effect=close_native):
                     with self.assertRaisesRegex(smoke.FixtureFailure, "^measured_session_ambiguous$"):
                         smoke.run(mock.Mock(tempo=str(source), helper=str(helper)), report)

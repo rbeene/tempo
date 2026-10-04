@@ -70,7 +70,7 @@ func TestQAHostAdmissionDiagnosticsFailureOnlyOptIn(t *testing.T) {
 				t.Fatal("native response was not valid JSON")
 			}
 			public := "tempo capture: kind=SessionStart; code=state_busy; durability=not_committed"
-			const prefix = "\ntempo hook diagnostics v1: "
+			const prefix = "\ntempo hook diagnostics v2: "
 			if opt != "1" {
 				if response.Hook.Kind != "SessionStart" || response.Hook.Text != public {
 					t.Error("default public three-field diagnostic changed")
@@ -94,11 +94,44 @@ func TestQAHostAdmissionDiagnosticsFailureOnlyOptIn(t *testing.T) {
 						NativeCategory string   `json:"native_category"`
 						NativeCode     int32    `json:"native_code"`
 						NativeCleanup  bool     `json:"native_cleanup"`
+						Eligibility    *struct {
+							P [7]int64    `json:"p"`
+							R [6][9]int64 `json:"r"`
+							C [2]int64    `json:"c"`
+							D bool        `json:"d"`
+						} `json:"eligibility"`
 					}
 					if json.Unmarshal([]byte(parts[1]), &rows) != nil || len(rows) != 3 {
 						t.Error("wrong bounded attempt inventory")
 					} else {
 						for i, row := range rows {
+							if row.Eligibility == nil || row.Eligibility.D {
+								t.Error("opt-in omitted complete policy cost observation", i)
+							} else {
+								p := row.Eligibility
+								for _, phase := range []int{0, 1, 2, 4, 6} {
+									if p.P[phase] < 0 {
+										t.Error("reached policy phase missing", i, phase)
+									}
+								}
+								if p.P[3] != -1 || p.P[5] != -1 {
+									t.Error("unreached installed-root/invalidation phase fabricated", i)
+								}
+								for role, name := range []string{"runtime", "executable", "definitions"} {
+									r := p.R[role]
+									if r[0] != 1 || r[1] != 1 || r[2] != int64(len("synthetic "+name)) || r[3] < 1 {
+										t.Error("actual role byte/read accounting missing", i, role)
+									}
+								}
+								for role := 3; role < 6; role++ {
+									if p.R[role] != [9]int64{} {
+										t.Error("unvisited artifact role fabricated", i, role)
+									}
+								}
+								if p.C[0] < -1 || p.C[1] < -1 || (p.C[0] == -1) != (p.C[1] == -1) {
+									t.Error("invalid process CPU availability", i)
+								}
+							}
 							// The deadline is created after validation/location. Compare
 							// the actual two deadlines, not entry time plus invented slack.
 							if row.NativePhase != "open" || row.NativeCategory != "busy" || row.NativeCode != 0 || row.NativeCleanup {
