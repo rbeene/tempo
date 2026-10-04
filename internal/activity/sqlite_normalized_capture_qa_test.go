@@ -1932,6 +1932,7 @@ func TestSQLiteNormalizedCaptureN13OwnedPreparedSampleAndRetainedNonemptyChildre
 		_, err := h.service.Ingest(context.Background(), qaEvent("A", "1", "3", "work", ""))
 		qaCode(t, err, "event_gap")
 	})
+	q2.service.store.timeout = sqliteFlowTestLockTimeout() // This functional ownership case retains the ordinary default.
 	e = qaEvent("A", "2", "1", "work", qaBindingA)
 	r := ncQACompare(t, q2, e, 10, "", 1)
 	if len(r.UncertaintyIDs) != 1 {

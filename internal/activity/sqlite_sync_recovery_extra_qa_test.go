@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/rbeene/tempo/internal/activity/sqliteio"
 	"github.com/rbeene/tempo/internal/harvest"
@@ -80,6 +81,22 @@ func TestSQLiteSyncRecoveryExtraMultipartFrozenRejectedRetry(t *testing.T) {
 func TestSQLiteSyncRecoveryExtraManualNeverAttemptedRemainder(t *testing.T) {
 	q, p, before := sxQAPartial(t, false)
 	ctx := context.Background()
+	// The cold native witness must reject a genuinely retained same-root owner,
+	// then recover the complete unchanged snapshot after checked release.
+	held := stQAOpen(t, q.f, sqliteio.Read)
+	contender, blocked := sqliteio.Open(ctx, q.f.directory, q.f.database, sqliteio.Options{ReadOnly: true, AcquireDeadline: time.Now().Add(time.Second)})
+	if contender != nil {
+		unexpected := &stQAOwner{t: t, c: contender}
+		t.Cleanup(unexpected.cleanup)
+	}
+	native, ok := blocked.(*sqliteio.Error)
+	if contender != nil || !ok || native.Phase != sqliteio.Admission || native.Category != sqliteio.Busy || native.Code != 0 || native.Cleanup != nil {
+		t.Fatal("manual native ownership witness accepted retained root or wrong refusal")
+	}
+	stQAClose(t, held, false)
+	if released := snQARead(t, q, snQAID(400), snQAID(401)); !reflect.DeepEqual(before, released) {
+		t.Fatal("manual native ownership witness changed snapshot after release")
+	}
 	part := before.item.Plan.Parts[1]
 	in := SyncResolveInput{RequestID: snQAID(420), OutboxID: before.item.ID, EntryID: "902", IfRevision: before.item.Revision, Confirmed: true}
 	entry := srQAEntry(t, p.posts[0], "902")
@@ -90,11 +107,12 @@ func TestSQLiteSyncRecoveryExtraManualNeverAttemptedRemainder(t *testing.T) {
 	reads := 0
 	witness := func() {
 		reads++
-		status, err := q.reopen().Status(ctx)
-		if err != nil || status.ComputerID == nil || *status.ComputerID != q.interval.ComputerID {
-			t.Fatal("manual GET retained SQL owner", err)
-		}
+		// This independent checked native read proves released root ownership and
+		// reads exact typed state without depending on the public Status budget.
 		current := snQARead(t, q, snQAID(400), snQAID(401), in.RequestID)
+		if current.meta.ComputerID != q.interval.ComputerID {
+			t.Fatal("manual GET native witness changed computer identity")
+		}
 		row := current.requests[in.RequestID]
 		if !reflect.DeepEqual(current.item, before.item) || row.Value.PendingSync == nil || row.Value.PendingSync.EffectCommitted || !reflect.DeepEqual(row.Value.PendingSync.Resolve, &in) || !reflect.DeepEqual(row.Value.PendingSync.RootIDs, []string{before.item.ID}) {
 			t.Fatal("manual provider lacks exact pending remainder")
