@@ -84,11 +84,14 @@ func (c *Conn) prepareRaw(sql string, phase Phase) (uintptr, error) {
 }
 func (t *Tx) Prepare(sql string, values ...Value) (_ *Stmt, err error) {
 	defer func() { t.readFailure(err) }()
-	if err := t.check(PreparePhase); err != nil {
-		return nil, err
-	}
-	if err := sqlEvent(sqlTestEvent{Phase: "prepare-before", Operation: "prepare"}); err != nil {
-		return nil, safeError(PreparePhase, err)
+	h := snapshotSQLHooks()
+	if h.Observe != nil || h.Fault != nil {
+		if err := t.check(PreparePhase); err != nil {
+			return nil, err
+		}
+		if err := h.event(sqlTestEvent{Phase: "prepare-before", Operation: "prepare"}); err != nil {
+			return nil, safeError(PreparePhase, err)
+		}
 	}
 	if err := t.check(PreparePhase); err != nil {
 		return nil, err
@@ -167,11 +170,14 @@ func (s *Stmt) Step() (_ bool, err error) {
 		return false, s.stepErr
 	}
 	s.row = false
-	if err := s.tx.check(StepPhase); err != nil {
-		return false, err
-	}
-	if err := sqlEvent(sqlTestEvent{Phase: "step-before", Operation: "statement"}); err != nil {
-		return false, safeError(StepPhase, err)
+	h := snapshotSQLHooks()
+	if h.Observe != nil || h.Fault != nil {
+		if err := s.tx.check(StepPhase); err != nil {
+			return false, err
+		}
+		if err := h.event(sqlTestEvent{Phase: "step-before", Operation: "statement"}); err != nil {
+			return false, safeError(StepPhase, err)
+		}
 	}
 	if err := s.tx.check(StepPhase); err != nil {
 		return false, err

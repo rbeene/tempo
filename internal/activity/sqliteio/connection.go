@@ -690,10 +690,16 @@ func observeSQL(e sqlTestEvent) {
 		observe(e)
 	}
 }
-func sqlEvent(e sqlTestEvent) error {
+func snapshotSQLHooks() sqlTestHooks {
 	sqlObservations.RLock()
 	h := sqlObservations.hooks
 	sqlObservations.RUnlock()
+	return h
+}
+func sqlEvent(e sqlTestEvent) error {
+	return snapshotSQLHooks().event(e)
+}
+func (h sqlTestHooks) event(e sqlTestEvent) error {
 	if h.Observe != nil {
 		h.Observe(e)
 	}
