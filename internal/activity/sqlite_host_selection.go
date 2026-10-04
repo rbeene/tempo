@@ -425,7 +425,9 @@ func (s *Service) sqlitePrepareHostAdmission(ctx context.Context, cwd string, a 
 		}
 		return b, nil
 	}
+	hostCaptureTraceMark(ctx, hostTraceDiscoveryBegin)
 	loc, err := DiscoverLocation(ctx, cwd)
+	hostCaptureTraceMark(ctx, hostTraceDiscoveryEnd)
 	if err != nil {
 		return b, err
 	}
@@ -442,7 +444,9 @@ func (s *Service) sqlitePrepareHostAdmission(ctx context.Context, cwd string, a 
 		snapshot := row.Snapshot
 		b.Snapshot = &snapshot
 	}
-	return b, errors.Join(readErr, sqliteCaptureCleanup(c, tx))
+	err = errors.Join(readErr, sqliteCaptureCleanup(c, tx))
+	hostCaptureTraceMark(ctx, hostTraceBindingRead)
+	return b, err
 }
 
 // New host work already owns its default-resolver location selection. Recheck
@@ -540,6 +544,7 @@ func (s *Service) sqlitePrepareHost(ctx context.Context, e HostEvent, a sqliteCa
 	p.BaseRevision = meta.Revision
 	p.Facts, err = sqliteReadHostFacts(tx, meta, e)
 	err = errors.Join(err, sqliteCaptureCleanup(c, tx))
+	hostCaptureTraceMark(ctx, hostTraceInitialRead)
 	if err != nil {
 		return p, true, err
 	}
@@ -564,7 +569,9 @@ func (s *Service) sqlitePrepareHost(ctx context.Context, e HostEvent, a sqliteCa
 	if err = sqliteCaptureDeadline(ctx, a); err != nil {
 		return p, true, err
 	}
+	hostCaptureTraceMark(ctx, hostTracePolicyBegin)
 	policy, err := s.policies.Eligibility(ctx, e.Source, p.CWD)
+	hostCaptureTraceMark(ctx, hostTracePolicyEnd)
 	if err != nil {
 		return p, true, err
 	}

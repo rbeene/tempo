@@ -148,7 +148,7 @@ def child_environment(parent, root):
     return {"HOME": parent["HOME"], "PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
             "TERM": "xterm-256color", "TMPDIR": str(root / "tmp"),
             "TEMPO_STATE": str(root / "activity.json"), "TEMPO_HOOK_STATE": str(root / "hooks-state.json"),
-            "TEMPO_CI_PROVIDER_TOKEN": TOKEN}
+            "TEMPO_CI_PROVIDER_TOKEN": TOKEN, "TEMPO_HOOK_DIAGNOSTICS": "1"}
 
 
 def terminate_group(proc):
@@ -751,6 +751,61 @@ CAPTURE_CONTEXT_PATTERN = re.compile(
     r"tempo capture: kind=(SessionStart|SubagentStart); code=([a-z_]+); durability=(committed|not_committed|unknown)")
 
 
+HOOK_DIAGNOSTIC_PREFIX = "\ntempo hook diagnostics v1: "
+HOOK_DIAGNOSTIC_PHASES = frozenset(("none", "other", "admission", "open", "begin", "prepare", "bind", "step", "commit", "verify", "rollback", "finalize", "close", "checkpoint"))
+HOOK_DIAGNOSTIC_CATEGORIES = frozenset(("none", "other", "invalid", "busy", "canceled", "unsafe", "corrupt", "full", "constraint", "io", "closed", "misuse"))
+HOOK_DIAGNOSTIC_KEYS = frozenset(("ordinal", "start_us", "end_us", "deadline_us", "caller_deadline_us", "phase_us", "caller", "retry", "native_phase", "native_category", "native_code", "native_cleanup"))
+
+
+def hook_diagnostic_text(text):
+    # A complete fixed envelope is required before extracting the unchanged
+    # three-field public first line. Never search arbitrary model/user text.
+    if not isinstance(text, str) or len(text) > 4096 or text.count(HOOK_DIAGNOSTIC_PREFIX) != 1:
+        return text, None
+    public, encoded = text.split(HOOK_DIAGNOSTIC_PREFIX)
+    match = CAPTURE_CONTEXT_PATTERN.fullmatch(public)
+    if not match or match[2] != "state_busy" or match[3] != "not_committed" or len(encoded) > 3072:
+        return text, None
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value: raise ValueError("duplicate")
+            value[key] = item
+        return value
+    try:
+        rows = json.loads(encoded, object_pairs_hook=unique)
+    except (ValueError, TypeError, RecursionError):
+        return text, None
+    if not isinstance(rows, list) or not 1 <= len(rows) <= 3: return text, None
+    previous_end = 0
+    for ordinal, row in enumerate(rows, 1):
+        if not isinstance(row, dict) or set(row) != HOOK_DIAGNOSTIC_KEYS: return text, None
+        if any(type(row[key]) is not int for key in ("ordinal", "start_us", "end_us", "deadline_us", "caller_deadline_us", "native_code")): return text, None
+        if row["ordinal"] != ordinal or not previous_end <= row["start_us"] <= row["end_us"] <= 120000000: return text, None
+        if not -1 <= row["deadline_us"] <= 120000000 or not -1 <= row["caller_deadline_us"] <= 120000000 or not -(2**31) <= row["native_code"] < 2**31: return text, None
+        if row["caller"] not in ("live", "canceled", "deadline") or type(row["retry"]) is not bool or type(row["native_cleanup"]) is not bool: return text, None
+        if not isinstance(row["native_phase"], str) or not isinstance(row["native_category"], str) or row["native_phase"] not in HOOK_DIAGNOSTIC_PHASES or row["native_category"] not in HOOK_DIAGNOSTIC_CATEGORIES: return text, None
+        stamps = row["phase_us"]
+        if not isinstance(stamps, list) or len(stamps) != 8 or any(type(stamp) is not int or stamp < -1 or stamp > row["end_us"] for stamp in stamps): return text, None
+        previous_end = row["end_us"]
+    return public, {"kind": match[1], "attempts": rows}
+
+
+def capture_admission_diagnostics(body):
+    records = []
+    items = body.get("input")
+    if not isinstance(items, list): return records
+    for item in items:
+        if not isinstance(item, dict) or item.get("role") != "developer": continue
+        content = item.get("content")
+        if not isinstance(content, list): continue
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") != "input_text": continue
+            _, record = hook_diagnostic_text(part.get("text"))
+            if record is not None and len(records) < 17: records.append(record)
+    return records
+
+
 def capture_context_tuples(body):
     observed = set()
     items = body.get("input")
@@ -761,7 +816,7 @@ def capture_context_tuples(body):
         if not isinstance(content, list): continue
         for part in content:
             if not isinstance(part, dict) or part.get("type") != "input_text": continue
-            text = part.get("text")
+            text, _ = hook_diagnostic_text(part.get("text"))
             if not isinstance(text, str) or len(text) > 160: continue
             match = CAPTURE_CONTEXT_PATTERN.fullmatch(text)
             if match and match[2] in CAPTURE_CONTEXT_CODES:
@@ -855,6 +910,14 @@ class Model:
         require(body.get("stream") is True and body.get("model") == MODEL, "provider_request_contract")
         with self.lock:
             self.capture_contexts.update(capture_context_tuples(body))
+            records = getattr(self, "admission_diagnostics", [])
+            for record in capture_admission_diagnostics(body):
+                if record not in records:
+                    if len(records) == 16:
+                        self.admission_diagnostics_saturated = True
+                    else:
+                        records.append(record)
+            self.admission_diagnostics = records
         # The newest actual user message distinguishes parent/child/interrupt;
         # nested tool arguments containing the child marker don't count.
         users = [item for item in body.get("input", []) if item.get("role") == "user"]
@@ -1399,6 +1462,11 @@ def run(args, report):
             "invocation_count": "unavailable",
             "tuples": [{"kind": kind, "code": code, "durability": durability}
                        for kind, code, durability in sorted(model.capture_contexts)] if joined else [],
+        }
+        report["capture_admission_probe"] = {
+            "source": "opt_in_model_developer_input", "completeness": "not_established",
+            "invocation_count": "unavailable", "saturated": getattr(model, "admission_diagnostics_saturated", False),
+            "records": getattr(model, "admission_diagnostics", []) if joined else [],
         }
         if primary_failure:
             report["failure_profile_probe"] = observe_failed_profile(

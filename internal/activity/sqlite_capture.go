@@ -205,6 +205,11 @@ func sqliteOpenCapture(ctx context.Context, a sqliteCaptureAdmission, mode sqlit
 	}
 	c, kind, err := inspect(ctx, a.Directory, a.StateBasename, a.DatabaseBasename, a.AcquireDeadline)
 	fail := func(cause error) (*sqliteio.Conn, *sqliteio.Tx, sqliteStoreMeta, bool, error) {
+		if _, tracing := ctx.Value(hostCaptureDiagnosticKey{}).(hostCaptureDiagnosticSlot); tracing {
+			if native := sqliteCapturePrimaryNative(cause); native != nil {
+				hostCaptureTraceNative(ctx, string(native.Phase), string(native.Category), native.Code, native.Cleanup != nil)
+			}
+		}
 		return nil, nil, sqliteStoreMeta{}, false, sqliteCaptureError(errors.Join(cause, sqliteCaptureCleanup(c, tx)))
 	}
 	if err != nil {

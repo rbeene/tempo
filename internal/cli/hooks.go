@@ -29,6 +29,10 @@ func runHook(ctx context.Context, host string, in io.Reader, out, errOut io.Writ
 	}
 	result := activity.HostReceipt{Durability: "not_committed"}
 	eventKind := ""
+	var admissionDiagnostic *activity.HostCaptureDiagnostics
+	if d.Getenv("TEMPO_HOOK_DIAGNOSTICS") == "1" {
+		admissionDiagnostic = activity.NewHostCaptureDiagnostics()
+	}
 	if err == nil {
 		var event activity.HostEvent
 		if host == "claude" {
@@ -54,8 +58,16 @@ func runHook(ctx context.Context, host string, in io.Reader, out, errOut io.Writ
 				if attempt > 0 && ctx.Err() != nil {
 					break
 				}
-				result, err = service.IngestHost(ctx, event)
-				if !hookRetryableBusy(ctx, result, err) {
+				attemptCtx := ctx
+				if admissionDiagnostic != nil {
+					attemptCtx = admissionDiagnostic.Begin(ctx)
+				}
+				result, err = service.IngestHost(attemptCtx, event)
+				retry := hookRetryableBusy(ctx, result, err)
+				if admissionDiagnostic != nil {
+					admissionDiagnostic.End(attemptCtx, retry)
+				}
+				if !retry {
 					break
 				}
 			}
@@ -92,6 +104,9 @@ func runHook(ctx context.Context, host string, in io.Reader, out, errOut io.Writ
 				durability = "unknown"
 			}
 			text := "tempo capture: kind=" + eventKind + "; code=" + diagnosticCode + "; durability=" + durability
+			if admissionDiagnostic != nil && err != nil && diagnosticCode == "state_busy" && durability == "not_committed" {
+				text += hookAdmissionDiagnosticContext(admissionDiagnostic)
+			}
 			output := map[string]any{"hookSpecificOutput": map[string]string{
 				"hookEventName": eventKind, "additionalContext": text,
 			}}

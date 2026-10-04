@@ -52,8 +52,18 @@ func sqliteCaptureReadActor(tx *sqliteio.Tx, computer, ceiling string, key Actor
 	if err != nil || !found {
 		return nil, err
 	}
-	if err = sqliteValidateSelectedCaptureDependencies(tx, computer, ceiling, sqliteDependencySelection{ActorKeys: []ActorKey{key}}); err != nil {
+	// This row was decoded in this same owned snapshot. Validate its complete
+	// dependency closure without preparing the identical actor read again.
+	if !sqliteDependencyScope(computer, ceiling) {
+		return nil, failure("validation")
+	}
+	if err = sqliteValidateActorDependencies(tx, computer, a); err != nil {
 		return nil, err
+	}
+	if a.SegmentID != nil {
+		if err = sqliteValidateSelectedCaptureDependencies(tx, computer, ceiling, sqliteDependencySelection{SegmentIDs: []string{*a.SegmentID}}); err != nil {
+			return nil, err
+		}
 	}
 	return &a, nil
 }

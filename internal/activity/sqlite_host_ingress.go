@@ -47,6 +47,7 @@ func (s *Service) ingestHostSQLite(ctx context.Context, e HostEvent) (HostReceip
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
 	}
+	hostCaptureTraceDeadline(ctx, deadline)
 	admission := sqliteCaptureAdmission{Directory: directory, StateBasename: authority, DatabaseBasename: database, AcquireDeadline: deadline}
 	prepared, found, err := s.sqlitePrepareHost(ctx, e, admission)
 	historical := sqliteHostExact(prepared.Facts, e) != nil
@@ -71,7 +72,9 @@ func (s *Service) ingestHostSQLite(ctx context.Context, e HostEvent) (HostReceip
 		}
 		return result, nil
 	}
+	hostCaptureTraceMark(ctx, hostTraceWriterBegin)
 	c, tx, meta, found, err := sqliteOpenCapture(ctx, admission, sqliteio.Write)
+	hostCaptureTraceMark(ctx, hostTraceWriterEnd)
 	if err != nil || !found {
 		if err == nil {
 			err = failure("state_busy")

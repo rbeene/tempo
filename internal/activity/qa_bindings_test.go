@@ -279,7 +279,7 @@ func TestQABindingAttachedActorsBlockMutationButAllowIdenticalLink(t *testing.T)
 	for _, kind := range []string{"work", "wait_user", "wait_permission", "wait_children", "stale"} {
 		t.Run(kind, func(t *testing.T) {
 			h := qaNew(t)
-			h.service = New(Options{Path: h.path, Clock: ClockFunc(func() (ClockSample, error) { return h.sample, h.clockErr })})
+			h.service = New(Options{Path: h.path, LockTimeout: sqliteFlowTestLockTimeout(), Clock: ClockFunc(func() (ClockSample, error) { return h.sample, h.clockErr })})
 			s := h.service
 			in := qaLinkInput(t)
 			p := qaNewLinkProvider(t)

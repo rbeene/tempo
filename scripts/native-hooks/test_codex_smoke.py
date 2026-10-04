@@ -264,7 +264,7 @@ class HarnessTests(unittest.TestCase):
         self.assertNotIn("CODEX_HOME", actual)
         self.assertFalse(any("secret" in v for v in actual.values()))
         self.assertEqual(set(actual), {"HOME", "PATH", "LANG", "LC_ALL", "TERM", "TMPDIR",
-                                      "TEMPO_STATE", "TEMPO_HOOK_STATE", "TEMPO_CI_PROVIDER_TOKEN"})
+                                      "TEMPO_STATE", "TEMPO_HOOK_STATE", "TEMPO_CI_PROVIDER_TOKEN", "TEMPO_HOOK_DIAGNOSTICS"})
 
     def test_unexpected_state_fails_without_reading_or_deleting_it(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -864,6 +864,49 @@ class HarnessTests(unittest.TestCase):
         model.respond(body)
         body["input"].append({"type": "function_call_output", "call_id": "tempo-plan", "output": "Plan updated"})
         with self.assertRaises(smoke.FixtureFailure): model.respond(body)
+
+    def diagnostic_context(self):
+        rows = [{"ordinal": 1, "start_us": 0, "end_us": 260000, "deadline_us": 250000,
+                 "caller_deadline_us": 900000, "phase_us": [10000, 11000, 12000, 20000, 21000, 259000, 259100, 259200],
+                 "caller": "live", "retry": True, "native_phase": "none", "native_category": "none", "native_code": 0, "native_cleanup": False}]
+        public = "tempo capture: kind=SessionStart; code=state_busy; durability=not_committed"
+        return public, rows
+
+    def test_admission_diagnostics_preserve_zero_receipt_gate_and_public_tuple(self):
+        public, rows = self.diagnostic_context()
+        text = public + "\ntempo hook diagnostics v1: " + json.dumps(rows, separators=(",", ":"))
+        model = self.model([])
+        model.session = None
+        model.baseline = frozenset()
+        body = self.request()
+        body["input"].insert(0, {"role": "developer", "content": [{"type": "input_text", "text": text}]})
+        with mock.patch.object(smoke.subprocess, "Popen", side_effect=AssertionError("unexpected process")), \
+             mock.patch.object(smoke.threading.Thread, "start", side_effect=AssertionError("unexpected thread")), \
+             mock.patch.object(smoke.http.server, "ThreadingHTTPServer", side_effect=AssertionError("unexpected socket")):
+            with self.assertRaisesRegex(smoke.FixtureFailure, "measured_session_ambiguous"):
+                model.respond(body)
+        self.assertEqual(model.capture_contexts, {("SessionStart", "state_busy", "not_committed")})
+        self.assertEqual(getattr(model, "admission_diagnostics", []), [{"kind": "SessionStart", "attempts": rows}])
+        self.assertEqual(model.initial_receipt_probe["accepted_session_starts"], 0)
+        self.assertEqual(model.counts, {})
+
+    def test_admission_diagnostics_reject_untrusted_or_unbounded_metadata(self):
+        public, rows = self.diagnostic_context()
+        valid = json.dumps(rows, separators=(",", ":"))
+        cases = [valid + " SECRET", valid.replace('"start_us":0', '"start_us":true'),
+                 valid.replace('"caller":"live"', '"caller":"SECRET"'),
+                 valid.replace('"native_phase":"none"', '"native_phase":[]'),
+                 valid.replace('"ordinal":1', '"ordinal":1,"ordinal":1'),
+                 json.dumps(rows * 4), "[" * 4000, valid.replace('"native_code":0', '"native_code":2147483648')]
+        for suffix in cases:
+            with self.subTest(suffix=suffix[:0]):
+                body = {"input": [{"role": "developer", "content": [{"type": "input_text", "text": public + "\ntempo hook diagnostics v1: " + suffix}]}]}
+                self.assertEqual(smoke.capture_context_tuples(body), set())
+        body = {"input": [{"role": "user", "content": [{"type": "input_text", "text": public + "\ntempo hook diagnostics v1: " + valid}]}]}
+        self.assertEqual(smoke.capture_context_tuples(body), set())
+        body["input"][0]["role"] = "developer"
+        body["input"][0]["content"][0]["text"] = public
+        self.assertEqual(smoke.capture_context_tuples(body), {("SessionStart", "state_busy", "not_committed")})
 
     def test_start_capture_context_is_observed_without_satisfying_child_receipt_gate(self):
         receipts = [self.receipt("SessionStart"), self.receipt("UserPromptSubmit")]
