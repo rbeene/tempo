@@ -149,6 +149,14 @@ func (c *Conn) pageInfo(ctx context.Context, phase Phase) (info PageInfo, err er
 }
 
 func (c *Conn) setupPagePolicy(ctx context.Context) error {
+	if c.readOnly {
+		info, err := c.pageInfo(ctx, OpenPhase)
+		if err != nil {
+			return err
+		}
+		c.oversize = info.PageCount > c.maxPages
+		return nil
+	}
 	pages, err := c.pageValue(ctx, readPageCount, OpenPhase)
 	if err != nil {
 		return err
