@@ -15,6 +15,9 @@ func (s *Service) Review(ctx context.Context, in ReviewInput) (ReviewList, error
 	if in.AccountID != "" && !identity.Valid(in.AccountID) || in.ProjectID != "" && !identity.Valid(in.ProjectID) {
 		return ReviewList{}, failure("validation")
 	}
+	if s.store.sqliteOnly {
+		return s.reviewSQLite(ctx, in)
+	}
 	st, _, err := s.store.read(ctx)
 	if err != nil {
 		return ReviewList{}, err
@@ -184,6 +187,9 @@ func (s *Service) Preview(ctx context.Context, in RecoveryInput) (RecoveryPrevie
 	if err := validateRecovery(in); err != nil {
 		return RecoveryPreview{}, err
 	}
+	if s.store.sqliteOnly {
+		return s.previewSQLite(ctx, in)
+	}
 	st, _, err := s.store.read(ctx)
 	if err != nil {
 		return RecoveryPreview{}, err
@@ -215,6 +221,9 @@ func (s *Service) Resolve(ctx context.Context, in ResolveInput) (MutationResult,
 	}
 	if !in.Confirmed {
 		return MutationResult{}, failure("confirmation_required")
+	}
+	if s.store.sqliteOnly {
+		return s.resolveSQLite(ctx, in)
 	}
 	return s.recoveryMutation(ctx, in.RequestID, "activity.resolve", in, func(st *state) (MutationResult, bool, error) {
 		u, err := unresolved(st, in.UncertaintyID)

@@ -67,3 +67,27 @@ func (s *Service) observeHostSQLite(context.Context, HostObservation) (MutationR
 func (s *Service) hostReceiptsSQLite(context.Context, HostReceiptFilter) (HostReceiptList, error) {
 	return HostReceiptList{}, failure("unsupported_contract")
 }
+
+func (s *Service) syncReconcileSQLite(context.Context, SyncReconcileInput, SyncDependencies) (SyncRun, error) {
+	return SyncRun{}, failure("unsupported_contract")
+}
+
+func (s *Service) syncResolveSQLite(context.Context, SyncResolveInput, SyncDependencies) (MutationResult, error) {
+	return MutationResult{}, failure("unsupported_contract")
+}
+
+func (s *Service) reviewSQLite(context.Context, ReviewInput) (ReviewList, error) {
+	return ReviewList{}, failure("unsupported_contract")
+}
+
+func (s *Service) previewSQLite(context.Context, RecoveryInput) (RecoveryPreview, error) {
+	return RecoveryPreview{}, failure("unsupported_contract")
+}
+
+func (s *Service) resolveSQLite(context.Context, ResolveInput) (MutationResult, error) {
+	return MutationResult{}, failure("unsupported_contract")
+}
+
+func (s *Service) interruptSQLite(context.Context, InterruptInput) (MutationResult, error) {
+	return MutationResult{}, failure("unsupported_contract")
+}

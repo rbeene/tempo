@@ -85,7 +85,7 @@ func qaNewHostAt(t *testing.T, cwd string) *qaHostHarness {
 }
 
 func (h *qaHostHarness) restartHost() {
-	h.service = New(Options{Path: h.path, Clock: ClockFunc(func() (ClockSample, error) { return h.sample, h.clockErr }), HookPolicies: h.policies})
+	h.service = qaLegacyNew(Options{Path: h.path, Clock: ClockFunc(func() (ClockSample, error) { return h.sample, h.clockErr }), HookPolicies: h.policies})
 }
 func (h *qaHostHarness) event(kind, turn, agent string) HostEvent {
 	return HostEvent{Source: "codex", SessionID: "host-session", TurnID: turn, AgentID: agent, Kind: kind, CWD: h.cwd}

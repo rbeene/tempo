@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 const sgQAState = "guard-state.json"
@@ -46,7 +48,7 @@ func sgQAClose(t *testing.T, g *SyncRunGuard) {
 	}
 }
 
-// The only child modes are an actual flock holder and a single timed contender.
+// Child modes hold, contend, or isolate one fatal descriptor-reuse case.
 // The parent starts at most one child per call, registers its join immediately,
 // and the child's environment contains only synthetic fixture paths.
 func TestSQLiteSyncGuardOwnedHelper(t *testing.T) {
@@ -57,10 +59,18 @@ func TestSQLiteSyncGuardOwnedHelper(t *testing.T) {
 	dir := os.Getenv("TEMPO_SYNC_GUARD_QA_DIR")
 	state := os.Getenv("TEMPO_SYNC_GUARD_QA_STATE")
 	db := os.Getenv("TEMPO_SYNC_GUARD_QA_DB")
-	if mode != "hold" && mode != "try" {
+	if mode != "hold" && mode != "try" && mode != "fatal" {
 		t.Fatal("unsupported owned child mode")
 	}
 	g, err := AcquireSyncRunGuard(context.Background(), dir, state, db, time.Now().Add(180*time.Millisecond))
+	if mode == "fatal" {
+		if err != nil || g == nil {
+			t.Fatal("fatal child did not acquire actual S", err)
+		}
+		sgQAFatalReusedFD(t, g, dir, state, db)
+		fmt.Fprintln(os.Stdout, "SYNC_GUARD_QA_FATAL")
+		return
+	}
 	if g != nil {
 		defer func() {
 			if terminal, closeErr := g.Close(); !terminal || closeErr != nil {
@@ -82,6 +92,53 @@ func TestSQLiteSyncGuardOwnedHelper(t *testing.T) {
 	var release [1]byte
 	if _, err := io.ReadFull(os.Stdin, release[:]); err != nil {
 		t.Fatal("owned child release pipe", err)
+	}
+}
+
+// Only the isolated child poisons its process registry. Reuse the exact numeric
+// descriptor with a different inode to prove Close never retries that number.
+func sgQAFatalReusedFD(t *testing.T, g *SyncRunGuard, dir, state, db string) {
+	t.Helper()
+	fd := g.owner.entry.fd
+	if fd < 0 {
+		t.Fatal("actual S descriptor missing")
+	}
+	if err := unix.Close(fd); err != nil {
+		t.Fatal("lose actual S descriptor", err)
+	}
+	replacement, err := unix.Open("/dev/null", unix.O_RDONLY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal("open replacement descriptor", err)
+	}
+	if replacement != fd {
+		if err := unix.Dup2(replacement, fd); err != nil {
+			_ = unix.Close(replacement)
+			t.Fatal("reuse exact S descriptor number", err)
+		}
+		_ = unix.Close(replacement)
+	}
+	defer unix.Close(fd)
+	if err := g.Verify(); !errors.Is(err, ErrUnsafe) {
+		t.Fatal("reused S descriptor verified", err)
+	}
+	firstTerminal, firstErr := g.Close()
+	secondTerminal, secondErr := g.Close()
+	if firstTerminal || secondTerminal || !errors.Is(firstErr, ErrUnsafe) || !errors.Is(secondErr, ErrUnsafe) {
+		t.Fatal("unknown descriptor disposition became terminal", firstTerminal, firstErr, secondTerminal, secondErr)
+	}
+	var st unix.Stat_t
+	if err := unix.Fstat(fd, &st); err != nil || st.Mode&unix.S_IFMT != unix.S_IFCHR {
+		t.Fatal("cleanup closed or replaced reused descriptor", err)
+	}
+	if s := statsForTest(); !s.Fatal || !s.Poisoned || s.SyncGuards != 1 {
+		t.Fatalf("fatal unknown owner evidence lost: %+v", s)
+	}
+	other, refused := AcquireSyncRunGuard(context.Background(), dir, state+"-other", db, time.Now().Add(180*time.Millisecond))
+	if other != nil {
+		_, _ = other.Close()
+	}
+	if other != nil || !errors.Is(refused, ErrUnsafe) {
+		t.Fatal("fatal registry admitted another guard", refused)
 	}
 }
 
@@ -134,6 +191,8 @@ func sgQAStartChild(t *testing.T, mode, dir, state, db string) *sgQAChild {
 	want := "SYNC_GUARD_QA_READY"
 	if mode == "try" {
 		want = "SYNC_GUARD_QA_DENIED"
+	} else if mode == "fatal" {
+		want = "SYNC_GUARD_QA_FATAL"
 	}
 	for {
 		line, readErr := child.reader.ReadString('\n')
@@ -144,7 +203,7 @@ func sgQAStartChild(t *testing.T, mode, dir, state, db string) *sgQAChild {
 			t.Fatal("owned child did not reach guard stage", readErr)
 		}
 	}
-	if mode == "try" {
+	if mode == "try" || mode == "fatal" {
 		child.join(t, false)
 	}
 	return child

@@ -10,6 +10,9 @@ import (
 )
 
 func (s *Service) SyncResolve(ctx context.Context, in SyncResolveInput, d SyncDependencies) (MutationResult, error) {
+	if s.store.sqliteOnly {
+		return s.syncResolveSQLite(ctx, in, d)
+	}
 	if !validUUID(in.RequestID) || !validUUID(in.OutboxID) || (in.EntryID != "" && !identity.Valid(in.EntryID)) {
 		return MutationResult{}, failure("validation")
 	}

@@ -44,7 +44,7 @@ func qaNew(t *testing.T) *qaHarness {
 }
 
 func (h *qaHarness) restart() {
-	h.service = New(Options{Path: h.path, Clock: ClockFunc(func() (ClockSample, error) { return h.sample, h.clockErr }), ResolveBinding: func(_ context.Context, e Event) (BindingSnapshot, bool, error) {
+	h.service = qaLegacyNew(Options{Path: h.path, Clock: ClockFunc(func() (ClockSample, error) { return h.sample, h.clockErr }), ResolveBinding: func(_ context.Context, e Event) (BindingSnapshot, bool, error) {
 		b, ok := h.bindings[e.BindingID]
 		return b, ok, nil
 	}})

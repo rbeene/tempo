@@ -271,31 +271,11 @@ func TestQASyncCLIActualTerminalChild(t *testing.T) {
 		t.Error("actual Configure lost independent consent")
 	}
 	if strings.HasPrefix(mode, "unknown-") {
-		if transport.posts.Load() != 1 || len(status.Items) != 1 || status.Items[0].State != "submitting" {
+		if transport.posts.Load() != 1 || len(status.Items) != 1 || status.Items[0].State != "submitting" || status.Items[0].RunRequestID == nil || *status.Items[0].RunRequestID == "" {
 			t.Error("CLI unknown lost durable nonretryable claim")
+		} else {
+			report("submitted", *status.Items[0].RunRequestID)
 		}
-		b, e := os.ReadFile(filepath.Join(root, "state", "activity.json"))
-		if e != nil {
-			t.Fatal(e)
-		}
-		var state struct {
-			Requests map[string]struct {
-				Operation string `json:"operation"`
-			} `json:"requests"`
-		}
-		if json.Unmarshal(b, &state) != nil {
-			t.Fatal("private receipt decode")
-		}
-		id := ""
-		for k, v := range state.Requests {
-			if v.Operation == "sync.now" {
-				id = k
-			}
-		}
-		if id == "" {
-			t.Error("missing durable submitted ID")
-		}
-		report("submitted", id)
 	}
 
 	if notify {

@@ -15,7 +15,7 @@ func TestQASyncProcessHelper(t *testing.T) {
 	if mode == "" {
 		return
 	}
-	s := New(Options{Path: os.Getenv("TEMPO_QA_SYNC_PATH")})
+	s := qaLegacyNew(Options{Path: os.Getenv("TEMPO_QA_SYNC_PATH")})
 	if mode == "lock" {
 		lock, err := s.acquireSyncLock(context.Background())
 		if err != nil {
@@ -72,7 +72,7 @@ func TestQASyncProcessLiveLockIsBusyAndDeathReleases(t *testing.T) {
 	if err != nil || string(ready) != "owned" {
 		t.Fatalf("child ownership barrier=%q err=%v", ready, err)
 	}
-	contender := New(Options{Path: path, LockTimeout: 30 * time.Millisecond})
+	contender := qaLegacyNew(Options{Path: path, LockTimeout: 30 * time.Millisecond})
 	_, err = contender.acquireSyncLock(context.Background())
 	qaCode(t, err, "state_busy")
 	if err = cmd.Process.Kill(); err != nil {
@@ -104,7 +104,7 @@ func TestQASyncProcessDeathAfterClaimPausedRecoveryMakesNoRequest(t *testing.T) 
 		t.Fatal(err)
 	}
 	// A NEW startup recovery request must recover orphans before paused return.
-	_, err = New(Options{Path: path}).SyncNow(context.Background(), SyncRunInput{RequestID: qaSyncID(92)}, qaSyncNoProvider(t))
+	_, err = qaLegacyNew(Options{Path: path}).SyncNow(context.Background(), SyncRunInput{RequestID: qaSyncID(92)}, qaSyncNoProvider(t))
 	if err != nil {
 		t.Fatal(err)
 	}

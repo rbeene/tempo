@@ -97,6 +97,9 @@ func (s *Service) Interrupt(ctx context.Context, in InterruptInput) (MutationRes
 	if !in.Confirmed {
 		return MutationResult{}, failure("confirmation_required")
 	}
+	if s.store.sqliteOnly {
+		return s.interruptSQLite(ctx, in)
+	}
 	return s.recoveryMutation(ctx, in.RequestID, "activity.interrupt", in, func(st *state) (MutationResult, bool, error) {
 		var a *Actor
 		for _, v := range st.Actors {

@@ -191,13 +191,13 @@ func TestQASyncConfigureHistoricalEmptyGuardFingerprintAndOfflineReplay(t *testi
 	if st.Requests[in.RequestID].Fingerprint != oldFingerprint {
 		t.Fatalf("legacy configure receipt changed fingerprint: %s", st.Requests[in.RequestID].Fingerprint)
 	}
-	replay, e := New(Options{Path: path}).SyncConfigure(context.Background(), in, qaSyncNoProvider(t))
+	replay, e := qaLegacyNew(Options{Path: path}).SyncConfigure(context.Background(), in, qaSyncNoProvider(t))
 	if e != nil || !reflect.DeepEqual(result, replay) {
 		t.Fatalf("historical exact offline replay failed: %+v %v", replay, e)
 	}
 	guarded := in
 	guarded.UserID = "2"
-	_, e = New(Options{Path: path}).SyncConfigure(context.Background(), guarded, qaSyncNoProvider(t))
+	_, e = qaLegacyNew(Options{Path: path}).SyncConfigure(context.Background(), guarded, qaSyncNoProvider(t))
 	qaCode(t, e, "request_conflict")
 }
 func TestQASyncConfigureGuardedReceiptReplaysWithoutIdentityRediscovery(t *testing.T) {
@@ -207,13 +207,13 @@ func TestQASyncConfigureGuardedReceiptReplaysWithoutIdentityRediscovery(t *testi
 	if e != nil {
 		t.Fatal(e)
 	}
-	replay, e := New(Options{Path: path}).SyncConfigure(context.Background(), in, qaSyncNoProvider(t))
+	replay, e := qaLegacyNew(Options{Path: path}).SyncConfigure(context.Background(), in, qaSyncNoProvider(t))
 	if e != nil || !reflect.DeepEqual(result, replay) {
 		t.Fatalf("exact guarded replay rediscovered scope: %+v %v", replay, e)
 	}
 	changed := in
 	changed.UserID = "3"
-	_, e = New(Options{Path: path}).SyncConfigure(context.Background(), changed, qaSyncNoProvider(t))
+	_, e = qaLegacyNew(Options{Path: path}).SyncConfigure(context.Background(), changed, qaSyncNoProvider(t))
 	qaCode(t, e, "request_conflict")
 	data, e := json.Marshal(in)
 	if e != nil || !strings.HasSuffix(string(data), `,"Confirmed":true,"UserID":"2"}`) {

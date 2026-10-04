@@ -1138,7 +1138,7 @@ func TestSQLiteNormalizedCaptureN08ClaudeExactRefTurnsPendingSetAndLatestProvena
 		t.Run(axis, func(t *testing.T) {
 			host := qaNewClaude(t)
 			host.startSession()
-			root := host.send(0, host.event("UserPromptSubmit", "question", ""))
+			root := host.send(0, host.event("UserPromptSubmit", "prompt", ""))
 			host.send(0, qaClaudeQuestion(host, "PreToolUse", "q"))
 			if root.Actor == nil {
 				t.Fatal("real host actor positive control")

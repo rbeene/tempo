@@ -47,7 +47,7 @@ func TestQAWorkerObserverSeesSameQueueAndRunsAfterStoreUnlock(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls := 0
-	observed := New(Options{Path: path, Clock: original.clock, ObserveWorker: func(ctx context.Context, w WorkerStatus) WorkerStatus {
+	observed := qaLegacyNew(Options{Path: path, Clock: original.clock, ObserveWorker: func(ctx context.Context, w WorkerStatus) WorkerStatus {
 		calls++
 		if w.QueuedCount != 1 || w.SubmittingCount != 0 || w.UnknownCount != 0 {
 			t.Fatalf("snapshot omitted captured queue%+v", w)

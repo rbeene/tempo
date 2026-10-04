@@ -123,9 +123,16 @@ func TestQABindingSuccessfulLinkBootstrapsAndSurvivesRestart(t *testing.T) {
 	if snapshot.ComputerID == nil || !validUUID(*snapshot.ComputerID) {
 		t.Fatalf("missing initialized identity: %+v", snapshot)
 	}
-	info, err := os.Stat(path)
+	_, _, database, err := sqliteLocation(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(filepath.Dir(path), database))
 	if err != nil || info.Mode().Perm() != 0600 {
-		t.Fatalf("state privacy: %v %v", info, err)
+		t.Fatalf("SQLite state privacy: %v %v", info, err)
+	}
+	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("default Link created JSON selector", err)
 	}
 	reloaded := New(Options{Path: path})
 	list, err := reloaded.ListBindings(context.Background())
@@ -225,7 +232,7 @@ func TestQABindingTaskChoiceIsAssignedAndNeverGuessed(t *testing.T) {
 	}
 }
 func TestQABindingUnknownDurabilityReplayNeedsFreshBarrier(t *testing.T) {
-	s, path := qaLinkService(t)
+	s, path := qaLegacyLinkService(t)
 	in := qaLinkInput(t)
 	p := qaNewLinkProvider(t)
 	s.store.fail = func(stage string) error {
@@ -247,7 +254,7 @@ func TestQABindingUnknownDurabilityReplayNeedsFreshBarrier(t *testing.T) {
 		t.Fatal("replay constructed provider")
 		return nil, nil
 	}}
-	restarted := New(Options{Path: path})
+	restarted := qaLegacyNew(Options{Path: path})
 	restarted.store.fail = s.store.fail
 	_, err = restarted.Link(context.Background(), in, forbidden)
 	qaCode(t, err, "local_write_unknown")
@@ -460,7 +467,7 @@ func TestQABindingProcessHelper(t *testing.T) {
 	if os.Getenv("TEMPO_QA_BINDING_HELPER") != "1" {
 		return
 	}
-	s := New(Options{Path: os.Getenv("TEMPO_QA_BINDING_STATE")})
+	s := qaLegacyNew(Options{Path: os.Getenv("TEMPO_QA_BINDING_STATE")})
 	in := LinkInput{Path: os.Getenv("TEMPO_QA_BINDING_PATH"), ProjectID: "3", TaskID: "4", AccountID: "1", Timezone: "UTC", RequestID: os.Getenv("TEMPO_QA_BINDING_REQUEST")}
 	if _, err := s.Link(context.Background(), in, qaLinkDeps(t, qaNewLinkProvider(t))); err != nil {
 		t.Fatal(err)
@@ -469,7 +476,7 @@ func TestQABindingProcessHelper(t *testing.T) {
 func TestQABindingConcurrentProcessesProduceOneLiveLocator(t *testing.T) {
 	for _, sameRequest := range []bool{false, true} {
 		t.Run(fmt.Sprintf("same-request-%t", sameRequest), func(t *testing.T) {
-			s, path := qaLinkService(t)
+			s, path := qaLegacyLinkService(t)
 			location := t.TempDir()
 			var cmds []*exec.Cmd
 			type outcome struct {
@@ -518,7 +525,7 @@ func TestQABindingConcurrentProcessesProduceOneLiveLocator(t *testing.T) {
 func TestQABindingCorruptRecordsAndReceiptsPreserveEvidence(t *testing.T) {
 	for _, name := range []string{"receipt-fingerprint", "receipt-operation", "receipt-result-request", "receipt-missing-result", "record-kind", "record-relative-locator", "record-snapshot-mismatch"} {
 		t.Run(name, func(t *testing.T) {
-			s, path := qaLinkService(t)
+			s, path := qaLegacyLinkService(t)
 			in := qaLinkInput(t)
 			first, err := s.Link(context.Background(), in, qaLinkDeps(t, qaNewLinkProvider(t)))
 			if err != nil {
@@ -557,7 +564,7 @@ func TestQABindingCorruptRecordsAndReceiptsPreserveEvidence(t *testing.T) {
 			if err := os.WriteFile(path, bad, 0600); err != nil {
 				t.Fatal(err)
 			}
-			_, err = New(Options{Path: path}).ListBindings(context.Background())
+			_, err = qaLegacyNew(Options{Path: path}).ListBindings(context.Background())
 			qaCode(t, err, "state_corrupt")
 			after, err := os.ReadFile(path)
 			if err != nil || string(after) != string(bad) {
@@ -599,7 +606,7 @@ func TestQABindingCommitRechecksAttachmentAfterRemotePreflight(t *testing.T) {
 }
 func TestQABindingRelinkPreservesFinalizedAttribution(t *testing.T) {
 	h := qaNew(t)
-	h.service = New(Options{Path: h.path, Clock: ClockFunc(func() (ClockSample, error) { return h.sample, h.clockErr })})
+	h.service = qaLegacyNew(Options{Path: h.path, Clock: ClockFunc(func() (ClockSample, error) { return h.sample, h.clockErr })})
 	in := qaLinkInput(t)
 	p := qaNewLinkProvider(t)
 	first, err := h.service.Link(context.Background(), in, qaLinkDeps(t, p))

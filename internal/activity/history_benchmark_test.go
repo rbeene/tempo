@@ -10,8 +10,8 @@ import (
 	"time"
 )
 
-// This fixture retains real reducer receipts/evidence without doing thousands of
-// setup fsyncs. The timed request reads, validates, reduces and replaces the whole
+// This historical JSON reducer benchmark retains real receipts/evidence without
+// doing thousands of setup fsyncs. The timed request reads, validates, reduces and replaces the whole
 // persisted history through the public service, as a hook process does.
 func BenchmarkIngestRetainedHistory(b *testing.B) {
 	for _, size := range []int{1000, 5000} {
@@ -24,7 +24,7 @@ func BenchmarkIngestRetainedHistory(b *testing.B) {
 			})
 			binding := BindingSnapshot{ID: qaBindingA, Revision: "1", Attribution: Attribution{AccountID: "1", UserID: "2", ProjectID: "3", TaskID: "4", Timezone: "UTC"}}
 			path := filepath.Join(b.TempDir(), "state", "state.json")
-			service := New(Options{Path: path, Clock: clock, ResolveBinding: func(context.Context, Event) (BindingSnapshot, bool, error) { return binding, true, nil }})
+			service := qaLegacyNew(Options{Path: path, Clock: clock, ResolveBinding: func(context.Context, Event) (BindingSnapshot, bool, error) { return binding, true, nil }})
 			err := service.store.update(context.Background(), func(st *state) (bool, error) {
 				st.ComputerID = qaComputer
 				st.Bindings[binding.ID] = binding

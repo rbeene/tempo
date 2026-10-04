@@ -54,7 +54,7 @@ func TestQAUILinksCLIActionPTYChild(t *testing.T) {
 		}
 		t.Fatal("synthetic shared seed failed before UI")
 	}
-	before, err := os.ReadFile(state)
+	before, err := service.ListBindings(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,8 +94,7 @@ func TestQAUILinksCLIActionPTYChild(t *testing.T) {
 			t.Error("CLI UI did not dispatch shared Unlink")
 		}
 	} else {
-		after, err := os.ReadFile(state)
-		if err != nil || !reflect.DeepEqual(before, after) || len(list.Bindings) != 1 {
+		if !reflect.DeepEqual(before, list) || len(list.Bindings) != 1 {
 			t.Error("canceled CLI UI confirmation changed shared state")
 		}
 	}

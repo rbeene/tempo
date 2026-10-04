@@ -39,7 +39,7 @@ func TestQASyncInterruptedClaimRecoversBeforePausedAndSameIDNeverPosts(t *testin
 	if _, err = s.SyncPause(context.Background(), qaSyncID(31)); err != nil {
 		t.Fatal(err)
 	}
-	restarted := New(Options{Path: path})
+	restarted := qaLegacyNew(Options{Path: path})
 	recovered, err := restarted.SyncNow(context.Background(), input, qaSyncNoProvider(t))
 	if err != nil {
 		t.Fatal(err)
@@ -83,7 +83,7 @@ func TestQASyncSavedRemoteSuccessFinalizesLocallyAfterInterruption(t *testing.T)
 	if item.State != "submitting" || item.Plan == nil || item.Plan.Parts[0].State != "synced" {
 		t.Fatalf("root ownership lost before final receipt: %+v", item)
 	}
-	recovered, err := New(Options{Path: path}).SyncNow(context.Background(), input, qaSyncNoProvider(t))
+	recovered, err := qaLegacyNew(Options{Path: path}).SyncNow(context.Background(), input, qaSyncNoProvider(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestQASyncRunLockBoundsContentionWithoutBlockingOfflineReadsOrPause(t *test
 		t.Fatal(err)
 	}
 	defer held.close()
-	other := New(Options{Path: path, LockTimeout: 40 * time.Millisecond})
+	other := qaLegacyNew(Options{Path: path, LockTimeout: 40 * time.Millisecond})
 	start := time.Now()
 	_, err = other.acquireSyncLock(context.Background())
 	qaCode(t, err, "state_busy")
@@ -193,7 +193,7 @@ func TestQASyncLiveCreateExcludesSecondRunButPermitsStatusAndPause(t *testing.T)
 	case <-ctx.Done():
 		t.Fatal("POST barrier deadline")
 	}
-	other := New(Options{Path: path, LockTimeout: 30 * time.Millisecond})
+	other := qaLegacyNew(Options{Path: path, LockTimeout: 30 * time.Millisecond})
 	// The second run must fail on ownership, before attempting any provider access.
 	for _, id := range []string{qaSyncID(144), qaSyncID(145)} {
 		_, err := other.SyncNow(ctx, SyncRunInput{RequestID: id}, qaSyncNoProvider(t))
@@ -277,7 +277,7 @@ func TestQASyncPendingReplayNeverClaimsNewlyCapturedRoot(t *testing.T) {
 	s.store.fail = nil
 	old := qaSyncOnlyItem(t, s)
 	later := qaSyncAppendCapturedInterval(t, s)
-	recovered, err := New(Options{Path: path}).SyncNow(context.Background(), input, qaSyncNoProvider(t))
+	recovered, err := qaLegacyNew(Options{Path: path}).SyncNow(context.Background(), input, qaSyncNoProvider(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +320,7 @@ func TestQASyncRemoteSuccessThenLocalSaveFailureRemainsUnknownWithoutRepost(t *t
 	if item.State != "submitting" || item.Plan.Parts[0].EntryID != nil {
 		t.Fatalf("unsaved response appeared durable: %+v", item)
 	}
-	_, err = New(Options{Path: path}).SyncNow(context.Background(), input, qaSyncNoProvider(t))
+	_, err = qaLegacyNew(Options{Path: path}).SyncNow(context.Background(), input, qaSyncNoProvider(t))
 	if err != nil {
 		t.Fatal(err)
 	}

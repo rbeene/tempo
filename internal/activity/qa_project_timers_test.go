@@ -147,7 +147,7 @@ func TestQAProjectTimersPartitionAccountAndProjectDeterministically(t *testing.T
 
 func TestQAProjectTimersSequentialAttributionEpochsPreserveHistory(t *testing.T) {
 	h := qaNew(t)
-	h.service = New(Options{Path: h.path, Clock: ClockFunc(func() (ClockSample, error) { return h.sample, h.clockErr })})
+	h.service = qaLegacyNew(Options{Path: h.path, Clock: ClockFunc(func() (ClockSample, error) { return h.sample, h.clockErr })})
 	in := qaLinkInput(t)
 	p := qaNewLinkProvider(t)
 	first, err := h.service.Link(context.Background(), in, qaLinkDeps(t, p))

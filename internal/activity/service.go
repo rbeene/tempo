@@ -28,7 +28,7 @@ func New(o Options) *Service {
 	if p == nil {
 		p = hookstate.New(hookstate.Options{})
 	}
-	return &Service{store: &fileStore{path: o.Path, timeout: o.LockTimeout}, clock: c, nativeCaptureClock: o.Clock == nil, resolve: o.ResolveBinding, observeWorker: o.ObserveWorker, policies: p}
+	return &Service{store: &fileStore{path: o.Path, timeout: o.LockTimeout, sqliteOnly: true}, clock: c, nativeCaptureClock: o.Clock == nil, resolve: o.ResolveBinding, observeWorker: o.ObserveWorker, policies: p}
 }
 func (s *Service) sample() (ClockSample, error) {
 	v, err := s.clock.Sample()

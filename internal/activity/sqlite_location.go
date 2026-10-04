@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-// sqliteLocation is pure naming for the inactive store. Authority selection,
-// marker validation and database creation remain separate operations.
+// sqliteLocation derives the database name from the stable state-path selector.
+// Authority validation and database creation remain separate operations.
 func sqliteLocation(path string) (directory, authorityBase, databaseBase string, err error) {
 	resolved, err := (&fileStore{path: path}).location()
 	if err != nil {
