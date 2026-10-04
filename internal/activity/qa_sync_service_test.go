@@ -127,7 +127,7 @@ func qaSyncNoProvider(t *testing.T) SyncDependencies {
 }
 func qaSyncFixture(t *testing.T, duration time.Duration) (*Service, string, Interval) {
 	t.Helper()
-	s, path := qaLinkService(t)
+	s, path := qaLegacyLinkService(t)
 	sample := ClockSample{}
 	setClock := func(d time.Duration) {
 		epoch, n := "sync-qa-boot", strconv.FormatInt(int64(d), 10)
@@ -244,7 +244,7 @@ func TestQASyncConfigurationConsentCASAndReplay(t *testing.T) {
 	if !r.Changed || c.AccountID != "1" || c.UserID != "2" || c.Revision != "1" || !c.Declared || c.Source != "user_declared" || c.PolicyVersion != "nearest-hundredth-hour-v1" || c.DeclaredAt.IsZero() {
 		t.Fatalf("consent=%+v", r)
 	}
-	replay, err := New(Options{Path: path}).SyncConfigure(context.Background(), in, qaSyncNoProvider(t))
+	replay, err := qaLegacyNew(Options{Path: path}).SyncConfigure(context.Background(), in, qaSyncNoProvider(t))
 	if err != nil || !reflect.DeepEqual(r, replay) {
 		t.Fatalf("replay=%+v err=%v", replay, err)
 	}
@@ -336,7 +336,7 @@ func TestQASyncUnknownWriteReplayAndFreshRunNeverRetry(t *testing.T) {
 	if item.Plan == nil || item.Plan.Parts[0].ConfirmedDurationNS != nil {
 		t.Fatalf("unknown fabricated duration: %+v", item.Plan)
 	}
-	replay, err := New(Options{Path: path}).SyncNow(context.Background(), input, qaSyncNoProvider(t))
+	replay, err := qaLegacyNew(Options{Path: path}).SyncNow(context.Background(), input, qaSyncNoProvider(t))
 	if err != nil || !reflect.DeepEqual(first, replay) {
 		t.Fatalf("replay=%+v err=%v", replay, err)
 	}
@@ -362,7 +362,7 @@ func TestQASyncMissingConsentCanBeRemediatedByExplicitConfiguration(t *testing.T
 		t.Fatalf("missing consent=%+v posts%d", before, len(p.posts))
 	}
 	qaSyncConfigure(t, s, p)
-	_, err = New(Options{Path: path}).SyncNow(context.Background(), SyncRunInput{RequestID: qaSyncID(121)}, qaSyncDeps(t, p))
+	_, err = qaLegacyNew(Options{Path: path}).SyncNow(context.Background(), SyncRunInput{RequestID: qaSyncID(121)}, qaSyncDeps(t, p))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,7 +386,7 @@ func TestQASyncPreflightProviderFailureDoesNotPermanentlyDisableQueuedWork(t *te
 	if reached != 1 || len(p.posts) != 0 || first.State != "queued" {
 		t.Fatalf("transient credential/provider preflight changed eligibility: %+v calls%d", first, reached)
 	}
-	_, err := New(Options{Path: path}).SyncNow(context.Background(), SyncRunInput{RequestID: qaSyncID(123)}, qaSyncDeps(t, p))
+	_, err := qaLegacyNew(Options{Path: path}).SyncNow(context.Background(), SyncRunInput{RequestID: qaSyncID(123)}, qaSyncDeps(t, p))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -418,14 +418,14 @@ func TestQASyncLimitAndNormalizedRequestReplayAreBounded(t *testing.T) {
 		t.Fatalf("limit selection run=%+v later=%+v posts%d", first, st.Outbox[later.ID], len(p.posts))
 	}
 	// Same ID with changed canonical limit must conflict before provider access.
-	_, err = New(Options{Path: path}).SyncNow(context.Background(), SyncRunInput{RequestID: qaSyncID(181), Limit: 2}, qaSyncNoProvider(t))
+	_, err = qaLegacyNew(Options{Path: path}).SyncNow(context.Background(), SyncRunInput{RequestID: qaSyncID(181), Limit: 2}, qaSyncNoProvider(t))
 	qaCode(t, err, "request_conflict")
 	p.returnedHours = "0.01"
 	last, err := s.SyncNow(context.Background(), SyncRunInput{RequestID: qaSyncID(182)}, qaSyncDeps(t, p))
 	if err != nil {
 		t.Fatal(err)
 	}
-	replay, err := New(Options{Path: path}).SyncNow(context.Background(), SyncRunInput{RequestID: qaSyncID(182), Limit: 20}, qaSyncNoProvider(t))
+	replay, err := qaLegacyNew(Options{Path: path}).SyncNow(context.Background(), SyncRunInput{RequestID: qaSyncID(182), Limit: 20}, qaSyncNoProvider(t))
 	if err != nil || !reflect.DeepEqual(last, replay) {
 		t.Fatalf("omitted/default20 fingerprint differs: %+v err%v", replay, err)
 	}

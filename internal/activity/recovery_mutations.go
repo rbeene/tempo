@@ -97,6 +97,9 @@ func (s *Service) Interrupt(ctx context.Context, in InterruptInput) (MutationRes
 	if !in.Confirmed {
 		return MutationResult{}, failure("confirmation_required")
 	}
+	if s.store.sqliteOnly {
+		return s.interruptSQLite(ctx, in)
+	}
 	return s.recoveryMutation(ctx, in.RequestID, "activity.interrupt", in, func(st *state) (MutationResult, bool, error) {
 		var a *Actor
 		for _, v := range st.Actors {
@@ -142,6 +145,9 @@ func (s *Service) Interrupt(ctx context.Context, in InterruptInput) (MutationRes
 	})
 }
 func (s *Service) ObserveSource(ctx context.Context, in SourceObservation) (MutationResult, error) {
+	if s.store.sqliteOnly {
+		return s.observeSourceSQLite(ctx, in)
+	}
 	if !validRef(in.Actor) {
 		return MutationResult{}, failure("validation")
 	}
@@ -185,6 +191,9 @@ func (s *Service) observeSourceState(st *state, in SourceObservation) (MutationR
 }
 
 func (s *Service) ObserveClock(ctx context.Context, in ClockObservation) (MutationResult, error) {
+	if s.store.sqliteOnly {
+		return s.observeClockSQLite(ctx, in)
+	}
 	return s.recoveryMutation(ctx, in.RequestID, "activity.observe_clock", in, func(st *state) (MutationResult, bool, error) {
 		before := actorRevisions(st)
 		sample, _ := s.sample()

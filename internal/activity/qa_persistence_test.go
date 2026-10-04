@@ -216,7 +216,7 @@ func TestQAActivityStoreProcessHelper(t *testing.T) {
 	if path == "" {
 		t.Skip("subprocess helper")
 	}
-	s := New(Options{Path: path, LockTimeout: time.Second})
+	s := qaLegacyNew(Options{Path: path, LockTimeout: time.Second})
 	if os.Getenv("TEMPO_QA_HOLD_LOCK") == "1" {
 		lock, ok, err := s.store.acquire(context.Background(), false)
 		if err != nil || !ok {

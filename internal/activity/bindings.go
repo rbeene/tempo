@@ -6,6 +6,9 @@ import (
 )
 
 func (s *Service) Link(ctx context.Context, in LinkInput, d LinkDependencies) (BindingResult, error) {
+	if s.store.sqliteOnly {
+		return s.linkSQLite(ctx, in, d)
+	}
 	if err := validateLinkInput(in); err != nil {
 		return BindingResult{}, err
 	}
@@ -116,6 +119,9 @@ func revisionExhausted(revision string) bool {
 	return !ok || n == ^uint64(0)
 }
 func (s *Service) ListBindings(ctx context.Context) (BindingList, error) {
+	if s.store.sqliteOnly {
+		return s.listBindingsSQLite(ctx)
+	}
 	st, _, err := s.store.read(ctx)
 	if err != nil {
 		return BindingList{}, err
@@ -132,6 +138,9 @@ func (s *Service) ListBindings(ctx context.Context) (BindingList, error) {
 func (s *Service) ShowBinding(ctx context.Context, in ShowBindingInput) (BindingList, error) {
 	if in.BindingID != "" && (!validUUID(in.BindingID) || in.Path != "") {
 		return BindingList{}, failure("validation")
+	}
+	if s.store.sqliteOnly {
+		return s.showBindingSQLite(ctx, in)
 	}
 	st, _, err := s.store.read(ctx)
 	if err != nil {
@@ -189,6 +198,9 @@ func mutableRecord(st *state, id, revision string) (bindingRecord, error) {
 	return r, nil
 }
 func (s *Service) Unlink(ctx context.Context, in UnlinkInput) (MutationResult, error) {
+	if s.store.sqliteOnly {
+		return s.unlinkSQLite(ctx, in)
+	}
 	if err := validateBindingMutation(in.BindingID, in.IfRevision, in.RequestID, in.Confirmed); err != nil {
 		return MutationResult{}, err
 	}
@@ -233,6 +245,9 @@ func (s *Service) Unlink(ctx context.Context, in UnlinkInput) (MutationResult, e
 	return result, nil
 }
 func (s *Service) RepairBinding(ctx context.Context, in RepairBindingInput) (BindingResult, error) {
+	if s.store.sqliteOnly {
+		return s.repairBindingSQLite(ctx, in)
+	}
 	if err := validateBindingMutation(in.BindingID, in.IfRevision, in.RequestID, in.Confirmed); err != nil {
 		return BindingResult{}, err
 	}

@@ -17,9 +17,10 @@ import (
 )
 
 type fileStore struct {
-	path    string
-	timeout time.Duration
-	fail    func(string) error
+	path       string
+	timeout    time.Duration
+	fail       func(string) error
+	sqliteOnly bool
 }
 
 func (s *fileStore) fault(stage string) error {
@@ -105,6 +106,11 @@ func (l *lockedStore) verify() error {
 	return nil
 }
 func (s *fileStore) acquire(ctx context.Context, create bool) (*lockedStore, bool, error) {
+	// SQLite services refuse legacy authority access. Naming remains shared
+	// and pure.
+	if s.sqliteOnly {
+		return nil, false, failure("unsupported_contract")
+	}
 	p, err := s.location()
 	if err != nil {
 		return nil, false, err

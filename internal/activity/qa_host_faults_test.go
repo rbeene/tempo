@@ -128,7 +128,7 @@ func TestQAHostConcurrentDuplicateIngressAllocatesOnce(t *testing.T) {
 	for range 8 {
 		go func() {
 			<-start
-			s := New(Options{Path: h.path, Clock: ClockFunc(func() (ClockSample, error) { return h.sample, nil }), HookPolicies: h.policies, LockTimeout: time.Second})
+			s := qaLegacyNew(Options{Path: h.path, Clock: ClockFunc(func() (ClockSample, error) { return h.sample, nil }), HookPolicies: h.policies, LockTimeout: time.Second})
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			r, err := s.IngestHost(ctx, e)

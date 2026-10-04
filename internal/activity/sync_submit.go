@@ -70,6 +70,9 @@ func (s *Service) syncBarrier(stage, id string) error {
 	return nil
 }
 func (s *Service) SyncNow(ctx context.Context, in SyncRunInput, d SyncDependencies) (SyncRun, error) {
+	if s.store.sqliteOnly {
+		return s.syncNowSQLite(ctx, in, d)
+	}
 	if !validUUID(in.RequestID) || in.Limit < 0 || in.Limit > 100 {
 		return SyncRun{}, failure("validation")
 	}

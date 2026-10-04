@@ -7,6 +7,9 @@ import (
 )
 
 func (s *Service) SyncReconcile(ctx context.Context, in SyncReconcileInput, d SyncDependencies) (SyncRun, error) {
+	if s.store.sqliteOnly {
+		return s.syncReconcileSQLite(ctx, in, d)
+	}
 	if !validUUID(in.RequestID) || (in.OutboxID != "" && !validUUID(in.OutboxID)) || in.Limit < 0 || in.Limit > 100 {
 		return SyncRun{}, failure("validation")
 	}

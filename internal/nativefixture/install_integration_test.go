@@ -3,11 +3,13 @@ package nativefixture
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/rbeene/tempo/internal/activity"
 	"github.com/rbeene/tempo/internal/hookstate"
 )
 
@@ -17,6 +19,12 @@ func installerFixture(t *testing.T, host, scope string) ([]string, hookstate.Opt
 	t.Helper()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
+		t.Fatal(err)
+	}
+	// Go's TempDir leaf uses 0777 before umask; SQLite requires an existing
+	// activity directory to be private. This directory is fixture-owned only.
+	stateDir := filepath.Join(root, "state")
+	if err := os.Mkdir(stateDir, 0700); err != nil {
 		t.Fatal(err)
 	}
 	project := filepath.Join(root, "project")
@@ -29,7 +37,7 @@ func installerFixture(t *testing.T, host, scope string) ([]string, hookstate.Opt
 			t.Fatal(err)
 		}
 	}
-	args := []string{"install", filepath.Join(root, "activity"), filepath.Join(root, "metadata", "hooks"), project, runtime, executable, scope}
+	args := []string{"install", filepath.Join(stateDir, "activity"), filepath.Join(root, "metadata", "hooks"), project, runtime, executable, scope}
 	if host == "claude" {
 		args = append(args, "--host", "claude")
 	}
@@ -106,7 +114,10 @@ func TestFixtureProductionInstallAndConfirmation(t *testing.T) {
 			if err := runWithOptions(args, options); err != nil {
 				t.Fatalf("installed profile confirmation: %v", err)
 			}
-			policy := hookstate.New(hookstate.Options{Path: args[2]})
+			// Reopen in the same injected host-root environment. Eligibility hashes
+			// the retained runtime/executable inventory; it must not switch to HOME.
+			options.Path = args[2]
+			policy := hookstate.New(options)
 			profile, err := policy.Eligibility(context.Background(), tc.host, args[3])
 			if err != nil || !profile.CaptureEligible || profile.Basis != "operator_declared" || profile.Context.InventoryVersion != "tempo-installed-static-v1" {
 				t.Fatal("genuine installed inventory not confirmed")
@@ -121,7 +132,18 @@ func TestFixtureProductionInstallAndConfirmation(t *testing.T) {
 				t.Fatal("post-review current configuration not fingerprinted")
 			}
 			if _, err := os.Stat(args[1]); !os.IsNotExist(err) {
-				t.Fatal("install/confirmation initialized activity identity")
+				t.Fatal("install/confirmation created the activity selector")
+			}
+			snapshot, err := activity.New(activity.Options{Path: args[1]}).Status(context.Background())
+			if err != nil {
+				var local *activity.Error
+				if errors.As(err, &local) {
+					t.Fatalf("install/confirmation activity read failed: code=%s", local.Code)
+				}
+				t.Fatalf("install/confirmation activity read failed: error_type=%T", err)
+			}
+			if snapshot.ComputerID != nil || snapshot.SnapshotRevision != "0" {
+				t.Fatalf("install/confirmation initialized SQLite activity identity: computer_id_present=%t revision=%q", snapshot.ComputerID != nil, snapshot.SnapshotRevision)
 			}
 			if err := os.WriteFile(skill, []byte("edited skill"), 0600); err != nil {
 				t.Fatal(err)

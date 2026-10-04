@@ -57,7 +57,7 @@ func TestQASyncPersistedPlanCorruptionFailsClosedWithoutRewriting(t *testing.T) 
 			if err = os.WriteFile(path, corrupt, 0600); err != nil {
 				t.Fatal(err)
 			}
-			_, err = New(Options{Path: path}).SyncStatus(context.Background())
+			_, err = qaLegacyNew(Options{Path: path}).SyncStatus(context.Background())
 			qaCode(t, err, "state_corrupt")
 			after, err := os.ReadFile(path)
 			if err != nil {

@@ -7,6 +7,9 @@ import (
 )
 
 func (s *Service) Status(ctx context.Context) (ActivitySnapshot, error) {
+	if s.store.sqliteOnly {
+		return s.statusSQLite(ctx)
+	}
 	ctx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
 	defer cancel()
 	st, exists, err := s.store.read(ctx)

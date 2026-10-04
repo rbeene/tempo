@@ -179,7 +179,9 @@ func TestQAPrepareLinkFreezesObservedRevisionBeforeConcurrentChange(t *testing.T
 	if prepared.IfRevision != first.Binding.Revision || prepared.TaskID != "4" || prepared.Timezone != "UTC" || prepared.RequestID != in.RequestID {
 		t.Fatalf("prepare substituted newly changed revision/attribution: %+v first %+v", prepared, first)
 	}
-	before, err := os.ReadFile(state)
+	// Cold public reads retain the complete binding values and store revision;
+	// the configured selector is not a JSON file on the default SQLite route.
+	before, err := activity.New(activity.Options{Path: state}).ListBindings(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,9 +190,12 @@ func TestQAPrepareLinkFreezesObservedRevisionBeforeConcurrentChange(t *testing.T
 	if !errors.As(err, &local) || local.Code != "revision_conflict" {
 		t.Fatalf("stale prepared intent silently committed: %v", err)
 	}
-	after, err := os.ReadFile(state)
+	after, err := activity.New(activity.Options{Path: state}).ListBindings(context.Background())
 	if err != nil || !reflect.DeepEqual(before, after) {
-		t.Fatal("revision conflict changed activity state")
+		t.Fatal("revision conflict changed bindings or store revision")
+	}
+	if _, err := os.Stat(state); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("SQLite prepared commit created the selector file: %v", err)
 	}
 	listed, err := s.options.Activity.ListBindings(context.Background())
 	if err != nil || len(listed.Bindings) != 1 || listed.Bindings[0].Revision != changed.Binding.Revision || listed.Bindings[0].Attribution.TaskID != "5" {

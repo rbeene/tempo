@@ -174,6 +174,9 @@ func hostContext(st *state, e HostEvent) string {
 	return e.CWD
 }
 func (s *Service) IngestHost(ctx context.Context, e HostEvent) (HostReceipt, error) {
+	if s.store.sqliteOnly {
+		return s.ingestHostSQLite(ctx, e)
+	}
 	result := hostBase(e, "0")
 	if err := validateHost(e); err != nil {
 		return result, err

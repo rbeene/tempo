@@ -215,11 +215,19 @@ func TestQAWorkerCLICompiledForegroundSignalsReleaseOwnership(t *testing.T) {
 		exit   int
 	}{{os.Interrupt, 130}, {syscall.SIGTERM, 143}} {
 		t.Run(strconv.Itoa(tc.exit), func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "state", "activity.json")
+			owned := t.TempDir()
+			path := filepath.Join(owned, "state", "activity.json")
+			home := filepath.Join(owned, "home")
+			configHome := filepath.Join(home, "config")
+			if err := os.MkdirAll(configHome, 0700); err != nil {
+				t.Fatal(err)
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, binary, "worker", "run", "--non-interactive")
-			cmd.Env = append(os.Environ(), "TEMPO_STATE="+path, "TEMPO_CONFIG="+filepath.Join(root, "unused-config"), "HARVEST_TOKEN=", "HARVEST_ACCOUNT_ID=")
+			// The child owns its user service roots even when the suite deliberately
+			// omits HOME. Do not inherit or modify an actual user's service directory.
+			cmd.Env = append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+configHome, "TEMPO_WORKER_MODE=foreground", "TEMPO_STATE="+path, "TEMPO_CONFIG="+filepath.Join(root, "unused-config"), "HARVEST_TOKEN=", "HARVEST_ACCOUNT_ID=")
 			var out, stderr bytes.Buffer
 			cmd.Stdout = &out
 			cmd.Stderr = &stderr
@@ -290,7 +298,11 @@ func TestQAWorkerCLICompiledForegroundSignalsReleaseOwnership(t *testing.T) {
 				t.Fatal("process signal left ownership live")
 			}
 			if _, err := os.Stat(path); !os.IsNotExist(err) {
-				t.Fatalf("empty worker initialized capture identity: %v", err)
+				t.Fatalf("empty worker created the selector file: %v", err)
+			}
+			snapshot, err := activity.New(activity.Options{Path: path}).Status(context.Background())
+			if err != nil || snapshot.ComputerID != nil || snapshot.SnapshotRevision != "0" {
+				t.Fatalf("empty worker initialized SQLite capture identity: %+v %v", snapshot, err)
 			}
 		})
 	}

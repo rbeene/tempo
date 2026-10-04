@@ -161,7 +161,7 @@ The [agent activity contract](agent-contracts.md) and [operation catalog](agent-
 | `activity status` | Finite local snapshot; no credentials, configuration reads or network. `--json` and `--non-interactive` emit the versioned envelope. An absent store returns null computer ID, revision `"0"` and empty collections without creating files. `--watch` uses the same dashboard only with both terminals and neither forcing flag. |
 | `activity event --input-stdin` | Accept exactly one normalized v1 lifecycle JSON event, at most 16KiB. Adapter/internal operation; no prompts or arbitrary attribution fields. Uses the persisted computer identity and a linked path or binding ID/revision for tracked work; an unlinked location returns `untracked` without starting a timer. |
 
-Local activity is independent of Harvest `timer` commands. `TEMPO_STATE` selects an absolute private state-file path for isolated operation; default is the OS user config directory under `tempo/activity-state.json`. No public fake-binding/init command is provided. Explicit linking is available below; supported host bridges remain separate, and these commands do not install or automatically capture agent callbacks. The dashboard uses Up/Down to select a project, `r` to refresh, and `q` or Escape to quit. It reads shared local status once per second with at most one bounded read outstanding. A failed read freezes the last value and marks it stale. Resize adapts the frame; very small terminals show a resize notice. Intentional dashboard/watch lifetimes have no command-wide timeout. Opening, refreshing and quitting do not authenticate, contact Harvest, install or control services, pause sync, or interrupt capture.
+Local activity is independent of Harvest `timer` commands. `TEMPO_STATE` selects an absolute private state-path selector; default is the OS user config directory under `tempo/activity-state.json`. Fresh storage is a neighboring `activity-<digest>.sqlite3` database, with the selector itself absent. Pass the selector to all CLI/hooks/worker invocations; passing the derived database name selects a different store. An existing selector returns `state_path_in_use` (exit 1) and is preserved; select a new absolute path for a fresh store. No public fake-binding/init command is provided. Explicit linking is available below; supported host bridges remain separate, and these commands do not install or automatically capture agent callbacks. The dashboard uses Up/Down to select a project, `r` to refresh, and `q` or Escape to quit. It reads shared local status once per second with at most one bounded read outstanding. A failed read freezes the last value and marks it stale. Resize adapts the frame; very small terminals show a resize notice. Intentional dashboard/watch lifetimes have no command-wide timeout. Opening, refreshing and quitting do not authenticate, contact Harvest, install or control services, pause sync, or interrupt capture.
 
 Enter opens the selected timer's captured observation and attribution history. `2` opens searchable local Links, `3` opens Sync and its queue, comma opens the Setup menu, and `?` opens Help. Each explicit view uses a bounded shared local read; periodic timer refresh continues beneath the modal without changing its captured target or search. Up/Down scroll full details, Enter closes a detail view, and Escape returns to the dashboard or cancels a pending view read. `q` is search text inside a picker and does not quit from a detail view. Paste never submits a form. Forms require at least 40 columns and 8 rows.
 
@@ -293,6 +293,19 @@ bound and selects at most 100 roots (default 20). It holds a separate process lo
 status and pause remain available. The optional background worker uses this same
 service; the terminal Sync UI remains separate.
 
+A fresh `sync now` attempt also performs bounded local WAL maintenance before
+selecting uploads, including when sync is paused or the batch is empty. A replay
+of an already-completed request keeps its historical fast path. For maintenance,
+use a new request ID (omit `--request-id` to let the CLI generate one). If a live
+reader prevents maintenance, the command returns retryable `state_busy` before
+reserving work; retry after the reader releases its snapshot. Enabled sync keeps
+its normal upload behavior.
+
+The worker starts passes only for enabled queued work or submission recovery.
+Paused or active-only capture therefore may need explicit `sync now`, including
+after a WAL-pressure refusal. Maintenance preserves captured history; its
+success at the 64MiB WAL limit is not guaranteed by the soft-threshold policy.
+
 Each attempt records its originating run request ID; `attempted_ids` counts only
 intents committed by that run, including interrupted claims, never historical
 rejections from an earlier run. Every mutation accepts `--request-id UUID` (generated if absent). Preserve the ID
@@ -386,7 +399,20 @@ owned child processes and local mock HTTP; it does not install personal services
 
 ## Native Codex callbacks
 
-`hook codex --input-stdin` consumes one bounded native callback and returns exactly `{}` for the host. It runs locally without credentials or prompts; capture diagnostics and durability appear only on stderr. `--json` and `--non-interactive` preserve that host protocol. Account overrides and confirmation flags are inapplicable. Capture requires an existing link and retained eligible hook policy. This command does not install or trust hooks. See [Codex lifecycle capture](codex-hooks.md) for the supported runtime, identity rules and delivery limits.
+`hook codex --input-stdin` consumes one bounded native callback and normally returns `{}`. A validated `SessionStart` or `SubagentStart` with a capture diagnostic instead returns only native `hookSpecificOutput.hookEventName` and `hookSpecificOutput.additionalContext`, with fixed kind/code/durability values. This intentionally informs the model of declined, reviewed or uncertain local timing; it is not a receipt, veto or retry instruction. Clean captures/duplicates, undecodable input and other kinds retain `{}`. It runs locally without credentials or prompts; the existing fixed diagnostics and durability also remain on stderr. `--json` and `--non-interactive` preserve that host protocol. Account overrides and confirmation flags are inapplicable. Capture requires an existing link and retained eligible hook policy. This command does not install or trust hooks. See [Codex lifecycle capture](codex-hooks.md) for the supported runtime, identity rules and delivery limits.
+
+For bounded synthetic-fixture diagnosis, `TEMPO_HOOK_DIAGNOSTICS=1` enables an in-memory record of at most three existing local attempts. Only a failed validated Codex start with `state_busy` and `not_committed` appends a second, versioned `tempo hook diagnostics v2:` line to `additionalContext`; the first kind/code/durability line is unchanged. The second line retains the eight admission phase timestamps relative to this hook, original local/caller deadlines, retry/context enums and primary native error enums/code when available. Version2 adds fixed numeric Eligibility costs: seven phase durations, six allowlisted artifact-role aggregates (counts, bytes read, read/hash/metadata wall time), and two whole-process CPU deltas. All three attempts share the existing3072-byte suffix limit; incomplete or oversized observations are omitted. Observation preserves full artifact hashing and the original128KiB buffer. CPU deltas include other work in this hook process; wall times include scheduling and are not per-role CPU measurements. It contains no event identity, paths, SQL, raw errors or payloads. This opt-in intentionally adds model-visible diagnostic context; it is not a capture receipt or retry instruction. It creates no diagnostic file, callback worker or remote request. Without the exact opt-in, and for success, clean replay, other diagnostic codes or other event kinds, the existing output is unchanged. The native fixture enables and strictly projects this metadata separately while keeping all receipt gates and250ms/900ms limits; it also accepts retained version1 evidence. After its owned hosts/model join, the Linux fixture may read a bounded fixed CPU-capability source and publish only six feature booleans or unavailable status. Those advertised capabilities do not establish the SHA implementation actually selected. Missing or deduplicated context cannot prove delivery count or complete observation.
+
+
+Both native hook adapters may make at most three total local capture attempts
+for a positively known retryable `state_busy` with `not_committed` durability.
+They reuse the same decoded event and original 900ms context without sleeping;
+each service call retains its existing 250ms default admission and rechecks its
+normal dependencies. A checked nonmutating admission deadline may qualify while
+the original context remains live. Caller cancellation, any joined uncertainty,
+cleanup/terminal failure, committed or unknown outcome, or other refusal stops
+the loop. Only the final result emits diagnostics or a worker wake. This never
+retries a Harvest operation or guarantees capture when local contention persists.
 
 ## Native Claude callbacks
 

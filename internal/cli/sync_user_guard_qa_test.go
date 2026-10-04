@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -68,10 +69,7 @@ func TestQASyncCLIExpectedUserRejectsOtherUserEqualRevisionWithoutWrites(t *test
 			t.Fatal("unequal setup revision")
 		}
 	}
-	before, e := os.ReadFile(path)
-	if e != nil {
-		t.Fatal(e)
-	}
+	before := status
 	credentialReads := 0
 	credentials := auth.NewService(auth.Options{ConfigPath: filepath.Join(filepath.Dir(path), "missing-config"), Getenv: func(k string) string {
 		if k == "HARVEST_TOKEN" {
@@ -93,8 +91,8 @@ func TestQASyncCLIExpectedUserRejectsOtherUserEqualRevisionWithoutWrites(t *test
 	if errObj["code"] != "identity_conflict" {
 		t.Errorf("guard didn't verify current user: %v", v)
 	}
-	after, e := os.ReadFile(path)
-	if e != nil || !bytes.Equal(before, after) {
+	after, e := service.SyncStatus(context.Background())
+	if e != nil || !reflect.DeepEqual(before, after) {
 		t.Error("CLI wrong-user guard changed consent or receipt")
 	}
 	if credentialReads == 0 {

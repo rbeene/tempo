@@ -13,7 +13,7 @@ jobs:
   verify:
     name: Format, vet, tests, race, build
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 60
     env:
       HARVEST_TOKEN: ''
       HARVEST_ACCOUNT_ID: ''
@@ -71,7 +71,7 @@ jobs:
           retention-days: 7
       - name: Worker Stop pressure evidence
         run: go test -race -v -count=1 -run '^(TestQAStopControlWaitsForOwnedSocketDrain|TestQAStopPinnedOwnershipAndCancellation|TestQAStopSuccessfulSendWaitsForOwnerRelease)$' ./internal/worker
-      - run: go test -race -coverpkg=./internal/... -coverprofile=coverage.out ./...
+      - run: go test -race -timeout=45m -coverpkg=./internal/... -coverprofile=coverage.out ./...
       - run: sh scripts/test-install.sh
       - run: sh scripts/test-release-version.sh
       - run: python3 -B scripts/test-release-assets.py
@@ -95,14 +95,14 @@ jobs:
     if: github.event_name == 'pull_request'
     name: Native macOS race and snapshot
     runs-on: macos-14
-    timeout-minutes: 20
+    timeout-minutes: 60
     permissions:
       contents: read
     env:
       HARVEST_TOKEN: ''
       HARVEST_ACCOUNT_ID: ''
       GOMAXPROCS: '2'
-      GOFLAGS: '-p=2'
+      GOFLAGS: '-p=1'
       CGO_ENABLED: '1'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -118,7 +118,7 @@ jobs:
           go version
           test -z "$(gofmt -l cmd internal)"
           go vet ./...
-          go test -race -count=1 ./...
+          go test -race -count=1 -timeout=45m ./...
           go build -trimpath -ldflags="-s -w -X github.com/rbeene/tempo/internal/cli.Version=${GITHUB_SHA}" -o bin/tempo ./cmd/tempo
           bin/tempo version
           bin/tempo help

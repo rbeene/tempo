@@ -264,7 +264,7 @@ class HarnessTests(unittest.TestCase):
         self.assertNotIn("CODEX_HOME", actual)
         self.assertFalse(any("secret" in v for v in actual.values()))
         self.assertEqual(set(actual), {"HOME", "PATH", "LANG", "LC_ALL", "TERM", "TMPDIR",
-                                      "TEMPO_STATE", "TEMPO_HOOK_STATE", "TEMPO_CI_PROVIDER_TOKEN"})
+                                      "TEMPO_STATE", "TEMPO_HOOK_STATE", "TEMPO_CI_PROVIDER_TOKEN", "TEMPO_HOOK_DIAGNOSTICS"})
 
     def test_unexpected_state_fails_without_reading_or_deleting_it(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -694,7 +694,9 @@ class HarnessTests(unittest.TestCase):
         model.session, model.turn, model.child = "session-1", None, None
         model.child_turn = None
         model.baseline = None
+        model.initial_receipt_probe = {"status": "not_observed"}
         model.entry_count = 0
+        model.capture_contexts = set()
         model.title_count = 0
         model.shutdown = threading.Event()
         model.phase, model.counts, model.requests = "initial", {}, []
@@ -863,6 +865,214 @@ class HarnessTests(unittest.TestCase):
         body["input"].append({"type": "function_call_output", "call_id": "tempo-plan", "output": "Plan updated"})
         with self.assertRaises(smoke.FixtureFailure): model.respond(body)
 
+    def eligibility_cost_context(self):
+        public, rows = self.diagnostic_context()
+        rows[0]["eligibility"] = {
+            "p": [100, 200, 237000, 5, 20, -1, 237500],
+            "r": [[1, 1, 287086056, 2192, 80, 70000, 166000, 5, 236200],
+                  [1, 1, 12000, 2, 10, 8, 15, 2, 40],
+                  [1, 1, 4000, 2, 10, 5, 8, 2, 30],
+                  [0]*9, [0]*9, [0]*9],
+            "c": [220000, 15000], "d": False}
+        return public, rows
+
+    def test_eligibility_v2_preserves_zero_receipt_gate(self):
+        public, rows = self.eligibility_cost_context()
+        text = public + "\ntempo hook diagnostics v2: " + json.dumps(rows, separators=(",", ":"))
+        model = self.model([])
+        model.session = None
+        model.baseline = frozenset()
+        body = self.request()
+        body["input"].insert(0, {"role": "developer", "content": [{"type": "input_text", "text": text}]})
+        with mock.patch.object(smoke.subprocess, "Popen", side_effect=AssertionError("unexpected process")), \
+             mock.patch.object(smoke.threading.Thread, "start", side_effect=AssertionError("unexpected thread")), \
+             mock.patch.object(smoke.http.server, "ThreadingHTTPServer", side_effect=AssertionError("unexpected socket")):
+            with self.assertRaisesRegex(smoke.FixtureFailure, "measured_session_ambiguous"):
+                model.respond(body)
+        # Subtests retain every genuine refusal postcondition during old-parser RED.
+        with self.subTest("fixed_public_tuple"):
+            self.assertEqual(model.capture_contexts, {("SessionStart", "state_busy", "not_committed")})
+        with self.subTest("fixed_numeric_policy_observation"):
+            self.assertEqual(getattr(model, "admission_diagnostics", []), [{"kind":"SessionStart", "attempts":rows, "version":2}])
+        self.assertEqual(model.initial_receipt_probe["accepted_session_starts"], 0)
+        self.assertEqual(model.counts, {})
+        self.assertEqual(model.entry_count, 1)
+
+    def test_eligibility_v2_rejects_shapes_and_retains_v1(self):
+        public, rows = self.eligibility_cost_context()
+        def body(values, role="developer"):
+            return {"input":[{"role":role,"content":[{"type":"input_text","text":public+"\ntempo hook diagnostics v2: "+json.dumps(values,separators=(",",":"))}]}]}
+        with self.subTest("valid_v2"):
+            self.assertEqual(smoke.capture_admission_diagnostics(body(rows)), [{"kind":"SessionStart","attempts":rows,"version":2}])
+        legacy_public, legacy_rows = self.diagnostic_context()
+        legacy = {"input":[{"role":"developer","content":[{"type":"input_text","text":legacy_public+"\ntempo hook diagnostics v1: "+json.dumps(legacy_rows)}]}]}
+        self.assertEqual(smoke.capture_admission_diagnostics(legacy), [{"kind":"SessionStart","attempts":legacy_rows}])
+        cases = [
+            lambda v:v["p"].__setitem__(0,True),
+            lambda v:v.update(path="PRIVATE-PATH"),
+            lambda v:v["r"][0].__setitem__(0,129),
+            lambda v:v["r"][0].__setitem__(2,-1),
+            lambda v:v["r"].append([0]*9),
+            lambda v:v.update(c=[-1,0]),
+            lambda v:v["p"].__setitem__(6,120000001),
+            lambda v:v.update(d=True),
+        ]
+        for mutate in cases:
+            candidate = copy.deepcopy(rows); mutate(candidate[0]["eligibility"])
+            with self.subTest("rejected_shape"):
+                self.assertEqual(smoke.capture_admission_diagnostics(body(candidate)), [])
+                self.assertEqual(smoke.capture_context_tuples(body(candidate)), set())
+        self.assertEqual(smoke.capture_admission_diagnostics(body(rows, "user")), [])
+        raw = public+"\ntempo hook diagnostics v2: "+"["*3073
+        self.assertEqual(smoke.hook_diagnostic_text(raw), (raw,None))
+
+    def test_cpu_capability_probe_is_bounded_post_join_projection(self):
+        cases = [
+            (b"processor : 0\nflags : sha_ni avx avx2 bmi2 sse4_1 ssse3 PRIVATE-CONTENT\n", "observed"),
+            (b"flags : avx sha_ni\nflags : avx\n", "observed"),
+            (b"processor : PRIVATE-CONTENT\n", "unavailable"),
+            (b"flags : \xff\n", "unavailable"),
+            (b"x"*1048577, "unavailable"),
+        ]
+        for raw, expected in cases:
+            with self.subTest(status=expected):
+                stream = mock.MagicMock()
+                stream.__enter__.return_value = stream
+                stream.read.return_value = raw
+                path = mock.Mock(); path.open.return_value = stream
+                with mock.patch.object(smoke.platform, "system", return_value="Linux"), \
+                     mock.patch.object(smoke, "Path", return_value=path) as constructor, \
+                     mock.patch.object(smoke.subprocess, "Popen", side_effect=AssertionError("unexpected process")), \
+                     mock.patch.object(smoke.threading.Thread, "start", side_effect=AssertionError("unexpected thread")):
+                    self.assertEqual(smoke.observe_cpu_flags(False), {"status":"unavailable","flags":{}})
+                    constructor.assert_not_called()
+                    result = smoke.observe_cpu_flags(True)
+                constructor.assert_called_once_with("/proc/cpuinfo")
+                path.open.assert_called_once_with("rb")
+                stream.read.assert_called_once_with(1048577)
+                stream.__exit__.assert_called_once()
+                self.assertEqual(result["status"], expected)
+                self.assertNotIn("PRIVATE", json.dumps(result))
+                if expected == "observed":
+                    self.assertEqual(set(result["flags"]), {"sha_ni","avx","avx2","bmi2","sse4_1","ssse3"})
+                    self.assertTrue(all(type(value) is bool for value in result["flags"].values()))
+                    if raw.count(b"flags") == 2: self.assertFalse(result["flags"]["sha_ni"])
+                else: self.assertEqual(result["flags"], {})
+        with mock.patch.object(smoke.platform, "system", return_value="Linux"), \
+             mock.patch.object(smoke, "Path", side_effect=OSError("PRIVATE-ERROR")):
+            self.assertEqual(smoke.observe_cpu_flags(True), {"status":"unavailable","flags":{}})
+        for code in ("overall_deadline", "fixture_cancelled"):
+            with self.subTest(fixture_failure=code):
+                failure = smoke.FixtureFailure(code)
+                stream = mock.MagicMock()
+                stream.__enter__.return_value = stream
+                stream.__exit__.return_value = False
+                stream.read.side_effect = failure
+                path = mock.Mock(); path.open.return_value = stream
+                with mock.patch.object(smoke.platform, "system", return_value="Linux"), \
+                     mock.patch.object(smoke, "Path", return_value=path) as constructor, \
+                     mock.patch.object(smoke.subprocess, "Popen", side_effect=AssertionError("unexpected process")), \
+                     mock.patch.object(smoke.threading.Thread, "start", side_effect=AssertionError("unexpected thread")), \
+                     mock.patch.object(smoke.http.server, "ThreadingHTTPServer", side_effect=AssertionError("unexpected socket")):
+                    raised = None
+                    try:
+                        smoke.observe_cpu_flags(True)
+                    except smoke.FixtureFailure as exc:
+                        raised = exc
+                constructor.assert_called_once_with("/proc/cpuinfo")
+                path.open.assert_called_once_with("rb")
+                stream.read.assert_called_once_with(1048577)
+                stream.__exit__.assert_called_once_with(smoke.FixtureFailure, failure, mock.ANY)
+                self.assertIs(raised, failure)
+
+    def diagnostic_context(self):
+        rows = [{"ordinal": 1, "start_us": 0, "end_us": 260000, "deadline_us": 250000,
+                 "caller_deadline_us": 900000, "phase_us": [10000, 11000, 12000, 20000, 21000, 259000, 259100, 259200],
+                 "caller": "live", "retry": True, "native_phase": "none", "native_category": "none", "native_code": 0, "native_cleanup": False}]
+        public = "tempo capture: kind=SessionStart; code=state_busy; durability=not_committed"
+        return public, rows
+
+    def test_admission_diagnostics_preserve_zero_receipt_gate_and_public_tuple(self):
+        public, rows = self.diagnostic_context()
+        text = public + "\ntempo hook diagnostics v1: " + json.dumps(rows, separators=(",", ":"))
+        model = self.model([])
+        model.session = None
+        model.baseline = frozenset()
+        body = self.request()
+        body["input"].insert(0, {"role": "developer", "content": [{"type": "input_text", "text": text}]})
+        with mock.patch.object(smoke.subprocess, "Popen", side_effect=AssertionError("unexpected process")), \
+             mock.patch.object(smoke.threading.Thread, "start", side_effect=AssertionError("unexpected thread")), \
+             mock.patch.object(smoke.http.server, "ThreadingHTTPServer", side_effect=AssertionError("unexpected socket")):
+            with self.assertRaisesRegex(smoke.FixtureFailure, "measured_session_ambiguous"):
+                model.respond(body)
+        self.assertEqual(model.capture_contexts, {("SessionStart", "state_busy", "not_committed")})
+        self.assertEqual(getattr(model, "admission_diagnostics", []), [{"kind": "SessionStart", "attempts": rows}])
+        self.assertEqual(model.initial_receipt_probe["accepted_session_starts"], 0)
+        self.assertEqual(model.counts, {})
+
+    def test_admission_diagnostics_reject_untrusted_or_unbounded_metadata(self):
+        public, rows = self.diagnostic_context()
+        valid = json.dumps(rows, separators=(",", ":"))
+        cases = [valid + " SECRET", valid.replace('"start_us":0', '"start_us":true'),
+                 valid.replace('"caller":"live"', '"caller":"SECRET"'),
+                 valid.replace('"native_phase":"none"', '"native_phase":[]'),
+                 valid.replace('"ordinal":1', '"ordinal":1,"ordinal":1'),
+                 json.dumps(rows * 4), "[" * 4000, valid.replace('"native_code":0', '"native_code":2147483648')]
+        for suffix in cases:
+            with self.subTest(suffix=suffix[:0]):
+                body = {"input": [{"role": "developer", "content": [{"type": "input_text", "text": public + "\ntempo hook diagnostics v1: " + suffix}]}]}
+                self.assertEqual(smoke.capture_context_tuples(body), set())
+        body = {"input": [{"role": "user", "content": [{"type": "input_text", "text": public + "\ntempo hook diagnostics v1: " + valid}]}]}
+        self.assertEqual(smoke.capture_context_tuples(body), set())
+        body["input"][0]["role"] = "developer"
+        body["input"][0]["content"][0]["text"] = public
+        self.assertEqual(smoke.capture_context_tuples(body), {("SessionStart", "state_busy", "not_committed")})
+
+    def test_start_capture_context_is_observed_without_satisfying_child_receipt_gate(self):
+        receipts = [self.receipt("SessionStart"), self.receipt("UserPromptSubmit")]
+        model = self.model(receipts)
+        body = self.request(smoke.CHILD_PROMPT)
+        context = "tempo capture: kind=SubagentStart; code=state_busy; durability=not_committed"
+        body["input"].insert(0, {"role": "developer", "content": [{"type": "input_text", "text": context}]})
+        with mock.patch.object(smoke.subprocess, "Popen", side_effect=AssertionError("unexpected process")), \
+             mock.patch.object(smoke.threading.Thread, "start", side_effect=AssertionError("unexpected thread")), \
+             mock.patch.object(smoke.http.server, "ThreadingHTTPServer", side_effect=AssertionError("unexpected socket")):
+            with self.assertRaisesRegex(smoke.FixtureFailure, "child_start_barrier_missing"):
+                model.respond(body)
+            self.assertEqual(model.capture_contexts, {("SubagentStart", "state_busy", "not_committed")})
+            self.assertEqual(model.counts, {})
+            receipts.append(self.receipt("SubagentStart", agent_id="child-1"))
+            self.assertEqual(model.respond(body)[2], "child")
+            self.assertEqual(model.capture_contexts, {("SubagentStart", "state_busy", "not_committed")})
+            self.assertEqual(model.counts, {"child": 1})
+
+    def test_start_capture_context_projection_rejects_untrusted_shapes_and_raw_text(self):
+        exact = "tempo capture: kind=SessionStart; code=clock_unavailable; durability=committed"
+        cases = [
+            ("positive", "developer", "input_text", exact, {("SessionStart", "clock_unavailable", "committed")}),
+            ("user_lookalike", "user", "input_text", exact, set()),
+            ("assistant_lookalike", "assistant", "input_text", exact, set()),
+            ("wrong_content", "developer", "output_text", exact, set()),
+            ("unreviewed_kind", "developer", "input_text", exact.replace("SessionStart", "Stop"), set()),
+            ("unknown_code", "developer", "input_text", exact.replace("clock_unavailable", "SECRET"), set()),
+            ("unknown_durability", "developer", "input_text", exact.replace("committed", "SECRET"), set()),
+            ("prefix", "developer", "input_text", "SECRET " + exact, set()),
+            ("suffix", "developer", "input_text", exact + " SECRET", set()),
+            ("newline", "developer", "input_text", exact + "\n", set()),
+        ]
+        with mock.patch.object(smoke.subprocess, "Popen", side_effect=AssertionError("unexpected process")), \
+             mock.patch.object(smoke.threading.Thread, "start", side_effect=AssertionError("unexpected thread")), \
+             mock.patch.object(smoke.http.server, "ThreadingHTTPServer", side_effect=AssertionError("unexpected socket")):
+            for name, role, content_type, text, expected in cases:
+                with self.subTest(name=name):
+                    model = self.model([self.receipt("SessionStart"), self.receipt("UserPromptSubmit")])
+                    body = self.request(smoke.CHILD_PROMPT)
+                    body["input"].insert(0, {"role": role, "content": [{"type": content_type, "text": text}]})
+                    with self.assertRaises(smoke.FixtureFailure): model.respond(body)
+                    self.assertEqual(model.capture_contexts, expected)
+                    self.assertNotIn("SECRET", repr(model.capture_contexts))
+                    self.assertEqual(model.counts, {})
+
     def test_child_request_requires_real_child_barrier_and_is_bounded(self):
         receipts = [self.receipt("SessionStart"), self.receipt("UserPromptSubmit")]
         model = self.model(receipts)
@@ -939,6 +1149,104 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(model.interrupt_turn, "interrupt-turn")
         receipts.append(self.receipt("UserPromptSubmit", id="extra-root", turn_id="other-root"))
         with self.assertRaises(smoke.FixtureFailure): model.respond(self.request(smoke.INTERRUPT_PROMPT))
+
+    def test_initial_gate_probe_counts_do_not_relax_the_native_barrier(self):
+        old = self.receipt("SessionStart", id="baseline")
+        start, prompt = self.receipt("SessionStart"), self.receipt("UserPromptSubmit")
+        cases = [([], 0, "measured_session_ambiguous"),
+                 ([start, prompt], 1, None),
+                 ([start, prompt, start | {"id": "second-start"}], 2, "measured_session_ambiguous"),
+                 ([start | {"disposition": "review_required"}, prompt], 0, "measured_session_ambiguous"),
+                 ([start | {"durability": "unknown"}, prompt], 0, "measured_session_ambiguous"),
+                 ([start], 1, "parent_prompt_identity")]
+        for rows, count, failure in cases:
+            with self.subTest(count=count, failure=failure):
+                model = self.model([old, *rows])
+                model.session, model.baseline = None, frozenset({"baseline"})
+                if failure:
+                    with self.assertRaisesRegex(smoke.FixtureFailure, "^" + failure + "$"):
+                        model.respond(self.request())
+                    self.assertEqual(model.requests, [])
+                else:
+                    self.assertEqual(model.respond(self.request())[0]["call_id"], "tempo-plan")
+                probe = model.initial_receipt_probe
+                self.assertEqual(probe["status"], "available")
+                self.assertEqual(probe["receipt_count"], len(rows) + 1)
+                self.assertEqual(probe["postbaseline_count"], len(rows))
+                self.assertEqual(probe["accepted_session_starts"], count)
+                self.assertEqual(sum(row["count"] for row in probe["counts"]), len(rows))
+                for row in rows:
+                    expected = sum((r["kind"], r["disposition"], r["durability"]) ==
+                                   (row["kind"], row["disposition"], row["durability"]) for r in rows)
+                    self.assertIn({"kind": row["kind"], "disposition": row["disposition"],
+                                   "durability": row["durability"], "count": expected}, probe["counts"])
+
+    def test_initial_gate_probe_is_bounded_redacted_and_distinguishes_read_failure(self):
+        canary = "PRIVATE-PAYLOAD-PATH-CANARY"
+        receipt = self.receipt("SessionStart", id=canary, session_id=canary, payload=canary, path=canary)
+        probe = smoke.receipt_gate_probe([receipt], frozenset())
+        self.assertEqual(probe["accepted_session_starts"], 1)
+        self.assertNotIn(canary, json.dumps(probe))
+        for changes in ({"kind": canary}, {"disposition": canary}, {"durability": canary}, {"id": None}):
+            self.assertEqual(smoke.receipt_gate_probe([receipt | changes], frozenset()), {"status": "invalid_response"})
+        self.assertEqual(smoke.receipt_gate_probe([receipt] * 129, frozenset()), {"status": "overflow", "receipt_count": 129})
+        self.assertEqual(smoke.receipt_gate_probe([], None), {"status": "unarmed"})
+        model = self.model([])
+        model.session, model.baseline = None, frozenset()
+        error = RuntimeError(canary)
+        model.read = mock.Mock(side_effect=error)
+        with self.assertRaises(RuntimeError) as raised:
+            model.respond(self.request())
+        self.assertIs(raised.exception, error)
+        self.assertEqual(model.initial_receipt_probe, {"status": "read_failed"})
+        self.assertEqual(model.requests, [])
+
+    def test_cleanup_reports_join_completion_without_masking_primary_failure(self):
+        for failure in (None, "terminal", "model", "provider"):
+            terminal, model = mock.Mock(), mock.Mock()
+            model.error = "provider_protocol_failed" if failure == "provider" else None
+            if failure in ("terminal", "model"):
+                (terminal if failure == "terminal" else model).close.side_effect = smoke.FixtureFailure("cleanup_failed")
+            self.assertIs(smoke.close_native(terminal, model, primary_failure=True), failure not in ("terminal", "model"))
+            terminal.close.assert_called_once()
+            model.close.assert_called_once()
+        for alive in (False, True):
+            model = object.__new__(smoke.Model)
+            model.shutdown, model.child_release, model.server, model.thread = (mock.Mock() for _ in range(4))
+            model.thread.is_alive.return_value = alive
+            if alive:
+                with self.assertRaisesRegex(smoke.FixtureFailure, "^provider_join_failed$"):
+                    model.close()
+            else:
+                model.close()
+            model.shutdown.set.assert_called_once()
+            model.child_release.set.assert_called_once()
+            model.server.shutdown.assert_called_once()
+            model.server.server_close.assert_called_once()
+            model.thread.join.assert_called_once_with(timeout=2)
+
+    def test_failure_profile_observation_skips_incomplete_cleanup_and_bounds_read(self):
+        confirmed = {"revision": "1"}
+        callback = mock.Mock(side_effect=RuntimeError("PRIVATE-HELPER-ERROR"))
+        with mock.patch.object(smoke.time, "monotonic", return_value=100):
+            for joined in (False, None):
+                self.assertEqual(smoke.observe_failed_profile(callback, confirmed, Path("/tmp/project"), "0.159.3", 120, joined),
+                                 {"status": "cleanup_incomplete"})
+            self.assertEqual(smoke.observe_failed_profile(callback, None, Path("/tmp/project"), "0.159.3", 120, True),
+                             {"status": "unconfirmed"})
+            self.assertEqual(smoke.observe_failed_profile(callback, confirmed, Path("/tmp/project"), "0.159.3", 100, True),
+                             {"status": "deadline_expired"})
+            callback.assert_not_called()
+            for deadline, timeout in ((140, 20), (103.5, 3.5)):
+                callback.reset_mock()
+                with self.assertRaisesRegex(smoke.FixtureFailure, "^measured_session_ambiguous$"):
+                    try:
+                        raise smoke.FixtureFailure("measured_session_ambiguous")
+                    finally:
+                        observed = smoke.observe_failed_profile(callback, confirmed, Path("/tmp/project"), "0.159.3", deadline, True)
+                self.assertEqual(observed, {"status": "helper_failed"})
+                callback.assert_called_once_with(timeout)
+
 
     def test_native_cleanup_preserves_primary_failure_and_still_vetoes_success(self):
         for primary in (True, False):
@@ -1046,6 +1354,9 @@ class InstallIntegrationTests(unittest.TestCase):
                 model = mock.Mock()
                 model.server.server_port, model.requests, model.error = 43210, [], None
                 model.counts, model.entry_count, model.title_count = {}, 0, 0
+                model.initial_receipt_probe = {"status": "not_observed"}
+                model.capture_contexts = set()
+                model.admission_diagnostics, model.admission_diagnostics_saturated = [], False
                 # No environment variable is changed and no process is started.
                 # Only the Path returned for this read is redirected to an inert
                 # fixture; all other reads/writes remain inside our temp tree.
@@ -1060,6 +1371,7 @@ class InstallIntegrationTests(unittest.TestCase):
                      mock.patch.object(smoke, "bounded_run", side_effect=bounded), \
                      mock.patch.object(smoke, "Model", return_value=model), \
                      mock.patch.object(smoke, "Terminal", Terminal), mock.patch.object(smoke, "normal_trust", side_effect=trust), \
+                     mock.patch.object(smoke, "observe_cpu_flags", return_value={"status":"unavailable","flags":{}}, create=True), \
                      mock.patch.object(smoke, "close_native"):
                     args = mock.Mock(tempo=str(source), helper=str(helper))
                     if invalid_install:
@@ -1073,6 +1385,157 @@ class InstallIntegrationTests(unittest.TestCase):
                     self.assertEqual(report["hook_diagnostics"], {"status": "unavailable", "counts": []})
                     self.assertEqual(report["diagnostic_source"], "host_managed_stderr")
                     self.assertFalse((root / "hook-errors").exists())
+
+    def diagnostic_profile(self):
+        doc = self.profile(True)
+        row = doc["hooks"][0]
+        row["diagnostics"] = [{"code": "operator_declared_risk", "message": "PRIVATE-MESSAGE-CANARY"}]
+        row["profile"].update(state="eligible", revision="3", diagnostic_code="operator_declared_risk")
+        row["profile"]["context"]["artifacts"].extend([
+            {"role": "configuration", "path": "/tmp/PRIVATE-CONFIG-CANARY", "sha256": "absent"},
+            {"role": "repository", "path": "/tmp/PRIVATE-REPO-CANARY", "sha256": "c" * 64}])
+        return doc
+
+    def test_failure_profile_probe_compares_every_role_without_paths_or_hashes(self):
+        doc = self.diagnostic_profile()
+        confirmed = copy.deepcopy(doc["hooks"][0]["profile"])
+        probe = smoke.failed_profile_probe(doc, confirmed, Path("/tmp/project"), "0.159.3")
+        self.assertEqual(probe["status"], "available")
+        self.assertEqual((probe["profile_state"], probe["capture_eligible"], probe["revision"]), ("eligible", True, "3"))
+        self.assertTrue(probe["revision_matches"] and probe["fingerprint_matches"])
+        self.assertEqual(probe["diagnostic_codes"], ["operator_declared_risk"])
+        self.assertEqual(probe["inventory"], {"status": "available", "all_matches": True,
+            "confirmed_count": 6, "current_count": 6,
+            "roles": [{"role": role, "confirmed_count": 1, "current_count": 1, "matching_count": 1}
+                      for role in ("runtime", "executable", "definitions", "skill", "configuration", "repository")]})
+        serialized = json.dumps(probe)
+        for private in ("/tmp/", "PRIVATE-", "a" * 64, "b" * 64, "c" * 64):
+            self.assertNotIn(private, serialized)
+        for index in range(6):
+            drifted = copy.deepcopy(doc)
+            item = drifted["hooks"][0]["profile"]["context"]["artifacts"][index]
+            item["sha256"] = "d" * 64
+            observed = smoke.failed_profile_probe(drifted, confirmed, Path("/tmp/project"), "0.159.3")
+            self.assertFalse(observed["inventory"]["all_matches"])
+            self.assertEqual(next(row for row in observed["inventory"]["roles"] if row["role"] == item["role"])["matching_count"], 0)
+        reordered = copy.deepcopy(doc)
+        reordered["hooks"][0]["profile"]["context"]["artifacts"].reverse()
+        self.assertEqual(smoke.failed_profile_probe(reordered, confirmed, Path("/tmp/project"), "0.159.3"), probe)
+        for change in ("remove", "add"):
+            drifted = copy.deepcopy(doc)
+            artifacts = drifted["hooks"][0]["profile"]["context"]["artifacts"]
+            if change == "remove": artifacts.pop()
+            else: artifacts.append({"role": "repository", "path": "/tmp/PRIVATE-NEW-CANARY", "sha256": "absent"})
+            observed = smoke.failed_profile_probe(drifted, confirmed, Path("/tmp/project"), "0.159.3")["inventory"]
+            self.assertFalse(observed["all_matches"])
+            self.assertEqual(observed["current_count"], 5 if change == "remove" else 7)
+
+    def test_failure_profile_probe_never_calls_retained_inventory_fresh(self):
+        doc = self.diagnostic_profile()
+        confirmed = copy.deepcopy(doc["hooks"][0]["profile"])
+        for reason in ("inspection_failed", "pending", "not_installed"):
+            bad = copy.deepcopy(doc)
+            row = bad["hooks"][0]
+            row["profile"].update(state="invalidated", capture_eligible=False, diagnostic_code="profile_invalidated", fingerprint="")
+            if reason == "inspection_failed":
+                row.update(state="unsupported", diagnostics=[{"code": "unsupported_contract", "message": "PRIVATE-ERROR"}])
+            elif reason == "pending":
+                row.update(state="needs_repair", pending={"request_id": "PRIVATE-REQUEST"})
+            else:
+                row.update(state="not_installed")
+            observed = smoke.failed_profile_probe(bad, confirmed, Path("/tmp/project"), "0.159.3")
+            self.assertEqual(observed["status"], "available")
+            self.assertEqual(observed["inventory"], {"status": "unavailable"})
+            self.assertFalse(observed["capture_eligible"])
+            self.assertNotIn("PRIVATE-", json.dumps(observed))
+        revoked = copy.deepcopy(doc)
+        revoked["hooks"][0].update(state="approval_required", ordering="unavailable")
+        revoked["hooks"][0]["profile"].update(state="revoked", revision="4", capture_eligible=False,
+                                               diagnostic_code="profile_revoked", fingerprint="d" * 64)
+        observed = smoke.failed_profile_probe(revoked, confirmed, Path("/tmp/project"), "0.159.3")
+        self.assertEqual(observed["profile_state"], "revoked")
+        self.assertFalse(observed["capture_eligible"] or observed["revision_matches"] or observed["fingerprint_matches"])
+        self.assertTrue(observed["inventory"]["all_matches"])
+        for mutate in (lambda row: row.update(state="PRIVATE-STATE"),
+                       lambda row: row.update(diagnostics=[{"code": "PRIVATE-CODE"}]),
+                       lambda row: row["profile"].update(revision="PRIVATE-REVISION"),
+                       lambda row: row["profile"].update(revision="01"),
+                       lambda row: row["profile"].update(revision=str(2**64)),
+                       lambda row: row["profile"].update(capture_eligible=1)):
+            bad = copy.deepcopy(doc); mutate(bad["hooks"][0])
+            self.assertEqual(smoke.failed_profile_probe(bad, confirmed, Path("/tmp/project"), "0.159.3"),
+                             {"status": "invalid_response"})
+
+    def test_failed_run_status_is_read_only_after_join_and_cannot_replace_failure(self):
+        for joined, status_fails in ((True, False), (True, True), (False, False)):
+            with self.subTest(joined=joined, status_fails=status_fails), tempfile.TemporaryDirectory(prefix="tempo-install-") as tmp:
+                root = Path(tmp).resolve(); home = root / "synthetic-home"; home.mkdir()
+                source, helper, runtime = root / "source-tempo", root / "helper", root / "runtime"
+                for path in (source, helper, runtime): path.write_text("inert build")
+                project, events, launches = root / "project", [], []
+                def result(confirmed):
+                    doc = self.diagnostic_profile() if confirmed else self.profile(False)
+                    row = doc["hooks"][0]; row["path"] = str(project)
+                    row["profile"]["context"]["path"] = str(project)
+                    return doc
+                def bounded(argv, _env, cwd, **kwargs):
+                    if argv[0] == "/usr/bin/git": return b""
+                    self.assertEqual(argv[:2], [str(helper), "fixture"])
+                    action = argv[2]; events.append(action)
+                    self.assertEqual(cwd, project)
+                    if action == "link": return b""
+                    if action == "read": return json.dumps({"receipts": []}).encode()
+                    self.assertEqual(argv[-4:], [str(project), str(runtime), str(root / "tempo"), "user"])
+                    if action == "install":
+                        _, _, definitions = self.definitions(root, "codex")
+                        (home / ".codex/hooks.json").write_text(json.dumps(definitions))
+                    if "joined" in events:
+                        self.assertEqual(action, "status")
+                        self.assertEqual(events[-2], "joined")
+                        self.assertGreater(kwargs["timeout"], 0)
+                        self.assertLessEqual(kwargs["timeout"], 20)
+                        if status_fails: raise RuntimeError("PRIVATE-HELPER-STDERR")
+                        return json.dumps(result(True)).encode()
+                    return json.dumps(result(action == "confirm")).encode()
+                class Terminal:
+                    def __init__(self, *_args):
+                        launches.append(True)
+                        if len(launches) == 2: raise smoke.FixtureFailure("measured_session_ambiguous")
+                    def close(self): pass
+                def close_native(*_args, **kwargs):
+                    self.assertIs(kwargs["primary_failure"], True)
+                    events.append("joined")
+                    return joined
+                model = mock.Mock()
+                model.server.server_port, model.requests, model.error = 43210, [], None
+                model.counts, model.entry_count, model.title_count = {}, 0, 0
+                model.initial_receipt_probe = {"status": "not_observed"}
+                model.capture_contexts = set()
+                model.admission_diagnostics, model.admission_diagnostics_saturated = [], False
+                real_home = os.environ["HOME"]
+                def fixture_path(value): return home if str(value) == real_home else Path(value)
+                report = {}
+                with mock.patch.dict(os.environ, {"RUNNER_TEMP": str(root.parent)}), \
+                     mock.patch.object(smoke, "Path", side_effect=fixture_path), \
+                     mock.patch.object(smoke, "hosted_precondition"), mock.patch.object(smoke, "require_absent"), \
+                     mock.patch.object(smoke.tempfile, "mkdtemp", return_value=str(root)), \
+                     mock.patch.object(smoke, "download_runtime", return_value=runtime), \
+                     mock.patch.object(smoke, "bounded_run", side_effect=bounded), \
+                     mock.patch.object(smoke, "Model", return_value=model), \
+                     mock.patch.object(smoke, "Terminal", Terminal), mock.patch.object(smoke, "normal_trust"), \
+                     mock.patch.object(smoke, "observe_cpu_flags", return_value={"status":"unavailable","flags":{}}, create=True), \
+                     mock.patch.object(smoke, "close_native", side_effect=close_native):
+                    with self.assertRaisesRegex(smoke.FixtureFailure, "^measured_session_ambiguous$"):
+                        smoke.run(mock.Mock(tempo=str(source), helper=str(helper)), report)
+                self.assertEqual(events[:5], ["link", "install", "status", "confirm", "read"])
+                self.assertEqual(events.count("status"), 2 if joined else 1)
+                expected = "helper_failed" if status_fails else "available" if joined else "cleanup_incomplete"
+                self.assertEqual(report["failure_profile_probe"]["status"], expected)
+                self.assertEqual(report["initial_receipt_probe"], {"status": "not_observed"})
+                self.assertEqual(report["hook_diagnostics"], {"status": "unavailable", "counts": []})
+                self.assertFalse((root / "hook-errors").exists())
+                self.assertNotIn("PRIVATE-", json.dumps(report))
+
 
     def definitions(self, root, host):
         events = smoke.EVENT_ORDER if host == "codex" else (

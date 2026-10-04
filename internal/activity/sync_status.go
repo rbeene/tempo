@@ -59,21 +59,36 @@ func (s *syncSum) totals() SyncTotals {
 	return r
 }
 func (s *Service) SyncStatus(ctx context.Context) (SyncStatus, error) {
+	if s.store.sqliteOnly {
+		return s.syncStatusSQLite(ctx)
+	}
 	ctx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
 	defer cancel()
 	st, _, e := s.store.read(ctx)
 	if e != nil {
 		return SyncStatus{}, e
 	}
-	r := SyncStatus{ContractVersion: 1, SnapshotRevision: st.Revision, Enabled: st.SyncEnabled, Configurations: []SyncConfiguration{}, Items: syncSortedItems(st), Worker: WorkerStatus{State: "not_installed", SyncEnabled: st.SyncEnabled}, Accounting: []SyncAccounting{}}
+	configurations := []SyncConfiguration{}
 	keys := []string{}
 	for k := range st.SyncConfigurations {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		r.Configurations = append(r.Configurations, st.SyncConfigurations[k])
+		configurations = append(configurations, st.SyncConfigurations[k])
 	}
+	r, e := syncStatusProjection(st.Revision, st.SyncEnabled, configurations, syncSortedItems(st))
+	if e != nil {
+		return SyncStatus{}, e
+	}
+	r.Worker = s.observedWorker(ctx, r.Worker)
+	return r, nil
+}
+
+// Pure display accounting over complete typed items. Both storage routes use
+// the same calendar splitting, big-integer sums and nullable completeness.
+func syncStatusProjection(revision string, enabled bool, configurations []SyncConfiguration, items []OutboxItem) (SyncStatus, error) {
+	r := SyncStatus{ContractVersion: 1, SnapshotRevision: revision, Enabled: enabled, Configurations: configurations, Items: items, Worker: WorkerStatus{State: "not_installed", SyncEnabled: enabled}, Accounting: []SyncAccounting{}}
 	total := newSyncSum()
 	groups := map[string]*syncSum{}
 	views := map[string]SyncAccounting{}
@@ -128,7 +143,7 @@ func (s *Service) SyncStatus(ctx context.Context) (SyncStatus, error) {
 		}
 	}
 	r.Totals = total.totals()
-	keys = keys[:0]
+	keys := []string{}
 	for k := range groups {
 		keys = append(keys, k)
 	}
@@ -138,6 +153,5 @@ func (s *Service) SyncStatus(ctx context.Context) (SyncStatus, error) {
 		v.Totals = groups[k].totals()
 		r.Accounting = append(r.Accounting, v)
 	}
-	r.Worker = s.observedWorker(ctx, r.Worker)
 	return r, nil
 }

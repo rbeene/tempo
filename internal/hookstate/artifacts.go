@@ -119,6 +119,8 @@ func sampleContext(ctx context.Context, c Context) (Context, error) {
 }
 
 func hashArtifact(ctx context.Context, path, role string) (string, int64, error) {
+	observation := beginEligibilityArtifact(ctx, role)
+	defer observation.finish()
 	// Reject symbolic-link components; callers supply reviewed concrete files.
 	for current := path; current != filepath.Dir(current); current = filepath.Dir(current) {
 		fi, err := os.Lstat(current)
@@ -159,10 +161,12 @@ func hashArtifact(ctx context.Context, path, role string) (string, int64, error)
 		return "", 0, problem("state_corrupt")
 	}
 	defer f.Close()
+	observation.opened()
 	after, err := f.Stat()
 	if err != nil || !os.SameFile(before, after) || !after.Mode().IsRegular() {
 		return "", 0, problem("state_corrupt")
 	}
+	observation.preludeEnd()
 	h := sha256.New()
 	buf := make([]byte, 128<<10)
 	var size int64
@@ -170,12 +174,16 @@ func hashArtifact(ctx context.Context, path, role string) (string, int64, error)
 		if ctx.Err() != nil {
 			return "", 0, problem("state_busy")
 		}
+		readStart := observation.now()
 		n, err := f.Read(buf)
+		observation.read(readStart, n)
 		size += int64(n)
 		if size > limit {
 			return "", 0, problem("validation")
 		}
+		hashStart := observation.now()
 		_, _ = h.Write(buf[:n])
+		observation.duration(6, hashStart)
 		if err == io.EOF {
 			break
 		}
@@ -183,8 +191,11 @@ func hashArtifact(ctx context.Context, path, role string) (string, int64, error)
 			return "", 0, problem("state_corrupt")
 		}
 	}
+	finalStart := observation.now()
 	end, err := os.Lstat(path)
-	if err != nil || !os.SameFile(before, end) || size != before.Size() || end.Size() != before.Size() || !end.ModTime().Equal(before.ModTime()) {
+	unchanged := err == nil && os.SameFile(before, end) && size == before.Size() && end.Size() == before.Size() && end.ModTime().Equal(before.ModTime())
+	observation.duration(7, finalStart)
+	if !unchanged {
 		return "", 0, problem("revision_conflict")
 	}
 	return strings.ToLower(hex.EncodeToString(h.Sum(nil))), size, nil

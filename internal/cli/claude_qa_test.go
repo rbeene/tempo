@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -182,22 +183,51 @@ func TestQAClaudeCLICommittedCallbackWakeAndReplay(t *testing.T) {
 	if !found {
 		t.Fatal("missing durable Claude Stop")
 	}
-	before, _ := os.ReadFile(path)
+	beforeReceipts := list
+	beforeStatus := snapshot
+	assertReplayUnchanged := func() {
+		t.Helper()
+		afterReceipts, err := d.Activity.HostReceipts(context.Background(), activity.HostReceiptFilter{Source: "claude", SessionID: "s"})
+		if err != nil || !reflect.DeepEqual(beforeReceipts, afterReceipts) {
+			t.Fatal("replay changed durable Claude receipts", err)
+		}
+		afterStatus, err := d.Activity.Status(context.Background())
+		if err != nil || !reflect.DeepEqual(beforeStatus, afterStatus) {
+			t.Fatal("replay changed captured activity", err)
+		}
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("Claude replay created JSON authority", err)
+		}
+		entries, err := os.ReadDir(filepath.Dir(path))
+		if err != nil {
+			t.Fatal("read private SQLite directory", err)
+		}
+		foundDatabase := false
+		for _, entry := range entries {
+			if !strings.HasPrefix(entry.Name(), "activity-") || entry.IsDir() {
+				continue
+			}
+			if strings.HasSuffix(entry.Name(), ".sqlite3") {
+				foundDatabase = true
+			}
+			data, err := os.ReadFile(filepath.Join(filepath.Dir(path), entry.Name()))
+			if err != nil {
+				t.Fatal("read private SQLite file", err)
+			}
+			if bytes.Contains(data, []byte("SECRET_CONTENT")) {
+				t.Fatal("raw Claude callback content persisted")
+			}
+		}
+		if !foundDatabase {
+			t.Fatal("Claude receipt has no SQLite authority")
+		}
+	}
 	qaClaudeRun(t, d, payload)
 	qaWorkerNotification(t, socket, "wake")
-	after, _ := os.ReadFile(path)
-	if string(before) != string(after) {
-		t.Fatal("replay changed durable bytes")
-	}
-	if strings.Contains(string(after), "SECRET") {
-		t.Fatal("raw callback content persisted")
-	}
+	assertReplayUnchanged()
 	socket.Close()
 	qaClaudeRun(t, d, payload)
-	after, _ = os.ReadFile(path)
-	if string(before) != string(after) {
-		t.Fatal("missing worker changed receipt")
-	}
+	assertReplayUnchanged()
 }
 func TestQAClaudeCLIUnacceptedCallbacksDoNotWake(t *testing.T) {
 	for _, mode := range []string{"validation", "untracked", "clock_error", "permission", "stale"} {
