@@ -328,11 +328,12 @@ func (c *Conn) openNative(ctx context.Context, opts Options) error {
 	if rc = lib.Xsqlite3_set_authorizer(c.tls, c.db, functionPointer(authorizerValue), c.authMode); rc != lib.SQLITE_OK {
 		return engineError(OpenPhase, rc, ctx)
 	}
-	c.cancelFlag = lib.Xsqlite3_malloc64(c.tls, 4)
+	c.cancelFlag = lib.Xsqlite3_malloc64(c.tls, beginBusyStateBytes)
 	if c.cancelFlag == 0 {
 		return engineError(OpenPhase, lib.SQLITE_NOMEM, nil)
 	}
 	libc.AtomicStoreNUint32(c.cancelFlag, 0, nativeSeqCst)
+	libc.AssignPtrInt64(c.cancelFlag+beginBusyDeadlineOffset, 0)
 	lib.Xsqlite3_progress_handler(c.tls, c.db, 1000, functionPointer(progressValue), c.cancelFlag)
 	for _, op := range []int32{lib.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, lib.SQLITE_DBCONFIG_DEFENSIVE} {
 		v, e := c.config(op, 1)
@@ -458,6 +459,24 @@ func (c *Conn) control(ctx context.Context, sql string, mode uint32, phase Phase
 	if err != nil {
 		return "", contextualError(phase, err, ctx)
 	}
+	writerBegin := phase == BeginPhase && sql == "BEGIN IMMEDIATE" && mode == authTransaction
+	if writerBegin {
+		// Finalize runs first. No admission wait may escape this fixed BEGIN,
+		// including a refused BEGIN whose caller will retry on a fresh owner.
+		defer func() {
+			if rc := lib.Xsqlite3_busy_timeout(c.tls, c.db, 0); rc != lib.SQLITE_OK {
+				c.poisoned = true
+				f := engineError(BeginPhase, rc, nil)
+				if err == nil {
+					err = f
+				} else {
+					e := safeError(phase, err)
+					e.Cleanup = joinCleanup(e.Cleanup, f)
+					err = e
+				}
+			}
+		}()
+	}
 	var lastStep int32
 	defer func() {
 		primary, checked := err.(*Error)
@@ -498,7 +517,12 @@ func (c *Conn) control(ctx context.Context, sql string, mode uint32, phase Phase
 		}
 		if phase == OpenPhase || phase == BeginPhase {
 			// Preparation is part of the same wall-clock admission budget.
-			if err = c.busyRemaining(ctx); err != nil {
+			if writerBegin {
+				err = c.beginBusyRemaining(ctx)
+			} else {
+				err = c.busyRemaining(ctx)
+			}
+			if err != nil {
 				return "", err
 			}
 		}
