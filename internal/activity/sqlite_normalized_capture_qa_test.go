@@ -1580,6 +1580,7 @@ func TestSQLiteNormalizedCaptureN10N11LatestEndOpenFailureRetainsEpochOnlyWithCh
 	for _, changed := range []bool{false, true} {
 		t.Run(fmt.Sprint(changed), func(t *testing.T) {
 			q := ncQAWorking(t)
+			q.service.store.timeout = sqliteFlowTestLockTimeout() // Exercise actor/epoch semantics under race.
 			ncQACompare(t, q, qaEvent("A", "1", "2", "finish", ""), 20, "", 1)
 			if changed {
 				b := q.legacy.bindings[qaBindingB]
@@ -1636,6 +1637,7 @@ func TestSQLiteNormalizedCaptureN10N11LatestEndOpenFailureRetainsEpochOnlyWithCh
 	// The strict immutable End guard allows equality; incompatible reservation
 	// endpoint equality has a separate N05 literal witness.
 	q := ncQAWorking(t)
+	q.service.store.timeout = sqliteFlowTestLockTimeout()
 	ncQACompare(t, q, qaEvent("A", "1", "2", "finish", ""), 20, "", 1)
 	ncQACompare(t, q, qaEvent("B", "1", "1", "work", qaBindingA), 20, "", 1)
 }

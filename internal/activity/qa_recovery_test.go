@@ -417,7 +417,8 @@ func TestQARecoveryCannotTouchImmutableFinalizedInterval(t *testing.T) {
 
 func TestQARecoveryLaterAttributionEpochResolvesBeforeEarlierBoundedUncertainty(t *testing.T) {
 	h := qaNew(t)
-	h.service = New(Options{Path: h.path, Clock: ClockFunc(func() (ClockSample, error) { return h.sample, h.clockErr })})
+	// Exercise disjoint recovery semantics with the race fixture budget.
+	h.service = New(Options{Path: h.path, LockTimeout: sqliteFlowTestLockTimeout(), Clock: ClockFunc(func() (ClockSample, error) { return h.sample, h.clockErr })})
 	input := qaLinkInput(t)
 	input.RequestID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
 	first, err := h.service.Link(context.Background(), input, qaLinkDeps(t, qaNewLinkProvider(t)))

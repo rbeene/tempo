@@ -67,6 +67,7 @@ func TestSQLiteStatusQAFreshLinkEmptyAndColdReadOnly(t *testing.T) {
 
 func TestSQLiteStatusQAOverlappingParentChildOneUnionAndClockOnlyRefresh(t *testing.T) {
 	q := stQALinked(t)
+	q.service.store.timeout = sqliteFlowTestLockTimeout() // Prepare the parent/child graph under race.
 	b := q.bindings[q.first.Binding.ID]
 	parent := q.event("P", "1", "work", b)
 	q.ingest(0, parent)

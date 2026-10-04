@@ -154,6 +154,9 @@ type Conn struct {
 	closeErr                     error
 	nativeCounted                bool
 	cleanWrite, durableAttempted bool
+	// A writer handoff owns at most one cleanup-only read-only predecessor.
+	handoffProbe *Conn
+	borrowedRoot bool
 }
 
 const (
@@ -455,8 +458,22 @@ func (c *Conn) control(ctx context.Context, sql string, mode uint32, phase Phase
 	if err != nil {
 		return "", contextualError(phase, err, ctx)
 	}
+	var lastStep int32
 	defer func() {
+		primary, checked := err.(*Error)
+		// Finalize destroys this VM but may repeat its failed step result.
+		// Only this fixed, unadmitted writer BEGIN can prove that repetition
+		// adds no independent cleanup failure; all other evidence is retained.
+		refusedBegin := phase == BeginPhase && sql == "BEGIN IMMEDIATE" && mode == authTransaction &&
+			checked && primary != nil && primary.Phase == BeginPhase && primary.Code == lastStep && primary.Cleanup == nil &&
+			(primary.Category == Busy || primary.Category == Canceled) &&
+			(lastStep == lib.SQLITE_BUSY || lastStep == lib.SQLITE_INTERRUPT) &&
+			lib.Xsqlite3_get_autocommit(c.tls, c.db) != 0
 		if rc := lib.Xsqlite3_finalize(c.tls, stmt); rc != lib.SQLITE_OK {
+			if refusedBegin && rc == lastStep && lib.Xsqlite3_get_autocommit(c.tls, c.db) != 0 &&
+				lib.Xsqlite3_next_stmt(c.tls, c.db, 0) == 0 {
+				return
+			}
 			f := engineError(FinalizePhase, rc, ctx)
 			if err == nil {
 				err = f
@@ -487,6 +504,7 @@ func (c *Conn) control(ctx context.Context, sql string, mode uint32, phase Phase
 		}
 		observeSQL(sqlTestEvent{Phase: "control-before-native", Operation: operation})
 		rc := lib.Xsqlite3_step(c.tls, stmt)
+		lastStep = rc
 		if rc == lib.SQLITE_DONE {
 			return result, nil
 		}
@@ -607,6 +625,9 @@ func (c *Conn) CloseChecked(ctx context.Context) (terminal bool, err error) {
 	if c.closed {
 		return true, c.closeErr
 	}
+	if c.handoffProbe != nil {
+		return c.closeHandoffChecked(ctx)
+	}
 	if err := sqlEvent(sqlTestEvent{Phase: "close-before", Operation: "close"}); err != nil {
 		return false, safeError(ClosePhase, err)
 	}
@@ -671,7 +692,11 @@ func (c *Conn) finishRelease(primary error) {
 	if c.closed {
 		return
 	}
-	c.closeErr = combineClose(primary, releaseRoot(c.root))
+	if c.borrowedRoot {
+		c.closeErr = primary
+	} else {
+		c.closeErr = combineClose(primary, releaseRoot(c.root))
+	}
 	c.closed = true
 }
 
