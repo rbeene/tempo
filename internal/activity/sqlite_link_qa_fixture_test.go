@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -307,6 +308,19 @@ func TestSQLiteLinkOwnedAdmissionHelper(t *testing.T) {
 	if !filepath.IsAbs(dir) || filepath.Base(a) != a || filepath.Base(b) != b {
 		t.Fatal("invalid confined helper location")
 	}
+	// Optional source-first environment control. It observes the real launched
+	// child before any fixture ownership; normal helper use leaves it inactive.
+	if want, check := os.LookupEnv("TEMPO_SQLITE_LINK_QA_EXPECT_GORACE"); check {
+		entries := 0
+		for _, entry := range os.Environ() {
+			if strings.HasPrefix(entry, "GORACE=") {
+				entries++
+			}
+		}
+		if entries != 1 || os.Getenv("GORACE") != want {
+			t.Fatal("owned child did not receive exactly one preserved GORACE with final zero exit grace")
+		}
+	}
 	if mode == "guard" {
 		fd, err := unix.Open(filepath.Join(dir, a+".lock"), unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0600)
 		if err != nil {
@@ -377,7 +391,21 @@ func flQAOwnedHelper(t *testing.T, f interopFixture, mode string) func() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSQLiteLinkOwnedAdmissionHelper$", "-test.v")
-	cmd.Env = append(os.Environ(), "TEMPO_SQLITE_LINK_QA_HELPER="+mode, "TEMPO_SQLITE_LINK_QA_DIR="+f.directory, "TEMPO_SQLITE_LINK_QA_A="+f.authority, "TEMPO_SQLITE_LINK_QA_D="+f.database)
+	// Preserve the caller's options verbatim, changing only this owned child's
+	// final exit-grace option. Do not replace detector/reporting configuration.
+	raceOptions := ""
+	for _, entry := range os.Environ() {
+		if value, ok := strings.CutPrefix(entry, "GORACE="); ok {
+			raceOptions = value
+			continue
+		}
+		cmd.Env = append(cmd.Env, entry)
+	}
+	if raceOptions != "" {
+		raceOptions += " "
+	}
+	raceOptions += "atexit_sleep_ms=0"
+	cmd.Env = append(cmd.Env, "GORACE="+raceOptions, "TEMPO_SQLITE_LINK_QA_HELPER="+mode, "TEMPO_SQLITE_LINK_QA_DIR="+f.directory, "TEMPO_SQLITE_LINK_QA_A="+f.authority, "TEMPO_SQLITE_LINK_QA_D="+f.database)
 	var stdin io.WriteCloser
 	var stdout io.ReadCloser
 	var scanned chan struct{}

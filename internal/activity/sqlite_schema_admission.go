@@ -836,7 +836,27 @@ FROM (
   LIMIT ?
 )`
 
+// Capture only the fixed expected bytes, never an observed database catalog.
+// The array comparison prevents stale acceptance if an in-package caller changes
+// the expected array; every miss still uses the original strict decoder below.
+var sqliteCaptureCatalogMatches = func() func(string) bool {
+	expected := sqliteCaptureCatalog
+	var encoded strings.Builder
+	encoder := json.NewEncoder(&encoded)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(expected); err != nil {
+		return func(string) bool { return false }
+	}
+	value := strings.TrimSuffix(encoded.String(), "\n")
+	return func(observed string) bool {
+		return observed == value && sqliteCaptureCatalog == expected
+	}
+}()
+
 func sqliteCheckCaptureCatalogJSON(value string) error {
+	if sqliteCaptureCatalogMatches(value) {
+		return nil
+	}
 	if !utf8.ValidString(value) {
 		return failure("state_corrupt")
 	}
