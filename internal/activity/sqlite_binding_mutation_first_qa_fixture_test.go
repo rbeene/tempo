@@ -32,7 +32,7 @@ type bmQAFixture struct {
 func bmQAID(n int) string { return fmt.Sprintf("bf000000-0000-4000-8000-%012d", n) }
 
 func (q *bmQAFixture) service() *Service {
-	return NewSQLite(Options{Path: q.path, Clock: ClockFunc(func() (ClockSample, error) {
+	return NewSQLite(Options{Path: q.path, LockTimeout: sqliteFlowTestLockTimeout(), Clock: ClockFunc(func() (ClockSample, error) {
 		if !q.clockAllowed {
 			q.t.Error("binding mutation/read/replay sampled capture clock")
 			return ClockSample{}, errors.New("forbidden binding clock")
