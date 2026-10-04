@@ -1389,6 +1389,7 @@ class InstallIntegrationTests(unittest.TestCase):
                 model.counts, model.entry_count, model.title_count = {}, 0, 0
                 model.initial_receipt_probe = {"status": "not_observed"}
                 model.capture_contexts = set()
+                model.admission_diagnostics, model.admission_diagnostics_saturated = [], False
                 real_home = os.environ["HOME"]
                 def fixture_path(value): return home if str(value) == real_home else Path(value)
                 report = {}
