@@ -64,7 +64,7 @@ jobs:
       contents: write
     env:
       GOMAXPROCS: '2'
-      GOFLAGS: '-p=2'
+      GOFLAGS: '-p=1'
       RELEASE_TAG: ${{ needs.macos.outputs.tag }}
       GORELEASER_CURRENT_TAG: ${{ needs.macos.outputs.tag }}
     steps:

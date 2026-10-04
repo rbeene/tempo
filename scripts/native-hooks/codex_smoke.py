@@ -643,10 +643,54 @@ def command_input_probe(screen, value):
             "enter_sent": False}
 
 
+TERMINAL_WAIT_LABELS = frozenset({
+    "browser_input_unavailable", "child_stop_missing", "command_echo_unavailable",
+    "hook_browser_not_closed", "hook_details_unavailable", "hook_inventory_navigation",
+    "hook_inventory_unavailable", "hook_trust_failed", "hooks_ui_unavailable",
+    "interrupt_hook_missing", "interrupt_request_missing", "normal_exit_missing",
+    "parent_stop_missing", "posttrust_session_start_missing", "startup_hooks_review_unavailable",
+    "startup_review_input_unavailable", "startup_ui_unavailable", "trust_host_exit",
+    "workspace_input_down_unavailable", "workspace_input_up_unavailable",
+    "workspace_trust_failed", "workspace_trust_mismatch", "none", "other",
+})
+TERMINAL_INPUT_ACTIONS = {
+    b"\r": "enter", b"\x1b": "escape", b"\x1b[A": "up", b"\x1b[B": "down",
+    b"\x1b[F": "end", b"\x1b[H": "home", b"1": "review_shortcut", b"t": "trust_shortcut",
+}
+TERMINAL_ACTION_LABELS = frozenset(TERMINAL_INPUT_ACTIONS.values()) | {"none", "other", "command_paste"}
+TERMINAL_QUERY_REPLIES = (b"\x1b[1;1R", b"\x1b[?1;2c", b"\x1b[>0;0;0c")
+
+
+def terminal_failure_probe(terminal):
+    probe = {"source": "cached_process_status_before_cleanup", "status": "unavailable",
+             "termination": "unavailable", "returncode": None, "signal": None,
+             "last_wait": "none", "last_input_action": "none"}
+    try:
+        # Existing polling owns status collection. Cleanup may change this cache.
+        returncode = terminal.proc.returncode
+        last_wait = getattr(terminal, "last_wait", "none")
+        last_action = getattr(terminal, "last_input_action", "none")
+    except Exception:
+        return probe
+    probe["last_wait"] = last_wait if type(last_wait) is str and last_wait in TERMINAL_WAIT_LABELS else "other"
+    probe["last_input_action"] = last_action if type(last_action) is str and last_action in TERMINAL_ACTION_LABELS else "other"
+    if returncode is None:
+        probe["status"] = "not_observed"
+    elif type(returncode) is int and -255 <= returncode <= 255:
+        probe.update(status="observed", returncode=returncode,
+                     termination="signal" if returncode < 0 else "exit",
+                     signal=-returncode if returncode < 0 else None)
+    else:
+        probe["status"] = "invalid_status"
+    return probe
+
+
 class Terminal:
     def __init__(self, argv, env, cwd, deadline, input_probe=None):
         self.deadline = deadline
         self.input_probe = {} if input_probe is None else input_probe
+        self.last_wait = "none"
+        self.last_input_action = "none"
         self.screen = Screen()
         self.master, slave = pty.openpty()
         fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", self.screen.rows, self.screen.cols, 0, 0))
@@ -657,6 +701,14 @@ class Terminal:
         self.query_tail = b""
 
     def send(self, data):
+        # Protocol replies must not hide the last attempted navigation action.
+        if type(data) is not bytes:
+            self.last_input_action = "other"
+        elif data not in TERMINAL_QUERY_REPLIES:
+            if data.startswith(b"\x1b[200~") and data.endswith(b"\x1b[201~"):
+                self.last_input_action = "command_paste"
+            else:
+                self.last_input_action = TERMINAL_INPUT_ACTIONS.get(data, "other")
         os.write(self.master, data)
 
     def pump(self, wait=.05):
@@ -676,6 +728,7 @@ class Terminal:
         self.screen.feed(data)
 
     def until(self, predicate, code, seconds=20):
+        self.last_wait = code if type(code) is str and code in TERMINAL_WAIT_LABELS else "other"
         end = min(self.deadline, time.monotonic() + seconds)
         while time.monotonic() < end:
             self.pump()
@@ -1509,6 +1562,8 @@ def run(args, report):
         report["stage"] = "complete"
     finally:
         primary_failure = sys.exc_info()[0] is not None
+        if primary_failure:
+            report["terminal_failure_probe"] = terminal_failure_probe(terminal)
         joined = close_native(terminal, model, primary_failure=primary_failure)
         report["cpu_capability_probe"] = observe_cpu_flags(joined)
         report["initial_receipt_probe"] = model.initial_receipt_probe
