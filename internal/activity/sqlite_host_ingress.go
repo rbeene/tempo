@@ -111,7 +111,7 @@ func (s *Service) ingestHostSQLite(ctx context.Context, e HostEvent) (HostReceip
 	// This replaces the separate postcallback read. Keep the original host-fact
 	// refusal ahead of pressure, while a committed winner still takes priority.
 	if !historical {
-		same, x := sqliteHostSameFacts(facts, prepared.Facts)
+		same, x := sqliteHostSamePreparedFacts(e, facts, prepared.Facts)
 		if x != nil {
 			return fail(x, false)
 		}
@@ -213,7 +213,7 @@ func sqliteReduceHostFacts(tx *sqliteio.Tx, meta sqliteStoreMeta, e HostEvent, p
 		}
 		return result, nil
 	}
-	same, err := sqliteHostSameFacts(facts, p.Facts)
+	same, err := sqliteHostSamePreparedFacts(e, facts, p.Facts)
 	if err != nil {
 		return result, err
 	}

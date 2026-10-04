@@ -338,6 +338,38 @@ func sqliteHostExact(f sqliteHostFacts, e HostEvent) *sqliteHostReceiptRow {
 	}
 	return nil
 }
+
+// A new child keeps its selected parent identity and attribution, not the
+// parent's earlier mutable progress snapshot. Boundary and existing-turn paths
+// continue to require complete fact equality. Inputs remain owned and unchanged.
+func sqliteHostSamePreparedFacts(e HostEvent, current, prepared sqliteHostFacts) (bool, error) {
+	if e.Kind == "SubagentStart" && current.Turn == nil && prepared.Turn == nil && !current.Boundary && !prepared.Boundary &&
+		current.RootTurn != nil && prepared.RootTurn != nil && current.RootTurn.Actor != nil && prepared.RootTurn.Actor != nil &&
+		current.RootActor != nil && prepared.RootActor != nil {
+		a, b := current.RootActor, prepared.RootActor
+		ar, arok := counter(a.Revision)
+		br, brok := counter(b.Revision)
+		as, asok := counter(a.Sequence)
+		bs, bsok := counter(b.Sequence)
+		turn := *current.RootTurn
+		turn.Stopped = prepared.RootTurn.Stopped
+		if !(prepared.RootTurn.Stopped && !current.RootTurn.Stopped) && reflect.DeepEqual(&turn, prepared.RootTurn) &&
+			a.Ref == *current.RootTurn.Actor && b.Ref == *prepared.RootTurn.Actor && a.Ref == b.Ref && a.ID == b.ID &&
+			a.BindingID == b.BindingID && a.BindingRevision == b.BindingRevision && a.Attribution == b.Attribution &&
+			reflect.DeepEqual(a.Parent, b.Parent) && a.Health == b.Health && !sqliteCaptureTerminal(*a) && !sqliteCaptureTerminal(*b) &&
+			arok && brok && asok && bsok && ar >= br && as >= bs {
+			if _, err := sqliteEncodeActorLocal(*a); err != nil {
+				return false, err
+			}
+			if _, err := sqliteEncodeActorLocal(*b); err != nil {
+				return false, err
+			}
+			current.RootTurn, current.RootActor = prepared.RootTurn, prepared.RootActor
+		}
+	}
+	return sqliteHostSameFacts(current, prepared)
+}
+
 func sqliteHostSameFacts(a, b sqliteHostFacts) (bool, error) {
 	if a.Ambiguous != b.Ambiguous || a.Boundary != b.Boundary || !reflect.DeepEqual(a.Tool, b.Tool) || !reflect.DeepEqual(a.Pending, b.Pending) || !reflect.DeepEqual(a.Observed, b.Observed) || !reflect.DeepEqual(a.Candidates, b.Candidates) || !reflect.DeepEqual(a.Live, b.Live) {
 		return false, nil
