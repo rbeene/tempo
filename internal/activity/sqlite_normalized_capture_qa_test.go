@@ -317,6 +317,11 @@ func TestSQLiteNormalizedCaptureN04DefaultDirectoryExplicitAndHistoricalParent(t
 					t.Fatal(err)
 				}
 			})
+			// These six axes compare binding semantics and complete cold state.
+			// Use the supported fixture budget for both oracles; N07 separately
+			// retains the production default and original-deadline assertions.
+			q.service.store.timeout = time.Second
+			q.legacy.service.store.timeout = time.Second
 			q.service.resolve = nil
 			q.legacy.service.resolve = nil
 			e := qaEvent("B", "1", "1", "work", "")
