@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 	"unsafe"
@@ -172,14 +171,14 @@ func progress(_ *libc.TLS, cell uintptr) int32 {
 	if cell == 0 {
 		return 1
 	}
-	return int32(atomic.LoadUint32((*uint32)(unsafe.Pointer(cell))))
+	return int32(libc.AtomicLoadNUint32(cell, nativeSeqCst))
 }
 
 func authorize(_ *libc.TLS, cell uintptr, action int32, _, _, _, _ uintptr) int32 {
 	if cell == 0 {
 		return lib.SQLITE_DENY
 	}
-	mode := *(*uint32)(unsafe.Pointer(cell))
+	mode := nativeLoad[uint32](cell)
 	switch action {
 	case lib.SQLITE_ATTACH, lib.SQLITE_DETACH, lib.SQLITE_SAVEPOINT:
 		return lib.SQLITE_DENY
@@ -286,7 +285,7 @@ func (c *Conn) openNative(ctx context.Context, opts Options) error {
 		libc.Xfree(c.tls, name)
 		return engineError(OpenPhase, lib.SQLITE_NOMEM, nil)
 	}
-	*(*uintptr)(unsafe.Pointer(output)) = 0
+	libc.AssignPtrUintptr(output, 0)
 	if err = admissionError(ctx, opts.AcquireDeadline); err != nil {
 		lib.Xsqlite3_free(c.tls, output)
 		libc.Xfree(c.tls, name)
@@ -303,7 +302,7 @@ func (c *Conn) openNative(ctx context.Context, opts Options) error {
 	c.nativeCounted = true
 	registry.Unlock()
 	rc := lib.Xsqlite3_open_v2(c.tls, name, output, flags, vfsNameMemory)
-	c.db = *(*uintptr)(unsafe.Pointer(output))
+	c.db = nativeLoad[uintptr](output)
 	lib.Xsqlite3_free(c.tls, output)
 	libc.Xfree(c.tls, name)
 	if rc != lib.SQLITE_OK {
@@ -322,7 +321,7 @@ func (c *Conn) openNative(ctx context.Context, opts Options) error {
 	if c.authMode == 0 {
 		return engineError(OpenPhase, lib.SQLITE_NOMEM, nil)
 	}
-	*(*uint32)(unsafe.Pointer(c.authMode)) = authApplication
+	libc.AssignPtrUint32(c.authMode, authApplication)
 	if rc = lib.Xsqlite3_set_authorizer(c.tls, c.db, functionPointer(authorizerValue), c.authMode); rc != lib.SQLITE_OK {
 		return engineError(OpenPhase, rc, ctx)
 	}
@@ -330,7 +329,7 @@ func (c *Conn) openNative(ctx context.Context, opts Options) error {
 	if c.cancelFlag == 0 {
 		return engineError(OpenPhase, lib.SQLITE_NOMEM, nil)
 	}
-	atomic.StoreUint32((*uint32)(unsafe.Pointer(c.cancelFlag)), 0)
+	libc.AtomicStoreNUint32(c.cancelFlag, 0, nativeSeqCst)
 	lib.Xsqlite3_progress_handler(c.tls, c.db, 1000, functionPointer(progressValue), c.cancelFlag)
 	for _, op := range []int32{lib.SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, lib.SQLITE_DBCONFIG_DEFENSIVE} {
 		v, e := c.config(op, 1)
@@ -371,7 +370,7 @@ func (c *Conn) config(op, value int32) (bool, error) {
 		return false, engineError(OpenPhase, lib.SQLITE_NOMEM, nil)
 	}
 	defer lib.Xsqlite3_free(c.tls, out)
-	*(*int32)(unsafe.Pointer(out)) = -1
+	libc.AssignPtrInt32(out, -1)
 	args := libc.NewVaList(value, out)
 	if args == 0 {
 		return false, engineError(OpenPhase, lib.SQLITE_NOMEM, nil)
@@ -380,7 +379,7 @@ func (c *Conn) config(op, value int32) (bool, error) {
 	if rc := lib.Xsqlite3_db_config(c.tls, c.db, op, args); rc != lib.SQLITE_OK {
 		return false, engineError(OpenPhase, rc, nil)
 	}
-	return *(*int32)(unsafe.Pointer(out)) == 1, nil
+	return nativeLoad[int32](out) == 1, nil
 }
 func (c *Conn) setup(ctx context.Context, create bool) error {
 	for _, sql := range []string{"PRAGMA temp_store=MEMORY", "PRAGMA foreign_keys=ON", "PRAGMA synchronous=FULL", "PRAGMA wal_autocheckpoint=0"} {
@@ -435,8 +434,8 @@ func (c *Conn) control(ctx context.Context, sql string, mode uint32, phase Phase
 			return "", err
 		}
 	}
-	*(*uint32)(unsafe.Pointer(c.authMode)) = mode
-	defer func() { *(*uint32)(unsafe.Pointer(c.authMode)) = authApplication }()
+	libc.AssignPtrUint32(c.authMode, mode)
+	defer func() { libc.AssignPtrUint32(c.authMode, authApplication) }()
 	stmt, err := c.prepareRaw(sql, phase)
 	if err != nil {
 		return "", contextualError(phase, err, ctx)
@@ -488,7 +487,7 @@ func (c *Conn) control(ctx context.Context, sql string, mode uint32, phase Phase
 			if p == 0 {
 				return "", engineError(phase, lib.SQLITE_NOMEM, nil)
 			}
-			result = string(unsafe.Slice((*byte)(unsafe.Pointer(p)), int(n)))
+			result = string(libc.GoBytes(p, int(n)))
 		default:
 			return "", misuse(phase)
 		}
@@ -546,8 +545,8 @@ func (c *Conn) lockContext(ctx context.Context, deadline time.Time) error {
 }
 func (c *Conn) unlock() { c.gate <- struct{}{} }
 func (c *Conn) interruptWith(ctx context.Context) func() {
-	flag := (*uint32)(unsafe.Pointer(c.cancelFlag))
-	atomic.StoreUint32(flag, 0)
+	flag := c.cancelFlag
+	libc.AtomicStoreNUint32(flag, 0, nativeSeqCst)
 	stop, joined := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(joined)
@@ -555,7 +554,7 @@ func (c *Conn) interruptWith(ctx context.Context) func() {
 		case <-ctx.Done():
 			// Unlike sqlite3_interrupt on an idle VM, this remains visible to
 			// the next native prepare/step even if cancellation won before entry.
-			atomic.StoreUint32(flag, 1)
+			libc.AtomicStoreNUint32(flag, 1, nativeSeqCst)
 			tls := libc.NewTLS()
 			lib.Xsqlite3_interrupt(tls, c.db)
 			tls.Close()
@@ -568,7 +567,7 @@ func (c *Conn) interruptWith(ctx context.Context) func() {
 		<-joined
 		// Only the operation owner clears the flag, after its watcher joined.
 		// Fixed internal rollback/finalize can then run on a canceled request.
-		atomic.StoreUint32(flag, 0)
+		libc.AtomicStoreNUint32(flag, 0, nativeSeqCst)
 	}
 }
 func (c *Conn) Close(ctx context.Context) error {

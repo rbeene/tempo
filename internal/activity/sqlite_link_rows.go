@@ -22,7 +22,7 @@ type sqliteLinkPrepared struct {
 }
 
 // An empty catalog is the sole initialization branch. The shared fixed catalog
-// reader admits every nonempty store; it must be integrated before this port.
+// reader validates every nonempty store before Link proceeds.
 func sqliteReadLinkSchema(tx *sqliteio.Tx, stateBase, databaseBase string) (sqliteStoreMeta, bool, error) {
 	s, err := tx.Prepare("SELECT 1 FROM sqlite_schema LIMIT 1")
 	if err != nil {

@@ -67,7 +67,7 @@ func initialize() error {
 			initializeError = ErrUnsafe
 			return
 		}
-		original := *(*lib.Tsqlite3_vfs)(unsafe.Pointer(base))
+		original := nativeLoad[lib.Tsqlite3_vfs](base)
 		if original.FiVersion != 3 || original.FxSetSystemCall == 0 || original.FxGetSystemCall == 0 || original.FxOpen == 0 {
 			initializeError = ErrUnsafe
 			return
@@ -119,7 +119,7 @@ func initialize() error {
 		copyVFS.FzName = vfsNameMemory
 		copyVFS.FxFullPathname = functionPointer(callbackValues.full)
 		copyVFS.FxOpen = functionPointer(callbackValues.openVFS)
-		*(*lib.Tsqlite3_vfs)(unsafe.Pointer(vfsMemory)) = copyVFS
+		storeNativeVFS(vfsMemory, copyVFS)
 		for _, h := range hooks {
 			p, e := libc.CString(h.name)
 			if e != nil {
@@ -146,7 +146,7 @@ func setError(tls *libc.TLS, err error) int32 {
 	if errors.As(err, &errno) {
 		code = int32(errno)
 	}
-	*errnoPointer(tls) = code
+	libc.AssignPtrInt32(errnoAddress(tls), code)
 	return -1
 }
 func fullPath(tls *libc.TLS, _ uintptr, input uintptr, n int32, output uintptr) int32 {
@@ -155,7 +155,7 @@ func fullPath(tls *libc.TLS, _ uintptr, input uintptr, n int32, output uintptr) 
 	if err != nil || name != r.databaseName || strings.ContainsAny(path, "?\x00") || len(path)+1 > int(n) {
 		return lib.SQLITE_CANTOPEN
 	}
-	copy(unsafe.Slice((*byte)(unsafe.Pointer(output)), int(n)), append([]byte(path), 0))
+	copy(libc.GoBytes(output, int(n)), append([]byte(path), 0))
 	emit(pathEvent(r, name, "fullpath", "preserved", 0, -1, nil))
 	return lib.SQLITE_OK
 }
@@ -341,10 +341,10 @@ func statPath(tls *libc.TLS, p, output uintptr) int32 {
 	defer libc.Xfree(tls, base)
 	rc := libc.Xfstatat(tls, int32(r.fd), base, output, int32(unix.AT_SYMLINK_NOFOLLOW))
 	if rc != 0 {
-		emit(pathEvent(r, name, "stat", "after", 0, -1, syscall.Errno(*errnoPointer(tls))))
+		emit(pathEvent(r, name, "stat", "after", 0, -1, syscall.Errno(nativeLoad[int32](errnoAddress(tls)))))
 		return rc
 	}
-	st := (*lib.Tstat)(unsafe.Pointer(output))
+	st := nativeLoad[lib.Tstat](output)
 	id := identity{uint64(st.Fst_dev), uint64(st.Fst_ino)}
 	registry.Lock()
 	expected := r.known[name]
@@ -382,7 +382,7 @@ func accessPath(tls *libc.TLS, p uintptr, mode int32) int32 {
 	rc := libc.Xfaccessat(tls, int32(r.fd), base, mode, int32(unix.AT_SYMLINK_NOFOLLOW))
 	var resultError error
 	if rc != 0 {
-		resultError = syscall.Errno(*errnoPointer(tls))
+		resultError = syscall.Errno(nativeLoad[int32](errnoAddress(tls)))
 	}
 	emit(pathEvent(r, name, "access", "after", int(mode), -1, resultError))
 	return rc
@@ -414,7 +414,7 @@ func unlinkPath(tls *libc.TLS, p uintptr) int32 {
 	return 0
 }
 func openDirectory(tls *libc.TLS, p, output uintptr) int32 {
-	*(*int32)(unsafe.Pointer(output)) = -1
+	libc.AssignPtrInt32(output, -1)
 	r, name, err := lookupPath(libc.GoString(p))
 	if err != nil {
 		setError(tls, err)
@@ -431,7 +431,7 @@ func openDirectory(tls *libc.TLS, p, output uintptr) int32 {
 		setError(tls, err)
 		return lib.SQLITE_CANTOPEN
 	}
-	*(*int32)(unsafe.Pointer(output)) = int32(fd)
+	libc.AssignPtrInt32(output, int32(fd))
 	emit(pathEvent(r, name, "directory", "validated", 0, fd, nil))
 	return lib.SQLITE_OK
 }

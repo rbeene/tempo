@@ -7,9 +7,9 @@ import (
 	"errors"
 	"math"
 	"strconv"
-	"unsafe"
 
 	"golang.org/x/sys/unix"
+	"modernc.org/libc"
 	lib "modernc.org/sqlite/lib"
 )
 
@@ -73,8 +73,8 @@ func (c *Conn) pageValue(ctx context.Context, query pagePragma, phase Phase) (va
 			return 0, err
 		}
 	}
-	*(*uint32)(unsafe.Pointer(c.authMode)) = authPragma
-	defer func() { *(*uint32)(unsafe.Pointer(c.authMode)) = authApplication }()
+	libc.AssignPtrUint32(c.authMode, authPragma)
+	defer func() { libc.AssignPtrUint32(c.authMode, authApplication) }()
 	stmt, err := c.prepareRaw(sql, phase)
 	if err != nil {
 		return 0, contextualError(phase, err, ctx)

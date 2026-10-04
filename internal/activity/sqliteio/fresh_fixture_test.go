@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -320,10 +321,10 @@ func freshQARawOpen(t *testing.T, owner *freshQARoot) *freshQARaw {
 		libc.Xfree(h.tls, name)
 		t.Fatal("raw allocation")
 	}
-	*(*uintptr)(unsafe.Pointer(out)) = 0
+	libc.AssignPtrUintptr(out, 0)
 	flags := int32(lib.SQLITE_OPEN_READWRITE | lib.SQLITE_OPEN_CREATE | lib.SQLITE_OPEN_FULLMUTEX | lib.SQLITE_OPEN_NOFOLLOW | lib.SQLITE_OPEN_PRIVATECACHE)
 	code := lib.Xsqlite3_open_v2(h.tls, name, out, flags, vfsNameMemory)
-	h.db = *(*uintptr)(unsafe.Pointer(out))
+	h.db = uintptr(binary.NativeEndian.Uint64(libc.GoBytes(out, 8)))
 	lib.Xsqlite3_free(h.tls, out)
 	libc.Xfree(h.tls, name)
 	if code != lib.SQLITE_OK {
@@ -366,9 +367,9 @@ func freshQARawSQL(t *testing.T, h *freshQARaw, sql string) {
 		libc.Xfree(h.tls, query)
 		t.Fatal("raw statement allocation")
 	}
-	*(*uintptr)(unsafe.Pointer(out)) = 0
+	libc.AssignPtrUintptr(out, 0)
 	code := lib.Xsqlite3_prepare_v2(h.tls, h.db, query, -1, out, 0)
-	stmt := *(*uintptr)(unsafe.Pointer(out))
+	stmt := uintptr(binary.NativeEndian.Uint64(libc.GoBytes(out, 8)))
 	lib.Xsqlite3_free(h.tls, out)
 	libc.Xfree(h.tls, query)
 	if code != lib.SQLITE_OK {
@@ -498,6 +499,30 @@ type freshQAChild struct {
 	once   sync.Once
 }
 
+// Relay only canonical numeric lifecycle records emitted by an owned nested
+// helper before this child's READY handshake. All other child output stays private.
+func freshQARelayNestedLifecycle(t *testing.T, line string) {
+	t.Helper()
+	line = strings.TrimSpace(line)
+	const started = "owned fresh child started pid="
+	if i := strings.Index(line, started); i >= 0 {
+		record := line[i:]
+		var pid, pgid int
+		if n, err := fmt.Sscanf(record, "owned fresh child started pid=%d pgid=%d", &pid, &pgid); err == nil && n == 2 && pid > 0 && pgid > 0 && record == fmt.Sprintf("owned fresh child started pid=%d pgid=%d", pid, pgid) {
+			t.Logf("owned fresh child started pid=%d pgid=%d", pid, pgid)
+		}
+		return
+	}
+	const joined = "owned fresh child joined pid="
+	if i := strings.Index(line, joined); i >= 0 {
+		record := line[i:]
+		var pid, code int
+		if n, err := fmt.Sscanf(record, "owned fresh child joined pid=%d exit=%d", &pid, &code); err == nil && n == 2 && pid > 0 && record == fmt.Sprintf("owned fresh child joined pid=%d exit=%d", pid, code) {
+			t.Logf("owned fresh child joined pid=%d exit=%d", pid, code)
+		}
+	}
+}
+
 func freshQAChildStart(t *testing.T, mode, stage, dir, name string) *freshQAChild {
 	t.Helper()
 	bin, err := os.Executable()
@@ -539,6 +564,7 @@ func freshQAChildStart(t *testing.T, mode, stage, dir, name string) *freshQAChil
 		if strings.TrimSpace(line) == wanted {
 			break
 		}
+		freshQARelayNestedLifecycle(t, line)
 		if err != nil {
 			t.Fatal("owned reached-stage handshake absent", err)
 		}
@@ -804,15 +830,15 @@ func freshQAReuseChild(t *testing.T, dir, name, stage string) {
 	if out == 0 {
 		t.Fatal("cache pointer allocation")
 	}
-	*(*uintptr)(unsafe.Pointer(out)) = 0
+	libc.AssignPtrUintptr(out, 0)
 	code := lib.Xsqlite3_file_control(a.tls, a.db, 0, lib.SQLITE_FCNTL_FILE_POINTER, out)
-	file := *(*uintptr)(unsafe.Pointer(out))
+	file := uintptr(binary.NativeEndian.Uint64(libc.GoBytes(out, 8)))
 	lib.Xsqlite3_free(a.tls, out)
 	if code != lib.SQLITE_OK || file == 0 {
 		t.Fatal("actual file pointer unavailable", code)
 	}
-	inode := (*lib.TunixFile)(unsafe.Pointer(file)).FpInode
-	if inode == 0 || (*lib.TunixInodeInfo)(unsafe.Pointer(inode)).FpUnused == 0 {
+	inode := uintptr(binary.NativeEndian.Uint64(libc.GoBytes(file+unsafe.Offsetof(lib.TunixFile{}.FpInode), 8)))
+	if inode == 0 || uintptr(binary.NativeEndian.Uint64(libc.GoBytes(inode+unsafe.Offsetof(lib.TunixInodeInfo{}.FpUnused), 8))) == 0 {
 		t.Fatal("genuine Unix unused FD cache not reached")
 	}
 	trace := &freshQATrace{}

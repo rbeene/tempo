@@ -2177,7 +2177,13 @@ func TestSQLiteNormalizedCaptureN15HistoricalReceiptWriterAdmissionBusyIsUnknown
 		t.Fatal("actual exact receipt/read positive control", err)
 	}
 	before, rows := ncQAAudit(t, q.f)
-	q.service.store.timeout = 20 * time.Millisecond
+	// Ordinary contention keeps its 20 ms fixture; under -race use the
+	// production 250 ms admission so the actual WAL receipt read can complete.
+	budget := 20 * time.Millisecond
+	if sqliteFlowTestLockTimeout() != 0 {
+		budget = 250 * time.Millisecond
+	}
+	q.service.store.timeout = budget
 	release := ncQAOwnedWriter(t, q.f)
 	readRows, readDone, readClosed := 0, false, false
 	ncQAHooks(t, ncQASQLHooks{Observe: func(e ncQASQLEvent) {

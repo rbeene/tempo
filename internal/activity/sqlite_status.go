@@ -11,8 +11,8 @@ import (
 	"github.com/rbeene/tempo/internal/activity/sqliteio"
 )
 
-// statusSQLite is an inactive read port. Its clock and worker callbacks run
-// only after the one owned native snapshot has been checked closed.
+// statusSQLite reads one owned native snapshot. Its clock and worker callbacks
+// run only after that snapshot has been checked closed.
 func (s *Service) statusSQLite(ctx context.Context) (ActivitySnapshot, error) {
 	if ctx == nil || s == nil || s.store == nil {
 		return ActivitySnapshot{}, failure("validation")

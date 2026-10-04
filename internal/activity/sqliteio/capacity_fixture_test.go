@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
@@ -118,7 +119,7 @@ func capacityQACleanRead(t *testing.T, c *Conn) {
 // attempted. The connection's actual SQLite authorizer must refuse preparation.
 func capacityQAApplicationAuth(t *testing.T, c *Conn) {
 	t.Helper()
-	if c.authMode == 0 || *(*uint32)(unsafe.Pointer(c.authMode)) != authApplication {
+	if c.authMode == 0 || binary.NativeEndian.Uint32(libc.GoBytes(c.authMode, 4)) != authApplication {
 		t.Error("administrative call did not restore application authorizer mode")
 	}
 	for _, sql := range []string{"PRAGMA synchronous", "COMMIT", "ATTACH DATABASE ':memory:' AS forbidden"} {
@@ -166,10 +167,10 @@ func qaCreate8192PageFixture(t *testing.T, directory, basename string) {
 		libc.Xfree(c.tls, name)
 		t.Fatal("wrong-page fixture native allocation failed")
 	}
-	*(*uintptr)(unsafe.Pointer(out)) = 0
+	libc.AssignPtrUintptr(out, 0)
 	flags := int32(lib.SQLITE_OPEN_READWRITE | lib.SQLITE_OPEN_CREATE | lib.SQLITE_OPEN_FULLMUTEX | lib.SQLITE_OPEN_NOFOLLOW | lib.SQLITE_OPEN_PRIVATECACHE)
 	rc := lib.Xsqlite3_open_v2(c.tls, name, out, flags, vfsNameMemory)
-	c.db = *(*uintptr)(unsafe.Pointer(out))
+	c.db = uintptr(binary.NativeEndian.Uint64(libc.GoBytes(out, 8)))
 	lib.Xsqlite3_free(c.tls, out)
 	libc.Xfree(c.tls, name)
 	if rc != lib.SQLITE_OK {

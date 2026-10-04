@@ -57,6 +57,9 @@ func (s *Service) syncNowSQLite(ctx context.Context, in SyncRunInput, d SyncDepe
 	if err = guard.Verify(); err != nil {
 		return result, sqliteLinkFailure(err, nil, nil, false, false, in.RequestID, nil)
 	}
+	if err = sqliteSyncNowMaintainWAL(ctx, a, guard, in.RequestID); err != nil {
+		return result, err
+	}
 	roots, replay, err := sqliteSyncNowReserve(ctx, a, in, fp)
 	if err != nil {
 		return result, err

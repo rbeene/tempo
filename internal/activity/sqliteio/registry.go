@@ -1,6 +1,6 @@
 //go:build (darwin || linux) && (amd64 || arm64)
 
-// Package sqliteio owns the inactive direct SQLite adapter and pinned Unix VFS.
+// Package sqliteio owns the direct SQLite adapter and pinned Unix VFS.
 package sqliteio
 
 import (

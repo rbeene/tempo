@@ -4,7 +4,6 @@ package sqliteio
 
 import (
 	"strings"
-	"unsafe"
 
 	"modernc.org/libc"
 	lib "modernc.org/sqlite/lib"
@@ -50,11 +49,11 @@ func (t *Tx) InstallSchema(ddl string) (err error) {
 		if err = t.check(PreparePhase); err != nil {
 			return err
 		}
-		*(*uintptr)(unsafe.Pointer(output)) = 0
-		*(*uintptr)(unsafe.Pointer(output + 8)) = 0
+		libc.AssignPtrUintptr(output, 0)
+		libc.AssignPtrUintptr(output+8, 0)
 		rc := lib.Xsqlite3_prepare_v2(c.tls, c.db, cursor, int32(end-cursor+1), output, output+8)
-		ptr := *(*uintptr)(unsafe.Pointer(output))
-		tail := *(*uintptr)(unsafe.Pointer(output + 8))
+		ptr := nativeLoad[uintptr](output)
+		tail := nativeLoad[uintptr](output + 8)
 		var s *Stmt
 		if ptr != 0 {
 			s = &Stmt{tx: t, ptr: ptr}
@@ -97,8 +96,8 @@ func (t *Tx) CheckForeignKeys() (err error) {
 		return misuse(VerifyPhase)
 	}
 	c := t.conn
-	*(*uint32)(unsafe.Pointer(c.authMode)) = authPragma
-	defer func() { *(*uint32)(unsafe.Pointer(c.authMode)) = authApplication }()
+	libc.AssignPtrUint32(c.authMode, authPragma)
+	defer func() { libc.AssignPtrUint32(c.authMode, authApplication) }()
 	s, err := t.Prepare("PRAGMA foreign_key_check")
 	if err != nil {
 		return err

@@ -4,12 +4,13 @@ package sqliteio
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"sync"
 	"testing"
 	"time"
-	"unsafe"
 
+	"modernc.org/libc"
 	lib "modernc.org/sqlite/lib"
 )
 
@@ -272,7 +273,7 @@ func TestSQLiteCheckpointCancellationAtNativeEntryHasRealEvidence(t *testing.T) 
 			return
 		}
 		boundary = true
-		pragmaScoped = c.authMode != 0 && *(*uint32)(unsafe.Pointer(c.authMode)) == authPragma
+		pragmaScoped = c.authMode != 0 && binary.NativeEndian.Uint32(libc.GoBytes(c.authMode, 4)) == authPragma
 		cancel()
 		wait := time.NewTimer(200 * time.Millisecond)
 		select {

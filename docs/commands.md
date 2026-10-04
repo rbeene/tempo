@@ -293,6 +293,19 @@ bound and selects at most 100 roots (default 20). It holds a separate process lo
 status and pause remain available. The optional background worker uses this same
 service; the terminal Sync UI remains separate.
 
+A fresh `sync now` attempt also performs bounded local WAL maintenance before
+selecting uploads, including when sync is paused or the batch is empty. A replay
+of an already-completed request keeps its historical fast path. For maintenance,
+use a new request ID (omit `--request-id` to let the CLI generate one). If a live
+reader prevents maintenance, the command returns retryable `state_busy` before
+reserving work; retry after the reader releases its snapshot. Enabled sync keeps
+its normal upload behavior.
+
+The worker starts passes only for enabled queued work or submission recovery.
+Paused or active-only capture therefore may need explicit `sync now`, including
+after a WAL-pressure refusal. Maintenance preserves captured history; its
+success at the 64MiB WAL limit is not guaranteed by the soft-threshold policy.
+
 Each attempt records its originating run request ID; `attempted_ids` counts only
 intents committed by that run, including interrupted claims, never historical
 rejections from an earlier run. Every mutation accepts `--request-id UUID` (generated if absent). Preserve the ID

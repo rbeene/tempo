@@ -4,7 +4,6 @@ package sqliteio
 
 import (
 	"strings"
-	"unsafe"
 
 	"modernc.org/libc"
 	lib "modernc.org/sqlite/lib"
@@ -54,10 +53,10 @@ func (c *Conn) prepareRaw(sql string, phase Phase) (uintptr, error) {
 		return 0, engineError(phase, lib.SQLITE_NOMEM, nil)
 	}
 	defer lib.Xsqlite3_free(c.tls, output)
-	*(*uintptr)(unsafe.Pointer(output)) = 0
-	*(*uintptr)(unsafe.Pointer(output + 8)) = 0
+	libc.AssignPtrUintptr(output, 0)
+	libc.AssignPtrUintptr(output+8, 0)
 	rc := lib.Xsqlite3_prepare_v2(c.tls, c.db, query, int32(len(sql)+1), output, output+8)
-	stmt := *(*uintptr)(unsafe.Pointer(output))
+	stmt := nativeLoad[uintptr](output)
 	if rc != lib.SQLITE_OK {
 		e := engineError(phase, rc, nil)
 		if stmt != 0 {
@@ -67,7 +66,7 @@ func (c *Conn) prepareRaw(sql string, phase Phase) (uintptr, error) {
 		}
 		return 0, e
 	}
-	tailPtr := *(*uintptr)(unsafe.Pointer(output + 8))
+	tailPtr := nativeLoad[uintptr](output + 8)
 	tail := ""
 	if tailPtr != 0 {
 		tail = libc.GoString(tailPtr)
@@ -139,8 +138,8 @@ func (s *Stmt) bind(index int32, v Value) error {
 		if p == 0 {
 			return engineError(BindPhase, lib.SQLITE_NOMEM, nil)
 		}
-		copy(unsafe.Slice((*byte)(unsafe.Pointer(p)), len(data)), data)
-		*(*byte)(unsafe.Pointer(p + uintptr(len(data)))) = 0
+		copy(libc.GoBytes(p, len(data)), data)
+		libc.AssignPtrUint8(p+uintptr(len(data)), 0)
 		if v.kind == TextKind {
 			rc = lib.Xsqlite3_bind_text64(c.tls, s.ptr, index, p, uint64(len(data)), ^uintptr(0), lib.SQLITE_UTF8)
 		} else {
@@ -277,7 +276,7 @@ func (s *Stmt) bytes(index int, kind Kind) (_ []byte, err error) {
 	}
 	result := make([]byte, int(n))
 	if n != 0 {
-		copy(result, unsafe.Slice((*byte)(unsafe.Pointer(p)), int(n)))
+		copy(result, libc.GoBytes(p, int(n)))
 	}
 	return result, nil
 }

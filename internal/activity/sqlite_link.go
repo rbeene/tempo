@@ -13,8 +13,7 @@ import (
 	"github.com/rbeene/tempo/internal/privatefs"
 )
 
-// linkSQLite is an inactive private port. Public Link and every other consumer
-// continue to use the existing authority until a separate activation change.
+// linkSQLite owns Link's fresh-store SQLite path.
 func (s *Service) linkSQLite(ctx context.Context, in LinkInput, d LinkDependencies) (BindingResult, error) {
 	if err := validateLinkInput(in); err != nil {
 		return BindingResult{}, err

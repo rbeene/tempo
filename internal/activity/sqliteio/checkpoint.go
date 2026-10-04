@@ -4,7 +4,6 @@ package sqliteio
 
 import (
 	"context"
-	"unsafe"
 
 	"modernc.org/libc"
 	lib "modernc.org/sqlite/lib"
@@ -74,12 +73,12 @@ func (c *Conn) Checkpoint(ctx context.Context, mode CheckpointMode) (result Chec
 		return result, engineError(CheckpointPhase, lib.SQLITE_NOMEM, nil)
 	}
 	defer lib.Xsqlite3_free(c.tls, output)
-	*(*int32)(unsafe.Pointer(output)) = -1
-	*(*int32)(unsafe.Pointer(output + 4)) = -1
+	libc.AssignPtrInt32(output, -1)
+	libc.AssignPtrInt32(output+4, -1)
 	// The pinned pager can run an internal PRAGMA for an empty WAL. No caller
 	// statement is exposed while this narrow authorization is in force.
-	*(*uint32)(unsafe.Pointer(c.authMode)) = authPragma
-	defer func() { *(*uint32)(unsafe.Pointer(c.authMode)) = authApplication }()
+	libc.AssignPtrUint32(c.authMode, authPragma)
+	defer func() { libc.AssignPtrUint32(c.authMode, authApplication) }()
 	stop := c.interruptWith(ctx)
 	defer stop()
 	if err = admissionError(ctx, c.acquireDeadline); err != nil {
@@ -88,8 +87,8 @@ func (c *Conn) Checkpoint(ctx context.Context, mode CheckpointMode) (result Chec
 	observeSQL(sqlTestEvent{Phase: "checkpoint-before-native", Operation: "checkpoint"})
 	result.Attempted = true
 	result.Code = lib.Xsqlite3_wal_checkpoint_v2(c.tls, c.db, name, nativeMode, output, output+4)
-	result.LogFrames = *(*int32)(unsafe.Pointer(output))
-	result.CheckpointedFrames = *(*int32)(unsafe.Pointer(output + 4))
+	result.LogFrames = nativeLoad[int32](output)
+	result.CheckpointedFrames = nativeLoad[int32](output + 4)
 	observeSQL(sqlTestEvent{Phase: "checkpoint-after-engine", Operation: "checkpoint", Code: result.Code})
 	if result.Code != lib.SQLITE_OK {
 		err = engineError(CheckpointPhase, result.Code, ctx)

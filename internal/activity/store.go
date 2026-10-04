@@ -106,8 +106,8 @@ func (l *lockedStore) verify() error {
 	return nil
 }
 func (s *fileStore) acquire(ctx context.Context, create bool) (*lockedStore, bool, error) {
-	// During SQLite integration, any unported operation must fail before it
-	// reads or creates legacy authority. Naming remains shared and pure.
+	// SQLite services refuse legacy authority access. Naming remains shared
+	// and pure.
 	if s.sqliteOnly {
 		return nil, false, failure("unsupported_contract")
 	}

@@ -519,8 +519,8 @@ func (c *Conn) probeScalar(ctx context.Context, sql string, kind int32) (number 
 	if err = c.busyRemaining(ctx); err != nil {
 		return 0, "", err
 	}
-	*(*uint32)(unsafe.Pointer(c.authMode)) = authPragma
-	defer func() { *(*uint32)(unsafe.Pointer(c.authMode)) = authApplication }()
+	libc.AssignPtrUint32(c.authMode, authPragma)
+	defer func() { libc.AssignPtrUint32(c.authMode, authApplication) }()
 	stmt, err := c.prepareRaw(sql, OpenPhase)
 	if err != nil {
 		return 0, "", contextualError(OpenPhase, err, ctx)
@@ -556,7 +556,7 @@ func (c *Conn) probeScalar(ctx context.Context, sql string, kind int32) (number 
 		if p == 0 || n < 0 || n > 256 {
 			return 0, "", safeError(OpenPhase, ErrUnsafe)
 		}
-		text = string(unsafe.Slice((*byte)(unsafe.Pointer(p)), int(n)))
+		text = string(libc.GoBytes(p, int(n)))
 	}
 	if err = admissionError(ctx, c.acquireDeadline); err != nil {
 		return 0, "", safeError(Admission, err)
@@ -590,28 +590,29 @@ func (c *Conn) nativeMainImage(pristine bool) (image []byte, physicalSize int64,
 		return nil, 0, engineError(OpenPhase, lib.SQLITE_NOMEM, nil)
 	}
 	defer lib.Xsqlite3_free(c.tls, p)
-	*(*uintptr)(unsafe.Pointer(p)) = 0
+	libc.AssignPtrUintptr(p, 0)
 	if rc := lib.Xsqlite3_file_control(c.tls, c.db, 0, lib.SQLITE_FCNTL_FILE_POINTER, p); rc != lib.SQLITE_OK {
 		return nil, 0, engineError(OpenPhase, rc, nil)
 	}
-	file := *(*uintptr)(unsafe.Pointer(p))
+	file := nativeLoad[uintptr](p)
 	if file == 0 {
 		return nil, 0, safeError(OpenPhase, ErrUnsafe)
 	}
-	methods := (*lib.Tsqlite3_file)(unsafe.Pointer(file)).FpMethods
+	methods := nativeLoad[uintptr](file + unsafe.Offsetof(lib.Tsqlite3_file{}.FpMethods))
 	if methods == 0 {
 		return nil, 0, safeError(OpenPhase, ErrUnsafe)
 	}
-	io := (*lib.Tsqlite3_io_methods)(unsafe.Pointer(methods))
-	if io.FxFileSize == 0 || io.FxRead == 0 {
+	sizeAddress := nativeLoad[uintptr](methods + unsafe.Offsetof(lib.Tsqlite3_io_methods{}.FxFileSize))
+	readAddress := nativeLoad[uintptr](methods + unsafe.Offsetof(lib.Tsqlite3_io_methods{}.FxRead))
+	if sizeAddress == 0 || readAddress == 0 {
 		return nil, 0, safeError(OpenPhase, ErrUnsafe)
 	}
-	sizeFn := *(*func(*libc.TLS, uintptr, uintptr) int32)(unsafe.Pointer(&io.FxFileSize))
-	*(*int64)(unsafe.Pointer(p)) = -1
+	sizeFn := *(*func(*libc.TLS, uintptr, uintptr) int32)(unsafe.Pointer(&sizeAddress))
+	libc.AssignPtrInt64(p, -1)
 	if rc := sizeFn(c.tls, file, p); rc != lib.SQLITE_OK {
 		return nil, 0, engineError(OpenPhase, rc, nil)
 	}
-	physicalSize = *(*int64)(unsafe.Pointer(p))
+	physicalSize = nativeLoad[int64](p)
 	n := physicalSize
 	if pristine {
 		if n != 0 && n != 4096 {
@@ -632,11 +633,11 @@ func (c *Conn) nativeMainImage(pristine bool) (image []byte, physicalSize int64,
 		return nil, 0, engineError(OpenPhase, lib.SQLITE_NOMEM, nil)
 	}
 	defer lib.Xsqlite3_free(c.tls, buffer)
-	readFn := *(*func(*libc.TLS, uintptr, uintptr, int32, lib.Tsqlite3_int64) int32)(unsafe.Pointer(&io.FxRead))
+	readFn := *(*func(*libc.TLS, uintptr, uintptr, int32, lib.Tsqlite3_int64) int32)(unsafe.Pointer(&readAddress))
 	if rc := readFn(c.tls, file, buffer, int32(n), 0); rc != lib.SQLITE_OK {
 		return nil, 0, engineError(OpenPhase, rc, nil)
 	}
-	copy(image, unsafe.Slice((*byte)(unsafe.Pointer(buffer)), int(n)))
+	copy(image, libc.GoBytes(buffer, int(n)))
 	return image, physicalSize, nil
 }
 

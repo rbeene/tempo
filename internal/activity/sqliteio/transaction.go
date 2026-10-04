@@ -4,8 +4,8 @@ package sqliteio
 
 import (
 	"context"
-	"unsafe"
 
+	"modernc.org/libc"
 	lib "modernc.org/sqlite/lib"
 )
 
@@ -244,9 +244,9 @@ func (t *Tx) Commit() (Outcome, error) {
 		return t.abortBeforeCommit(err)
 	}
 	c := t.conn
-	*(*uint32)(unsafe.Pointer(c.authMode)) = authTransaction
+	libc.AssignPtrUint32(c.authMode, authTransaction)
 	stmt, err := c.prepareRaw("COMMIT", CommitPhase)
-	*(*uint32)(unsafe.Pointer(c.authMode)) = authApplication
+	libc.AssignPtrUint32(c.authMode, authApplication)
 	if err != nil {
 		return t.abortBeforeCommit(contextualError(CommitPhase, err, t.ctx))
 	}
@@ -270,10 +270,10 @@ func (t *Tx) Commit() (Outcome, error) {
 		}
 		return t.abortBeforeCommit(safeError(CommitPhase, err))
 	}
-	*(*uint32)(unsafe.Pointer(c.authMode)) = authTransaction
+	libc.AssignPtrUint32(c.authMode, authTransaction)
 	observeSQL(sqlTestEvent{Phase: "control-before-native", Operation: "commit"})
 	rc := lib.Xsqlite3_step(c.tls, stmt)
-	*(*uint32)(unsafe.Pointer(c.authMode)) = authApplication
+	libc.AssignPtrUint32(c.authMode, authApplication)
 	if rc != lib.SQLITE_DONE {
 		err = engineError(CommitPhase, rc, t.ctx)
 	}
