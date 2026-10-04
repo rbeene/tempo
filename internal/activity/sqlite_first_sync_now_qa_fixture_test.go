@@ -33,6 +33,10 @@ func snQACaptured(t *testing.T) *snQAFixture {
 	t.Helper()
 	q := &snQAFixture{t: t, f: interopLocation(t), sample: stQAAt(0)}
 	q.s = q.reopen()
+	// Calibrate only positive capture setup; sync operations retain the default.
+	originalTimeout := q.s.store.timeout
+	q.s.store.timeout = sqliteFlowTestLockTimeout()
+	defer func() { q.s.store.timeout = originalTimeout }()
 	ctx := context.Background()
 	linkInput := qaLinkInput(t)
 	linked, err := q.s.Link(ctx, linkInput, qaLinkDeps(t, qaNewLinkProvider(t)))

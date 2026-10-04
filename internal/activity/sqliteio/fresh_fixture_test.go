@@ -581,7 +581,15 @@ func (c *freshQAChild) join(t *testing.T, kill bool) {
 			_, errorWrite = c.in.Write([]byte{'x'})
 		}
 		closeErr := c.in.Close()
+		// Retain only a bounded prefix from this owned synthetic child; still
+		// drain through EOF before Wait so the pipe cannot block child exit.
+		var terminalOutput bytes.Buffer
+		_, terminalErr := io.CopyN(&terminalOutput, c.reader, 4096)
+		if terminalErr == io.EOF {
+			terminalErr = nil
+		}
 		_, drainErr := io.Copy(io.Discard, c.reader)
+		drainErr = errors.Join(terminalErr, drainErr)
 		waitErr := c.cmd.Wait()
 		c.cancel()
 		code := -1
@@ -595,6 +603,7 @@ func (c *freshQAChild) join(t *testing.T, kill bool) {
 				t.Errorf("owned kill proof: signal=%v wait=%v status=%v", signalErr, waitErr, status)
 			}
 		} else if errorWrite != nil || closeErr != nil || drainErr != nil || waitErr != nil {
+			t.Logf("owned child terminal output (first 4096 bytes): %q", terminalOutput.String())
 			t.Errorf("owned child terminal write=%v close=%v drain=%v wait=%v", errorWrite, closeErr, drainErr, waitErr)
 		}
 	})
@@ -881,6 +890,7 @@ func freshQAReuseChild(t *testing.T, dir, name, stage string) {
 	freshQAQuiet(t)
 }
 func freshQALowFDChild(t *testing.T, dir, name, stage string) {
+	originalOutput, originalInput := os.Stdout, os.Stdin
 	// Keep the owned handshake pipes above the actual low-FD native fixture.
 	out, err := unix.FcntlInt(os.Stdout.Fd(), unix.F_DUPFD_CLOEXEC, 20)
 	if err != nil {
@@ -892,7 +902,25 @@ func freshQALowFDChild(t *testing.T, dir, name, stage string) {
 		t.Fatal(err)
 	}
 	output, input := os.NewFile(uintptr(out), "owned-output"), os.NewFile(uintptr(in), "owned-input")
-	t.Cleanup(func() { _ = output.Close(); _ = input.Close() })
+	t.Cleanup(func() {
+		// Registered before native owners: their cleanup runs first. Never
+		// replace a descriptor while a native or quarantined owner remains.
+		if s := statsForTest(); s != (registryStats{}) {
+			t.Errorf("owned low-FD stdio restore refused with live owners: %+v", s)
+			return
+		}
+		// The owned parent directs stderr to the same pipe as stdout.
+		for fd, source := range []int{in, out, out} {
+			if err := unix.Dup2(source, fd); err != nil {
+				t.Errorf("owned low-FD stdio restore fd=%d: %v", fd, err)
+				return
+			}
+		}
+		os.Stdout, os.Stdin = originalOutput, originalInput
+		if err := errors.Join(output.Close(), input.Close()); err != nil {
+			t.Error("owned low-FD duplicate close", err)
+		}
+	})
 	os.Stdout, os.Stdin = output, input
 	// Pin the parent first so root directory traversal cannot consume all low
 	// slots. Then release stdio exactly at the actual main-open boundary.
@@ -922,8 +950,8 @@ func freshQALowFDChild(t *testing.T, dir, name, stage string) {
 		t.Fatal("low-FD retry unlinked/recreated or accepted main", openErr)
 	}
 	if c != nil {
-		if err := c.Close(context.Background()); err != nil {
-			t.Fatal(err)
+		if terminal, err := c.CloseChecked(context.Background()); !terminal || err != nil {
+			t.Fatal("owned low-FD native close not terminal", terminal, err)
 		}
 	}
 	info, err := os.Lstat(filepath.Join(dir, name))

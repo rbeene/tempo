@@ -467,7 +467,7 @@ func TestQABindingProcessHelper(t *testing.T) {
 	if os.Getenv("TEMPO_QA_BINDING_HELPER") != "1" {
 		return
 	}
-	s := qaLegacyNew(Options{Path: os.Getenv("TEMPO_QA_BINDING_STATE")})
+	s := qaLegacyNew(Options{Path: os.Getenv("TEMPO_QA_BINDING_STATE"), LockTimeout: sqliteFlowTestLockTimeout()})
 	in := LinkInput{Path: os.Getenv("TEMPO_QA_BINDING_PATH"), ProjectID: "3", TaskID: "4", AccountID: "1", Timezone: "UTC", RequestID: os.Getenv("TEMPO_QA_BINDING_REQUEST")}
 	if _, err := s.Link(context.Background(), in, qaLinkDeps(t, qaNewLinkProvider(t))); err != nil {
 		t.Fatal(err)
@@ -681,7 +681,7 @@ func TestQABindingRepairRejectsDestinationCollisionAndScopeChange(t *testing.T) 
 
 func TestQABindingUnlinkedRealChildLocationInheritsParent(t *testing.T) {
 	h := qaNew(t)
-	h.service = New(Options{Path: h.path, Clock: ClockFunc(func() (ClockSample, error) { return h.sample, h.clockErr })})
+	h.service = New(Options{Path: h.path, LockTimeout: sqliteFlowTestLockTimeout(), Clock: ClockFunc(func() (ClockSample, error) { return h.sample, h.clockErr })})
 	in := qaLinkInput(t)
 	linked, err := h.service.Link(context.Background(), in, qaLinkDeps(t, qaNewLinkProvider(t)))
 	if err != nil {

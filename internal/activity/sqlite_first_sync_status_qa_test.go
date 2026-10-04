@@ -69,6 +69,8 @@ func ssQACaptured(t *testing.T) *ssQAFixture {
 	t.Helper()
 	q := &ssQAFixture{t: t, f: interopLocation(t), sample: stQAAt(0), linkProvider: qaNewLinkProvider(t), syncProvider: qaNewSyncProvider(t)}
 	s, ctx := q.service(nil), context.Background()
+	// Only positive setup opts in; cold status/control services stay default.
+	s.store.timeout = sqliteFlowTestLockTimeout()
 	in := qaLinkInput(t)
 	linked, err := s.Link(ctx, in, qaLinkDeps(t, q.linkProvider))
 	if err != nil || !linked.Changed || linked.SnapshotRevision != "1" {
