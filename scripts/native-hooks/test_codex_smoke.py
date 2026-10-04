@@ -926,6 +926,128 @@ class HarnessTests(unittest.TestCase):
         raw = public+"\ntempo hook diagnostics v2: "+"["*3073
         self.assertEqual(smoke.hook_diagnostic_text(raw), (raw,None))
 
+    def admission_v3_context(self):
+        public, rows = self.eligibility_cost_context()
+        rows[0].update(effective_deadline_us=488000, eligibility_excluded_us=238000, eligibility_outcome="paused")
+        return public, rows
+
+    def admission_v3_body(self, rows, role="developer"):
+        public, _ = self.diagnostic_context()
+        return {"input": [{"role": role, "content": [{"type": "input_text", "text": public + "\ntempo hook diagnostics v3: " + json.dumps(rows, separators=(",", ":"))}]}]}
+
+    def test_admission_v3_preserves_actual_zero_receipt_gate(self):
+        public, rows = self.admission_v3_context()
+        model = self.model([])
+        model.session = None
+        model.baseline = frozenset()
+        body = self.request()
+        body["input"].insert(0, self.admission_v3_body(rows)["input"][0])
+        with mock.patch.object(smoke.subprocess, "Popen", side_effect=AssertionError("unexpected process")), \
+             mock.patch.object(smoke.threading.Thread, "start", side_effect=AssertionError("unexpected thread")), \
+             mock.patch.object(smoke.http.server, "ThreadingHTTPServer", side_effect=AssertionError("unexpected socket")):
+            with self.assertRaisesRegex(smoke.FixtureFailure, "measured_session_ambiguous"):
+                model.respond(body)
+        self.assertEqual(model.capture_contexts, {("SessionStart", "state_busy", "not_committed")})
+        self.assertEqual(model.admission_diagnostics, [{"kind": "SessionStart", "attempts": rows, "version": 3}])
+        self.assertEqual(model.initial_receipt_probe["accepted_session_starts"], 0)
+        self.assertEqual(model.counts, {})
+        self.assertEqual(model.entry_count, 1)
+
+    def test_admission_v3_outcomes_and_floor_rounding(self):
+        _, base = self.admission_v3_context()
+        variants = []
+        for effective in (488000, 488001):
+            rows = copy.deepcopy(base); rows[0]["effective_deadline_us"] = effective
+            variants.append(("paused_floor_" + str(effective), rows))
+        rows = copy.deepcopy(base); rows[0].update(caller_deadline_us=300000, effective_deadline_us=300000)
+        variants.append(("caller_clip", rows))
+        rows = copy.deepcopy(base); rows[0].update(eligibility_excluded_us=0, effective_deadline_us=250000)
+        rows[0]["phase_us"][5] = rows[0]["phase_us"][4]
+        rows[0]["eligibility"] = {"p": [0, 0, -1, -1, -1, -1, 0], "r": [[0]*9 for _ in range(6)], "c": [0, 0], "d": False}
+        variants.append(("submicrosecond_nonhash_pause", rows))
+        rows = copy.deepcopy(rows); rows[0]["phase_us"][5] += 1; rows[0]["effective_deadline_us"] += 1
+        variants.append(("submicrosecond_floor_difference", rows))
+        rows = copy.deepcopy(base); rows[0].update(caller="deadline", caller_deadline_us=260000, effective_deadline_us=260000)
+        variants.append(("absolute_deadline_observed_before_context_signal", rows))
+        for outcome in ("not_called", "error", "caller_stopped"):
+            rows = copy.deepcopy(base)
+            rows[0].update(eligibility_outcome=outcome, eligibility_excluded_us=0, effective_deadline_us=250000)
+            if outcome == "not_called":
+                rows[0]["phase_us"][4:6] = [-1, -1]
+                rows[0]["eligibility"] = {"p": [-1]*7, "r": [[0]*9 for _ in range(6)], "c": [-1, -1], "d": False}
+            if outcome == "caller_stopped": rows[0]["caller"] = "deadline"
+            variants.append((outcome, rows))
+        rows = copy.deepcopy(next(rows for name, rows in variants if name == "error")); rows[0]["caller"] = "canceled"
+        variants.append(("policy_error_wins_cancellation", rows))
+        rows = copy.deepcopy(next(rows for name, rows in variants if name == "not_called")); rows[0].update(deadline_us=-1, effective_deadline_us=-1)
+        rows[0]["phase_us"] = [-1]*8
+        variants.append(("not_called_no_deadline", rows))
+        for name, rows in variants:
+            with self.subTest(name=name):
+                self.assertEqual(smoke.capture_admission_diagnostics(self.admission_v3_body(rows)), [{"kind": "SessionStart", "attempts": rows, "version": 3}])
+                self.assertEqual(smoke.capture_context_tuples(self.admission_v3_body(rows)), {("SessionStart", "state_busy", "not_committed")})
+
+    def test_admission_v3_three_attempts_share_original_caller(self):
+        _, base = self.admission_v3_context()
+        rows = []
+        for index in range(3):
+            row = copy.deepcopy(base[0]); offset = index * 270000
+            row["ordinal"] = index + 1
+            for key in ("start_us", "end_us", "deadline_us"):
+                row[key] += offset
+            row["phase_us"] = [stamp + offset for stamp in row["phase_us"]]
+            row["effective_deadline_us"] = min(row["deadline_us"] + row["eligibility_excluded_us"], row["caller_deadline_us"])
+            rows.append(row)
+        body = self.admission_v3_body(rows)
+        text = body["input"][0]["content"][0]["text"]
+        self.assertLessEqual(len(text.split("\ntempo hook diagnostics v3: ")[1]), 3072)
+        self.assertEqual(smoke.capture_admission_diagnostics(body), [{"kind": "SessionStart", "attempts": rows, "version": 3}])
+
+    def test_admission_v3_rejects_invalid_cross_fields_and_shapes(self):
+        _, base = self.admission_v3_context()
+        mutations = {
+            "missing": lambda r: r.pop("effective_deadline_us"),
+            "extra": lambda r: r.update(path="PRIVATE-PATH"),
+            "bool_effective": lambda r: r.update(effective_deadline_us=True),
+            "bool_excluded": lambda r: r.update(eligibility_excluded_us=True),
+            "negative_excluded": lambda r: r.update(eligibility_excluded_us=-1),
+            "large_effective": lambda r: r.update(effective_deadline_us=120000001),
+            "large_excluded": lambda r: r.update(eligibility_excluded_us=120000001),
+            "unknown_outcome": lambda r: r.update(eligibility_outcome="trusted"),
+            "object_outcome": lambda r: r.update(eligibility_outcome={}),
+            "list_outcome": lambda r: r.update(eligibility_outcome=[]),
+            "no_original": lambda r: r.update(deadline_us=-1),
+            "reset": lambda r: r.update(effective_deadline_us=509000),
+            "too_low": lambda r: r.update(effective_deadline_us=487999),
+            "too_high": lambda r: r.update(effective_deadline_us=488002),
+            "past_caller": lambda r: r.update(caller_deadline_us=300000),
+            "unearned_exclusion": lambda r: r.update(eligibility_excluded_us=260001),
+            "exclusion_above_measured_span": lambda r: r.update(eligibility_excluded_us=238001, effective_deadline_us=488001),
+            "exclusion_below_measured_span": lambda r: r.update(eligibility_excluded_us=237998, effective_deadline_us=487998),
+            "reversed_phase": lambda r: r["phase_us"].__setitem__(5, 0),
+            "unreached_policy": lambda r: r["phase_us"].__setitem__(4, -1),
+            "phase_before_attempt": lambda r: r.update(start_us=22000),
+            "error_credit": lambda r: r.update(eligibility_outcome="error"),
+            "not_called_stamped": lambda r: r.update(eligibility_outcome="not_called", eligibility_excluded_us=0, effective_deadline_us=250000),
+            "caller_stopped_live": lambda r: r.update(eligibility_outcome="caller_stopped", eligibility_excluded_us=0, effective_deadline_us=250000),
+        }
+        for name, mutate in mutations.items():
+            rows = copy.deepcopy(base); mutate(rows[0])
+            with self.subTest(name=name):
+                body = self.admission_v3_body(rows)
+                self.assertEqual(smoke.capture_admission_diagnostics(body), [])
+                self.assertEqual(smoke.capture_context_tuples(body), set())
+        self.assertEqual(smoke.capture_admission_diagnostics(self.admission_v3_body(base, "user")), [])
+
+    def test_admission_v3_rejects_duplicate_mixed_and_oversized_envelopes(self):
+        public, rows = self.admission_v3_context()
+        encoded = json.dumps(rows, separators=(",", ":"))
+        duplicate = encoded.replace('"eligibility_outcome":"paused"', '"eligibility_outcome":"paused","eligibility_outcome":"error"')
+        for suffix in (duplicate, "["*3073, encoded + "\ntempo hook diagnostics v2: []"):
+            text = public + "\ntempo hook diagnostics v3: " + suffix
+            with self.subTest(suffix=suffix[:40]):
+                self.assertEqual(smoke.hook_diagnostic_text(text), (text, None))
+
     def test_cpu_capability_probe_is_bounded_post_join_projection(self):
         cases = [
             (b"processor : 0\nflags : sha_ni avx avx2 bmi2 sse4_1 ssse3 PRIVATE-CONTENT\n", "observed"),

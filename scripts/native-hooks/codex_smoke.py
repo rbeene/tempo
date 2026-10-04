@@ -806,6 +806,8 @@ CAPTURE_CONTEXT_PATTERN = re.compile(
 
 HOOK_DIAGNOSTIC_PREFIX = "\ntempo hook diagnostics v1: "
 HOOK_DIAGNOSTIC_V2_PREFIX = "\ntempo hook diagnostics v2: "
+HOOK_DIAGNOSTIC_V3_PREFIX = "\ntempo hook diagnostics v3: "
+HOOK_DIAGNOSTIC_V3_KEYS = frozenset(("effective_deadline_us", "eligibility_excluded_us", "eligibility_outcome"))
 HOOK_DIAGNOSTIC_PHASES = frozenset(("none", "other", "admission", "open", "begin", "prepare", "bind", "step", "commit", "verify", "rollback", "finalize", "close", "checkpoint"))
 HOOK_DIAGNOSTIC_CATEGORIES = frozenset(("none", "other", "invalid", "busy", "canceled", "unsafe", "corrupt", "full", "constraint", "io", "closed", "misuse"))
 HOOK_DIAGNOSTIC_KEYS = frozenset(("ordinal", "start_us", "end_us", "deadline_us", "caller_deadline_us", "phase_us", "caller", "retry", "native_phase", "native_category", "native_code", "native_cleanup"))
@@ -816,10 +818,10 @@ def hook_diagnostic_text(text):
     # three-field public first line. Never search arbitrary model/user text.
     if not isinstance(text, str) or len(text) > 4096:
         return text, None
-    prefixes = (HOOK_DIAGNOSTIC_PREFIX, HOOK_DIAGNOSTIC_V2_PREFIX)
+    prefixes = (HOOK_DIAGNOSTIC_PREFIX, HOOK_DIAGNOSTIC_V2_PREFIX, HOOK_DIAGNOSTIC_V3_PREFIX)
     if sum(text.count(prefix) for prefix in prefixes) != 1: return text, None
     prefix = next(prefix for prefix in prefixes if prefix in text)
-    version = 2 if prefix == HOOK_DIAGNOSTIC_V2_PREFIX else 1
+    version = 3 if prefix == HOOK_DIAGNOSTIC_V3_PREFIX else 2 if prefix == HOOK_DIAGNOSTIC_V2_PREFIX else 1
     public, encoded = text.split(prefix)
     match = CAPTURE_CONTEXT_PATTERN.fullmatch(public)
     if not match or match[2] != "state_busy" or match[3] != "not_committed" or len(encoded) > 3072:
@@ -837,7 +839,8 @@ def hook_diagnostic_text(text):
     if not isinstance(rows, list) or not 1 <= len(rows) <= 3: return text, None
     previous_end = 0
     for ordinal, row in enumerate(rows, 1):
-        keys = HOOK_DIAGNOSTIC_KEYS | {"eligibility"} if version == 2 else HOOK_DIAGNOSTIC_KEYS
+        keys = HOOK_DIAGNOSTIC_KEYS | {"eligibility"} if version >= 2 else HOOK_DIAGNOSTIC_KEYS
+        if version == 3: keys |= HOOK_DIAGNOSTIC_V3_KEYS
         if not isinstance(row, dict) or set(row) != keys: return text, None
         if any(type(row[key]) is not int for key in ("ordinal", "start_us", "end_us", "deadline_us", "caller_deadline_us", "native_code")): return text, None
         if row["ordinal"] != ordinal or not previous_end <= row["start_us"] <= row["end_us"] <= 120000000: return text, None
@@ -846,11 +849,31 @@ def hook_diagnostic_text(text):
         if not isinstance(row["native_phase"], str) or not isinstance(row["native_category"], str) or row["native_phase"] not in HOOK_DIAGNOSTIC_PHASES or row["native_category"] not in HOOK_DIAGNOSTIC_CATEGORIES: return text, None
         stamps = row["phase_us"]
         if not isinstance(stamps, list) or len(stamps) != 8 or any(type(stamp) is not int or stamp < -1 or stamp > row["end_us"] for stamp in stamps): return text, None
-        if version == 2 and not valid_eligibility_diagnostic(row["eligibility"]): return text, None
+        if version >= 2 and not valid_eligibility_diagnostic(row["eligibility"]): return text, None
+        if version == 3 and not valid_admission_pause(row): return text, None
         previous_end = row["end_us"]
     record = {"kind": match[1], "attempts": rows}
-    if version == 2: record["version"] = 2
+    if version >= 2: record["version"] = version
     return public, record
+
+
+def valid_admission_pause(row):
+    effective, excluded, outcome = row["effective_deadline_us"], row["eligibility_excluded_us"], row["eligibility_outcome"]
+    if type(effective) is not int or not -1 <= effective <= 120000000: return False
+    if type(excluded) is not int or not 0 <= excluded <= 120000000: return False
+    if not isinstance(outcome, str) or outcome not in ("not_called", "paused", "error", "caller_stopped"): return False
+    original, caller = row["deadline_us"], row["caller_deadline_us"]
+    begin, end = row["phase_us"][4:6]
+    if outcome == "not_called":
+        return begin == end == -1 and effective == original and excluded == 0
+    if original < 0 or not row["start_us"] <= begin <= end <= row["end_us"]: return False
+    if outcome != "paused":
+        return effective == original and excluded == 0 and (outcome != "caller_stopped" or row["caller"] in ("canceled", "deadline"))
+    if effective < original or excluded > row["end_us"] - row["start_us"] or not 0 <= end - begin - excluded <= 1: return False
+    # Independent microsecond floors can differ by one before caller clipping.
+    lower, upper = original + excluded, original + excluded + 1
+    if caller >= 0: lower, upper = min(lower, caller), min(upper, caller)
+    return lower <= effective <= upper
 
 
 def valid_eligibility_diagnostic(value):

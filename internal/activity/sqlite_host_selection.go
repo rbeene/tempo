@@ -48,6 +48,7 @@ type sqliteHostFacts struct {
 	Live                []sqliteCaptureClockActor
 }
 type sqliteHostPrepared struct {
+	AcquireDeadline                             time.Time
 	Facts                                       sqliteHostFacts
 	CWD                                         string
 	Policy                                      sqliteHostPolicy
@@ -527,6 +528,7 @@ func (s *Service) sqlitePrepareHostCapture(ctx context.Context, e Event, a sqlit
 }
 
 func (s *Service) sqlitePrepareHost(ctx context.Context, e HostEvent, a sqliteCaptureAdmission) (p sqliteHostPrepared, found bool, err error) {
+	p.AcquireDeadline = a.AcquireDeadline
 	if err = validateHost(e); err != nil {
 		return p, false, err
 	}
@@ -569,12 +571,32 @@ func (s *Service) sqlitePrepareHost(ctx context.Context, e HostEvent, a sqliteCa
 	if err = sqliteCaptureDeadline(ctx, a); err != nil {
 		return p, true, err
 	}
-	hostCaptureTraceMark(ctx, hostTracePolicyBegin)
+	// Only this synchronous policy decision is excluded from host admission.
+	// Keep its original caller, and never revive an allowance spent on earlier
+	// reads or callbacks. Diagnostics observe these times after the call.
+	policyStart := time.Now()
+	if ctx.Err() != nil || !policyStart.Before(a.AcquireDeadline) {
+		return p, true, failure("state_busy")
+	}
 	policy, err := s.policies.Eligibility(ctx, e.Source, p.CWD)
-	hostCaptureTraceMark(ctx, hostTracePolicyEnd)
+	policyEnd := time.Now()
 	if err != nil {
+		hostCaptureTracePolicy(ctx, policyStart, policyEnd, a.AcquireDeadline, 0, "error")
 		return p, true, err
 	}
+	callerDeadline, callerBounded := ctx.Deadline()
+	if ctx.Err() != nil || callerBounded && !policyEnd.Before(callerDeadline) {
+		hostCaptureTracePolicy(ctx, policyStart, policyEnd, a.AcquireDeadline, 0, "caller_stopped")
+		return p, true, failure("state_busy")
+	}
+	excluded := policyEnd.Sub(policyStart)
+	a.AcquireDeadline = a.AcquireDeadline.Add(excluded)
+	if callerBounded && callerDeadline.Before(a.AcquireDeadline) {
+		a.AcquireDeadline = callerDeadline
+	}
+	p.AcquireDeadline = a.AcquireDeadline
+	// An ineligible decision may still need existing-actor safety writes.
+	hostCaptureTracePolicy(ctx, policyStart, policyEnd, a.AcquireDeadline, excluded, "paused")
 	p.Policy = sqliteHostPolicy{CaptureEligible: policy.CaptureEligible, Basis: policy.Basis, Revision: policy.Revision, Fingerprint: policy.Fingerprint, DiagnosticCode: policy.DiagnosticCode}
 	if !policy.CaptureEligible && (p.Facts.Turn == nil || p.Facts.Turn.Actor == nil) {
 		return p, true, nil

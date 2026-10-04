@@ -22,25 +22,38 @@ func (s *Service) syncNowSQLite(ctx context.Context, in SyncRunInput, d SyncDepe
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
+	diagnostic := sqliteSyncFailureDiagnosticsFromContext(ctx)
+	defer func() { diagnostic.finish(ctx, result, err != nil) }()
+	diagnostic.begin(0)
 	a, budget, err := s.sqliteSyncConfigAdmission(ctx)
+	diagnostic.end(0, err != nil)
 	if err != nil {
 		return result, err
 	}
+	diagnostic.initialDeadline(a.AcquireDeadline)
 	fp := mutationFingerprint("sync.now", in)
+	diagnostic.begin(1)
 	terminal, err := sqliteSyncNowObserve(ctx, a, in.RequestID, fp)
+	diagnostic.end(1, err != nil)
 	if err != nil {
 		return result, err
 	}
 	if terminal {
-		return sqliteSyncNowReplay(ctx, a, in.RequestID, fp)
+		diagnostic.begin(2)
+		result, err = sqliteSyncNowReplay(ctx, a, in.RequestID, fp)
+		diagnostic.end(2, err != nil)
+		return result, err
 	}
 	var guard *sqliteSyncRunGuard
 	effect := false
 	defer func() {
+		diagnostic.begin(11)
+		diagnostic.guardClose()
 		closeErr := guard.Close()
 		if closeErr != nil {
 			// A cached terminal error is harmless to retry; a nonterminal close
 			// retains and retries this exact owner once. Neither erases evidence.
+			diagnostic.guardClose()
 			retryErr := guard.Close()
 			err = &sqliteSyncNowGuardError{public: requestError(failure("local_write_unknown"), in.RequestID), evidence: errors.Join(err, closeErr, retryErr), owner: guard}
 		} else if err != nil && effect {
@@ -49,39 +62,63 @@ func (s *Service) syncNowSQLite(ctx context.Context, in SyncRunInput, d SyncDepe
 		if err != nil {
 			result = SyncRun{}
 		}
+		diagnostic.end(11, closeErr != nil)
 	}()
+	diagnostic.begin(3)
 	guard, err = s.acquireSQLiteSyncLock(ctx, a.AcquireDeadline)
+	diagnostic.end(3, err != nil)
 	if err != nil {
 		return result, sqliteLinkFailure(err, nil, nil, false, false, in.RequestID, nil)
 	}
-	if err = guard.Verify(); err != nil {
+	diagnostic.begin(4)
+	err = guard.Verify()
+	diagnostic.end(4, err != nil)
+	if err != nil {
 		return result, sqliteLinkFailure(err, nil, nil, false, false, in.RequestID, nil)
 	}
-	if err = sqliteSyncNowMaintainWAL(ctx, a, guard, in.RequestID); err != nil {
+	diagnostic.begin(5)
+	err = sqliteSyncNowMaintainWAL(ctx, a, guard, in.RequestID)
+	diagnostic.end(5, err != nil)
+	if err != nil {
 		return result, err
 	}
+	diagnostic.begin(6)
 	roots, replay, err := sqliteSyncNowReserve(ctx, a, in, fp)
+	diagnostic.end(6, err != nil)
 	if err != nil {
 		return result, err
 	}
 	if replay != nil {
 		return *replay, nil
 	}
+	diagnostic.begin(7)
 	for _, root := range roots {
 		posted, submitErr := s.sqliteSyncNowSubmit(ctx, a, budget, guard, in.RequestID, root, d)
 		effect = effect || posted
 		if submitErr != nil {
+			diagnostic.end(7, true)
 			return result, submitErr
 		}
 	}
-	if err = s.syncBarrier("sync_before_complete", in.RequestID); err != nil {
+	diagnostic.end(7, false)
+	diagnostic.begin(8)
+	err = s.syncBarrier("sync_before_complete", in.RequestID)
+	diagnostic.end(8, err != nil)
+	if err != nil {
 		return result, err
 	}
-	if err = guard.Verify(); err != nil {
+	diagnostic.begin(9)
+	err = guard.Verify()
+	diagnostic.end(9, err != nil)
+	if err != nil {
 		return result, sqliteLinkFailure(err, nil, nil, false, effect, in.RequestID, nil)
 	}
 	a.AcquireDeadline = sqliteLinkDeadline(ctx, budget)
-	return sqliteSyncNowComplete(ctx, a, in.RequestID, fp, roots)
+	diagnostic.completionDeadline(a.AcquireDeadline)
+	diagnostic.begin(10)
+	result, err = sqliteSyncNowComplete(ctx, a, in.RequestID, fp, roots)
+	diagnostic.end(10, err != nil)
+	return result, err
 }
 
 // Exceptional guard ownership remains reachable from the safe returned error;

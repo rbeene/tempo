@@ -81,7 +81,9 @@ type sqliteEventTransition struct {
 	Finalization   sqliteFinalizationSelection
 }
 
-// Admission uses one absolute budget across preliminary reads, callbacks and BEGIN.
+// Normalized admission uses one absolute budget across reads, callbacks and BEGIN.
+// Host ingress excludes only its completed, successful Eligibility interval;
+// all other preparation and native admission share the remaining allowance.
 func sqliteCaptureDeadline(ctx context.Context, a sqliteCaptureAdmission) error {
 	if ctx.Err() != nil || a.AcquireDeadline.IsZero() || !time.Now().Before(a.AcquireDeadline) {
 		return failure("state_busy")
