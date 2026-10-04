@@ -42,7 +42,7 @@ func interopLocation(t *testing.T) interopFixture {
 
 func interopOpen(t *testing.T, f interopFixture, create bool, mode sqliteio.Mode) (*sqliteio.Conn, *sqliteio.Tx) {
 	t.Helper()
-	c, err := sqliteio.Open(context.Background(), f.directory, f.database, sqliteio.Options{Create: create, AcquireDeadline: time.Now().Add(250 * time.Millisecond)})
+	c, err := sqliteio.Open(context.Background(), f.directory, f.database, sqliteio.Options{Create: create, AcquireDeadline: time.Now().Add(max(250*time.Millisecond, sqliteFlowTestLockTimeout()))})
 	if err != nil {
 		t.Fatal(err)
 	}
