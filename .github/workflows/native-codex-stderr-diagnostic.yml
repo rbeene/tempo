@@ -1,0 +1,56 @@
+name: Temporary Codex stderr diagnosis (NON-ACCEPTANCE)
+on:
+  pull_request:
+    branches: [main]
+    types: [labeled]
+permissions:
+  contents: read
+concurrency:
+  group: tempo-codex-stderr-diagnostic-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  diagnostic-only:
+    name: Test executable stderr diagnosis — NEVER acceptance
+    if: >-
+      github.event.pull_request.number == 37 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'feature/34-sqlite-vertical' &&
+      github.event.label.name == 'native-stderr-diagnostic-once'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      HARVEST_TOKEN: ''
+      HARVEST_ACCOUNT_ID: ''
+      TEMPO_CONFIG: /tmp/tempo-ci-config-unused.json
+      TEMPO_DIAGNOSTIC_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      GOMAXPROCS: '2'
+      GOFLAGS: '-p=1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Pure diagnostic safety mocks (no native host)
+        run: |
+          python3 -B scripts/native-hooks/test_codex_stderr_diagnostic.py
+          go test -p=1 -count=1 -timeout=30s -tags=tempo_native_diagnostic -run '^TestNativeDiagnostic(ActualCLIHookFailureRetainsHostOutput|WriterExactForwardingAndSafeGrammar|SinkOwnIdentityExclusiveFilesAndFiniteCapacity|SinkRejectsWrongIdentityModeAndSymlink)$' ./cmd/tempo
+      - name: Build opt-in test executable and existing native fixture helper
+        run: |
+          go test -c -tags=tempo_native_diagnostic -trimpath -ldflags="-s -w -X github.com/rbeene/tempo/internal/cli.Version=${TEMPO_DIAGNOSTIC_HEAD_SHA}" -o bin/tempo-native-diagnostic.test ./cmd/tempo
+          go test -c -o bin/tempo-native-fixture.test ./internal/nativefixture
+      - name: Diagnostic only — instrumented executable cannot establish acceptance
+        timeout-minutes: 5
+        run: python3 -B scripts/native-hooks/codex_stderr_diagnostic.py --tempo bin/tempo-native-diagnostic.test --helper bin/tempo-native-fixture.test --evidence bin/native-codex-stderr-diagnostic.json
+      - name: Upload fixed diagnostic projection only
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tempo-native-codex-STDERR-DIAGNOSTIC-ONLY-${{ github.event.pull_request.head.sha }}
+          path: bin/native-codex-stderr-diagnostic.json
+          if-no-files-found: ignore
+          retention-days: 7
