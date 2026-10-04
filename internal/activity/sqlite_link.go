@@ -289,6 +289,16 @@ type sqliteLinkFailureError struct {
 func (e *sqliteLinkFailureError) Error() string { return e.public.Error() }
 func (e *sqliteLinkFailureError) Unwrap() error { return e.public }
 
+// Preserve only caller cancellation identity after a definite, owner-free
+// busy outcome. Private evidence stays outside the public unwrap chain.
+func (e *sqliteLinkFailureError) Is(target error) bool {
+	if target != context.Canceled && target != context.DeadlineExceeded {
+		return false
+	}
+	public, ok := e.public.(*Error)
+	return ok && public != nil && public.Code == "state_busy" && !public.Uncertain && e.owner == nil && errors.Is(e.evidence, target)
+}
+
 func sqliteLinkFailure(cause, cleanup error, owner *sqliteio.Conn, known, uncertain bool, requestID string, preparation error) error {
 	var domain *Error
 	var native *sqliteio.Error

@@ -1886,12 +1886,27 @@ func TestSQLiteNormalizedCaptureN13RawFingerprintIdentityAndOwnedResults(t *test
 	}
 	q2 := ncQANew(t, nil)
 	bad := qaEvent("raw-"+string([]byte{0xff}), "1", "1", "work", qaBindingA)
-	before, rows := ncQAAudit(t, q2.f)
-	r, err = q2.service.ingestSQLite(context.Background(), bad)
-	if err == nil || !reflect.DeepEqual(r, EventResult{}) {
-		t.Fatal("raw key drift committed invalid graph", err)
+	persisted := bad.Actor
+	persisted.AgentID = bgQAPersistedString(t, bad.Actor.AgentID)
+	if actorKey(bad.Actor) != actorKey(persisted) {
+		before, rows := ncQAAudit(t, q2.f)
+		r, err = q2.service.ingestSQLite(context.Background(), bad)
+		if err == nil || !reflect.DeepEqual(r, EventResult{}) {
+			t.Fatal("raw key drift committed invalid graph", err)
+		}
+		ncQAUnchanged(t, before, rows, q2.f)
+	} else {
+		// This JSON encoder repairs the field and packed map key identically.
+		// The accepted branch still needs full legacy parity and cold closure.
+		r = ncQACompare(t, q2, bad, 0, "", 1)
+		if r.Disposition != "applied" {
+			t.Fatal("stable repaired key did not apply")
+		}
+		st := ncQAReadState(t, q2)
+		if actor := st.Actors[actorKey(persisted)]; actor == nil || actor.Ref.Key != persisted {
+			t.Fatal("stable repaired key did not persist canonical identity")
+		}
 	}
-	ncQAUnchanged(t, before, rows, q2.f)
 }
 
 func TestSQLiteNormalizedCaptureN13OwnedPreparedSampleAndRetainedNonemptyChildren(t *testing.T) {
@@ -2372,7 +2387,7 @@ func TestSQLiteNormalizedCaptureN16SevenLiteralSelectorsTypedPeersAndNegativeLoo
 	host := qaNewClaude(t)
 	host.startSession()
 	root := host.send(0, host.event("UserPromptSubmit", "question", ""))
-	host.send(0, qaClaudeQuestion(host, "PreToolUse", "q"))
+	host.send(0, qaClaudeTool(host, "PreToolUse", "question", "", "q", "AskUserQuestion"))
 	if root.Actor == nil {
 		t.Fatal("N07 actual Ref positive fixture")
 	}

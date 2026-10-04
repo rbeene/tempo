@@ -185,7 +185,7 @@ func mqQAComplete(t *testing.T, st *state, wantValid bool) *state {
 
 func mqQABindings(t *testing.T) *state {
 	t.Helper()
-	s, _ := qaLinkService(t)
+	s, _ := qaLegacyLinkService(t)
 	in := qaLinkInput(t)
 	b, err := s.Link(context.Background(), in, qaLinkDeps(t, qaNewLinkProvider(t)))
 	bgQAFixtureError(t, "request-link", err)
@@ -241,7 +241,7 @@ func mqQAPhase(t *testing.T, shape string) (*state, *state, string) {
 			t.Fatal("actual claimed-run barrier not reached")
 		}
 		before := mqQAComplete(t, bgQAReadLegacy(t, s), true)
-		_, err = New(Options{Path: path}).SyncNow(context.Background(), in, qaSyncNoProvider(t))
+		_, err = qaLegacyNew(Options{Path: path}).SyncNow(context.Background(), in, qaSyncNoProvider(t))
 		bgQAFixtureError(t, "request-run-recovery", err)
 		return before, mqQAComplete(t, bgQAReadLegacy(t, s), true), id
 	}

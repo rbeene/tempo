@@ -318,6 +318,131 @@ def accepted(receipt):
     return receipt.get("disposition") in ("applied", "duplicate") and receipt.get("durability") == "committed" and receipt.get("profile_basis") == "operator_declared"
 
 
+def receipt_gate_probe(receipts, baseline):
+    # Observe the exact gate snapshot without retaining IDs, payloads or paths.
+    try:
+        if not isinstance(baseline, (set, frozenset)):
+            return {"status": "unarmed"}
+        if not isinstance(receipts, list):
+            return {"status": "invalid_response"}
+        if len(receipts) > 128:
+            return {"status": "overflow", "receipt_count": 129}
+        counts, starts, postbaseline = {}, 0, 0
+        for row in receipts:
+            if (not isinstance(row, dict) or not isinstance(row.get("id"), str)
+                    or row.get("kind") not in INSTALLED_EVENTS
+                    or row.get("disposition") not in ("applied", "duplicate", "stale", "untracked", "review_required")
+                    or row.get("durability") not in ("committed", "not_committed", "unknown")):
+                return {"status": "invalid_response"}
+            if row["id"] in baseline:
+                continue
+            postbaseline += 1
+            key = row["kind"], row["disposition"], row["durability"]
+            counts[key] = counts.get(key, 0) + 1
+            starts += int(row["kind"] == "SessionStart" and accepted(row))
+        return {"status": "available", "receipt_count": len(receipts), "postbaseline_count": postbaseline,
+                "accepted_session_starts": starts,
+                "counts": [{"kind": kind, "disposition": disposition, "durability": durability, "count": count}
+                           for (kind, disposition, durability), count in sorted(counts.items())]}
+    except Exception:
+        return {"status": "invalid_response"}
+
+
+def failed_profile_probe(result, confirmed, project, version):
+    # Production Status can return a retained context when fresh inspection
+    # fails. Never label those old hashes as a sampled current inventory.
+    invalid = {"status": "invalid_response"}
+    try:
+        require(isinstance(result, dict) and type(result.get("contract_version")) is int
+                and result["contract_version"] == 1 and isinstance(result.get("hooks"), list)
+                and len(result["hooks"]) == 1, "diagnostic_response_invalid")
+        row = result["hooks"][0]
+        require(isinstance(row, dict) and row.get("host") == "codex" and row.get("scope") == "user"
+                and row.get("path") == str(project) and row.get("runtime_version", "") in ("", version)
+                and row.get("state") in ("not_installed", "approval_required", "awaiting_real_event", "unsupported", "needs_repair")
+                and row.get("ordering") in ("supported", "unavailable"), "diagnostic_response_invalid")
+        profile = row.get("profile")
+        require(isinstance(profile, dict) and profile.get("basis") in ("none", "operator_declared")
+                and profile.get("state") in ("absent", "eligible", "invalidated", "revoked")
+                and type(profile.get("capture_eligible")) is bool, "diagnostic_response_invalid")
+        revision = profile.get("revision")
+        require(isinstance(revision, str) and re.fullmatch(r"0|[1-9][0-9]{0,19}", revision)
+                and int(revision) < 2**64, "diagnostic_response_invalid")
+        code = profile.get("diagnostic_code", "")
+        require(code in ("", "profile_required", "operator_declared_risk", "profile_invalidated", "profile_revoked"),
+                "diagnostic_response_invalid")
+        diagnostics = row.get("diagnostics")
+        require(isinstance(diagnostics, list) and len(diagnostics) <= 16, "diagnostic_response_invalid")
+        codes = []
+        for item in diagnostics:
+            require(isinstance(item, dict) and item.get("code") in
+                    ("project_context_required", "unsupported_contract", "ordering_unavailable", "operator_declared_risk"),
+                    "diagnostic_response_invalid")
+            codes.append(item["code"])
+        fingerprint = profile.get("fingerprint", "")
+        require(isinstance(fingerprint, str) and re.fullmatch(r"[a-f0-9]{64}|", fingerprint), "diagnostic_response_invalid")
+        projected = {"status": "available", "hook_state": row["state"], "ordering": row["ordering"],
+                     "basis": profile["basis"], "profile_state": profile["state"],
+                     "capture_eligible": profile["capture_eligible"], "revision": revision,
+                     "revision_matches": revision == confirmed.get("revision"),
+                     "fingerprint_matches": fingerprint == confirmed.get("fingerprint"),
+                     "diagnostic_code": code, "diagnostic_codes": sorted(set(codes)),
+                     "inventory": {"status": "unavailable"}}
+        if (row.get("pending") is not None or row["state"] in ("not_installed", "needs_repair")
+                or any(c in codes for c in ("unsupported_contract", "project_context_required"))):
+            return projected
+        roles = ("runtime", "executable", "definitions", "skill", "configuration", "repository")
+        def inventory(value):
+            require(isinstance(value, dict), "diagnostic_response_invalid")
+            context = value.get("context")
+            require(isinstance(context, dict) and context.get("inventory_version") == "tempo-installed-static-v1"
+                    and context.get("host") == "codex" and context.get("scope") == "user"
+                    and context.get("path") == str(project) and context.get("runtime_version") == version
+                    and context.get("surface") == "local", "diagnostic_response_invalid")
+            artifacts = context.get("artifacts")
+            require(isinstance(artifacts, list) and 4 <= len(artifacts) <= 128, "diagnostic_response_invalid")
+            values, paths = {}, set()
+            for item in artifacts:
+                require(isinstance(item, dict) and item.get("role") in roles
+                        and isinstance(item.get("path"), str) and len(item["path"]) <= 4096
+                        and Path(item["path"]).is_absolute() and item["path"] not in paths
+                        and isinstance(item.get("sha256"), str)
+                        and (item["sha256"] == "absent" or re.fullmatch(r"[a-f0-9]{64}", item["sha256"])),
+                        "diagnostic_response_invalid")
+                paths.add(item["path"])
+                values[item["role"], item["path"]] = item["sha256"]
+            require({"runtime", "executable", "definitions", "skill"} <= {key[0] for key in values},
+                    "diagnostic_response_invalid")
+            return values
+        before, after = inventory(confirmed), inventory(profile)
+        projected["inventory"] = {"status": "available", "all_matches": before == after,
+            "confirmed_count": len(before), "current_count": len(after),
+            "roles": [{"role": role, "confirmed_count": sum(key[0] == role for key in before),
+                       "current_count": sum(key[0] == role for key in after),
+                       "matching_count": sum(key[0] == role and key in after and after[key] == value
+                                             for key, value in before.items())} for role in roles]}
+        return projected
+    except Exception:
+        return invalid
+
+
+def observe_failed_profile(read_status, confirmed, project, version, deadline, joined):
+    # This optional read cannot replace the failure that led here or start work
+    # while terminal/provider cleanup is incomplete. It never calls Eligibility.
+    if joined is not True:
+        return {"status": "cleanup_incomplete"}
+    if confirmed is None:
+        return {"status": "unconfirmed"}
+    try:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return {"status": "deadline_expired"}
+        result = read_status(min(20, remaining))
+        return failed_profile_probe(result, confirmed, project, version)
+    except Exception:
+        return {"status": "helper_failed"}
+
+
 def require_prompt_barrier(receipts, session, turn):
     require(any(r["kind"] == "SessionStart" and r["session_id"] == session and accepted(r) for r in receipts), "session_start_barrier_missing")
     require(any(r["kind"] == "UserPromptSubmit" and r["session_id"] == session and r["turn_id"] == turn and accepted(r)
@@ -618,6 +743,7 @@ class Model:
         self.read, self.repo, self.deadline = read, repo, deadline
         self.session = self.turn = self.child = self.interrupt_turn = None
         self.baseline = None
+        self.initial_receipt_probe = {"status": "not_observed"}
         self.child_turn = None
         self.lock = threading.Lock()
         self.error = None
@@ -688,6 +814,7 @@ class Model:
     def close(self):
         self.shutdown.set(); self.child_release.set()
         self.server.shutdown(); self.server.server_close(); self.thread.join(timeout=2)
+        require(not self.thread.is_alive(), "provider_join_failed")
 
     def respond(self, body):
         with self.lock:
@@ -716,9 +843,15 @@ class Model:
         else: raise FixtureFailure("unexpected_provider_turn")
         with self.lock:
             require(not self.shutdown.is_set(), "provider_request_after_shutdown")
-            snap = self.read()
-            receipts = snap["receipts"]
+            try:
+                snap = self.read()
+                receipts = snap["receipts"]
+            except Exception:
+                if self.session is None:
+                    self.initial_receipt_probe = {"status": "read_failed"}
+                raise
             if self.session is None:
+                self.initial_receipt_probe = receipt_gate_probe(receipts, self.baseline)
                 require(self.baseline is not None and category == "parent" and self.phase == "initial", "request_before_measured_session")
                 starts = [r for r in receipts if r["kind"] == "SessionStart" and r["id"] not in self.baseline and accepted(r)]
                 require(len(starts) == 1, "measured_session_ambiguous")
@@ -1111,9 +1244,12 @@ def run(args, report):
     bounded_run(["/usr/bin/git", "-c", "credential.helper=", "init", "-q", str(repo)], env, root)
     (repo / "AGENTS.md").write_text("Synthetic native lifecycle fixture. Update the native plan and run the requested child lifecycle. No shell, network or file writes.\n")
 
-    def helper_call(action, *extra):
+    def helper_call(action, *extra, timeout_cap=None):
+        timeout = 20 if action in ("install", "status", "confirm") else 8
+        if timeout_cap is not None:
+            timeout = min(timeout, timeout_cap)
         output = bounded_run([str(helper), "fixture", action, env["TEMPO_STATE"], env["TEMPO_HOOK_STATE"], *map(str, extra)],
-                             env, repo, timeout=20 if action in ("install", "status", "confirm") else 8)
+                             env, repo, timeout=timeout)
         return json.loads(output) if output else None
 
     report["stage"] = "production_link"
@@ -1122,6 +1258,7 @@ def run(args, report):
     terminal = None
     baseline = None
     confirmed_artifacts = None
+    profile = None
     report["hook_diagnostics"] = {"status": "unavailable", "counts": []}
     report["diagnostic_source"] = "host_managed_stderr"
     try:
@@ -1218,7 +1355,13 @@ def run(args, report):
                                       "exact_bounded_interrupt_uncertainty", "production_capture_effects"]})
         report["stage"] = "complete"
     finally:
-        close_native(terminal, model, primary_failure=sys.exc_info()[0] is not None)
+        primary_failure = sys.exc_info()[0] is not None
+        joined = close_native(terminal, model, primary_failure=primary_failure)
+        report["initial_receipt_probe"] = model.initial_receipt_probe
+        if primary_failure:
+            report["failure_profile_probe"] = observe_failed_profile(
+                lambda timeout: helper_call("status", repo, runtime, tempo, "user", timeout_cap=timeout),
+                profile, repo, pin["version"], deadline, joined)
         report["request_counts"] = model.counts
         report["requests"] = model.requests
         report["provider_entry_count"] = model.entry_count
@@ -1236,16 +1379,19 @@ def run(args, report):
 
 
 def close_native(terminal, model, primary_failure):
+    joined = False
     try:
         try:
             if terminal is not None: terminal.close()
         finally:
             model.close()
+        joined = True
         # Joined handlers cannot change the verdict after this check.
         require(model.error is None, model.error or "provider_failed")
     except Exception:
         if not primary_failure:
             raise
+    return joined
 
 
 def main():

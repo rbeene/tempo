@@ -192,7 +192,7 @@ func TestQAHostFollowupCWDDoesNotChangeAttribution(t *testing.T) {
 func TestQAHostLinkedWithoutPolicyNeverAdmitsWork(t *testing.T) {
 	h := qaNew(t)
 	in := qaLinkInput(t)
-	h.service = New(Options{Path: h.path, Clock: ClockFunc(func() (ClockSample, error) { return h.sample, nil }), HookPolicies: hookstate.New(hookstate.Options{Path: filepath.Join(t.TempDir(), "missing", "hooks.json")})})
+	h.service = qaLegacyNew(Options{Path: h.path, Clock: ClockFunc(func() (ClockSample, error) { return h.sample, nil }), HookPolicies: hookstate.New(hookstate.Options{Path: filepath.Join(t.TempDir(), "missing", "hooks.json")})})
 	if _, err := h.service.Link(context.Background(), in, qaLinkDeps(t, qaNewLinkProvider(t))); err != nil {
 		t.Fatal(err)
 	}

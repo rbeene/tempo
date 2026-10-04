@@ -37,6 +37,13 @@ func sdQAAudit(t *testing.T, tx *sqliteio.Tx, m sqliteStoreMeta) (map[string][][
 	t.Helper()
 	result := map[string][][]string{}
 	total := int64(114 + len(m.ComputerID) + len(m.StateBasename) + len(m.DatabaseBasename))
+	// The fixed base includes two NULL optional metadata fields. Each stored
+	// TEXT replaces a one-byte NULL with a nine-byte header and its UTF-8 bytes.
+	for _, optional := range []*string{m.MigrationID, m.BackupSHA256} {
+		if optional != nil {
+			total += 8 + int64(len(*optional))
+		}
+	}
 	for _, table := range []struct{ name, columns, order string }{
 		{"bindings", bgQABindingColumns, "binding_id"},
 		{"actor_generations", bgQAGenerationColumns, "actor_key,generation"},

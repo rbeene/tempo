@@ -239,7 +239,7 @@ func bgQAFixtureError(t *testing.T, phase string, err error) {
 
 func bgQALinked(t *testing.T) (*Service, *state, sqliteBindingRow) {
 	t.Helper()
-	s, _ := qaLinkService(t)
+	s, _ := qaLegacyLinkService(t)
 	in := qaLinkInput(t)
 	_, err := DiscoverLocation(context.Background(), in.Path)
 	bgQAFixtureError(t, "link-location-discovery", err)
@@ -383,7 +383,7 @@ func TestSQLiteBindingRowsRecordlessAndSavedTombstoneHistory(t *testing.T) {
 		interopClose(t, c)
 	})
 	t.Run("real-link-repair-unlink", func(t *testing.T) {
-		s, _ := qaLinkService(t)
+		s, _ := qaLegacyLinkService(t)
 		in := qaLinkInput(t)
 		_, err := DiscoverLocation(context.Background(), in.Path)
 		bgQAFixtureError(t, "history-link-location-discovery", err)

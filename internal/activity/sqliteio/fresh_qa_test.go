@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -343,10 +344,12 @@ func TestSQLiteFreshInitialGuardOccupiedPathFollowerAndDeadline(t *testing.T) {
 				t.Fatal("OS raw-basename absence control differs from qualified baseline")
 			}
 			if baseline.OpenErrno != 0 {
-				// Only the fixed actual EPERM counterexample is qualified here.
+				// Only the observed EPERM and Darwin EILSEQ controls qualify.
 				// No UTF-8 predicate, arbitrary errno, or generic IO refusal passes.
-				if stateName != "owned-"+string([]byte{0xff})+"-state" || baseline.OpenErrno != int(unix.EPERM) || baseline.ExactEntry || !baseline.Empty {
-					t.Fatal("OS raw-basename refusal differs from qualified EPERM control")
+				qualifiedRefusal := baseline.OpenErrno == int(unix.EPERM) ||
+					runtime.GOOS == "darwin" && baseline.OpenErrno == int(unix.EILSEQ)
+				if stateName != "owned-"+string([]byte{0xff})+"-state" || !qualifiedRefusal || baseline.ExactEntry || !baseline.Empty {
+					t.Fatal("OS raw-basename refusal differs from qualified EPERM/Darwin EILSEQ control")
 				}
 				freshQAQuiet(t)
 				var before unix.Stat_t
@@ -398,7 +401,7 @@ func TestSQLiteFreshInitialGuardOccupiedPathFollowerAndDeadline(t *testing.T) {
 				}
 				var failure *Error
 				if c != nil || err == nil || !errors.As(err, &failure) || failure.Phase != Admission || failure.Category != IO || failure.Code != 0 || failure.Cleanup != nil || guardBefore != 1 || guardAfter != 1 || trace.count("main", "close", "before") != 1 || trace.count("main", "close", "closed") != 1 {
-					t.Fatal("actual OS EPERM did not yield exact terminal admission IO/code0 refusal")
+					t.Fatal("actual qualified OS refusal did not yield exact terminal admission IO/code0 refusal")
 				}
 				qaSafeError(t, err, dir, freshQAName)
 				return // This subcase asserted the actual refusal and unchanged namespace.

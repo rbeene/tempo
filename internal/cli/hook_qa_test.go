@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -381,7 +382,13 @@ func TestQAHostCLICommittedCallbackAndDuplicateWakeWorker(t *testing.T) {
 		t.Fatalf("callback failed durable timing: %+v %v", s, err)
 	}
 	qaWorkerNotification(t, c, "wake")
-	before, err := os.ReadFile(path)
+	// The selector remains absent with SQLite. Compare the complete public
+	// timing projection and cold durable receipts/outbox instead of JSON bytes.
+	beforeReceipts, err := activity.New(activity.Options{Path: path}).HostReceipts(context.Background(), activity.HostReceiptFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeSync, err := activity.New(activity.Options{Path: path}).SyncStatus(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,13 +396,24 @@ func TestQAHostCLICommittedCallbackAndDuplicateWakeWorker(t *testing.T) {
 	if diagnostic != "" {
 		t.Fatalf("duplicate diagnostic %q", diagnostic)
 	}
-	after, err := os.ReadFile(path)
+	after, err := d.Activity.Status(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterReceipts, err := activity.New(activity.Options{Path: path}).HostReceipts(context.Background(), activity.HostReceiptFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterSync, err := activity.New(activity.Options{Path: path}).SyncStatus(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	again := qaHostStopReceipt(t, d.Activity)
-	if string(before) != string(after) || again.ID != receipt.ID || *again.Actor != *receipt.Actor {
+	if !reflect.DeepEqual(s, after) || !reflect.DeepEqual(beforeReceipts, afterReceipts) || !reflect.DeepEqual(beforeSync, afterSync) || !reflect.DeepEqual(again, receipt) {
 		t.Fatal("worker hint changed duplicate receipt/state")
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("SQLite callback created the selector file: %v", err)
 	}
 	qaWorkerNotification(t, c, "wake")
 }
