@@ -399,7 +399,7 @@ owned child processes and local mock HTTP; it does not install personal services
 
 ## Native Codex callbacks
 
-`hook codex --input-stdin` consumes one bounded native callback and returns exactly `{}` for the host. It runs locally without credentials or prompts; capture diagnostics and durability appear only on stderr. `--json` and `--non-interactive` preserve that host protocol. Account overrides and confirmation flags are inapplicable. Capture requires an existing link and retained eligible hook policy. This command does not install or trust hooks. See [Codex lifecycle capture](codex-hooks.md) for the supported runtime, identity rules and delivery limits.
+`hook codex --input-stdin` consumes one bounded native callback and normally returns `{}`. A validated `SessionStart` or `SubagentStart` with a capture diagnostic instead returns only native `hookSpecificOutput.hookEventName` and `hookSpecificOutput.additionalContext`, with fixed kind/code/durability values. This intentionally informs the model of declined, reviewed or uncertain local timing; it is not a receipt, veto or retry instruction. Clean captures/duplicates, undecodable input and other kinds retain `{}`. It runs locally without credentials or prompts; the existing fixed diagnostics and durability also remain on stderr. `--json` and `--non-interactive` preserve that host protocol. Account overrides and confirmation flags are inapplicable. Capture requires an existing link and retained eligible hook policy. This command does not install or trust hooks. See [Codex lifecycle capture](codex-hooks.md) for the supported runtime, identity rules and delivery limits.
 
 ## Native Claude callbacks
 

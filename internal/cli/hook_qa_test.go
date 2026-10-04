@@ -158,7 +158,7 @@ func TestQAHostCLICommittedClockFailureReportsDurableQuarantine(t *testing.T) {
 	seconds := int64(0)
 	clockFailed := false
 	base := time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC)
-	s := activity.New(activity.Options{Path: filepath.Join(root, "activity", "state.json"), HookPolicies: policies, Clock: activity.ClockFunc(func() (activity.ClockSample, error) {
+	s := activity.New(activity.Options{Path: filepath.Join(root, "activity", "state.json"), LockTimeout: sqliteFlowTestLockTimeout(), HookPolicies: policies, Clock: activity.ClockFunc(func() (activity.ClockSample, error) {
 		epoch, n := "test-boot", strconv.FormatInt(seconds*int64(time.Second), 10)
 		sample := activity.ClockSample{Capability: "available", WallUTC: base.Add(time.Duration(seconds) * time.Second), Epoch: &epoch, ElapsedNS: &n, AwakeNS: &n}
 		if clockFailed {
@@ -229,7 +229,7 @@ func TestQAHostCLIWaitReviewUsesFiniteDiagnostic(t *testing.T) {
 			seconds := int64(0)
 			clockFailed := false
 			base := time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC)
-			s := activity.New(activity.Options{Path: filepath.Join(root, "activity", "state.json"), HookPolicies: policies, Clock: activity.ClockFunc(func() (activity.ClockSample, error) {
+			s := activity.New(activity.Options{Path: filepath.Join(root, "activity", "state.json"), LockTimeout: sqliteFlowTestLockTimeout(), HookPolicies: policies, Clock: activity.ClockFunc(func() (activity.ClockSample, error) {
 				epoch, n := "test-boot", strconv.FormatInt(seconds*int64(time.Second), 10)
 				sample := activity.ClockSample{Capability: "available", WallUTC: base.Add(time.Duration(seconds) * time.Second), Epoch: &epoch, ElapsedNS: &n, AwakeNS: &n}
 				if clockFailed {
@@ -298,7 +298,7 @@ func qaHostWakeFixture(t *testing.T, path string) (cli.Dependencies, string, *in
 	}
 	seconds, failed := new(int64), new(bool)
 	base := time.Date(2026, 10, 2, 9, 0, 0, 0, time.UTC)
-	s := activity.New(activity.Options{Path: path, HookPolicies: policies, Clock: activity.ClockFunc(func() (activity.ClockSample, error) {
+	s := activity.New(activity.Options{Path: path, LockTimeout: sqliteFlowTestLockTimeout(), HookPolicies: policies, Clock: activity.ClockFunc(func() (activity.ClockSample, error) {
 		epoch, n := "wake-test-boot", strconv.FormatInt(*seconds*int64(time.Second), 10)
 		sample := activity.ClockSample{Capability: "available", WallUTC: base.Add(time.Duration(*seconds) * time.Second), Epoch: &epoch, ElapsedNS: &n, AwakeNS: &n}
 		if *failed {

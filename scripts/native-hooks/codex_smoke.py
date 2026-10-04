@@ -738,12 +738,45 @@ def message_item(text):
     return {"type": "message", "role": "assistant", "id": "msg-" + text, "content": [{"type": "output_text", "text": text}]}
 
 
+# Model-visible start diagnostics are intentional product context, not an
+# invocation log. Match only whole fixed developer text; keep no raw input.
+CAPTURE_CONTEXT_CODES = frozenset((
+    "validation", "unsupported_contract", "state_corrupt", "state_busy",
+    "local_write_unknown", "clock_unavailable", "clock_conflict", "binding_unavailable",
+    "event_conflict", "event_gap", "ordering_unavailable", "profile_required",
+    "profile_invalidated", "profile_revoked", "untracked", "review_required",
+    "source_lost", "restart_unknown", "incomplete_wait", "source_loss_while_waiting", "internal",
+))
+CAPTURE_CONTEXT_PATTERN = re.compile(
+    r"tempo capture: kind=(SessionStart|SubagentStart); code=([a-z_]+); durability=(committed|not_committed|unknown)")
+
+
+def capture_context_tuples(body):
+    observed = set()
+    items = body.get("input")
+    if not isinstance(items, list): return observed
+    for item in items:
+        if not isinstance(item, dict) or item.get("role") != "developer": continue
+        content = item.get("content")
+        if not isinstance(content, list): continue
+        for part in content:
+            if not isinstance(part, dict) or part.get("type") != "input_text": continue
+            text = part.get("text")
+            if not isinstance(text, str) or len(text) > 160: continue
+            match = CAPTURE_CONTEXT_PATTERN.fullmatch(text)
+            if match and match[2] in CAPTURE_CONTEXT_CODES:
+                observed.add(match.groups())
+    # The 2 MiB provider-body bound and finite 2 * 21 * 3 tuple space bound work/storage.
+    return observed
+
+
 class Model:
     def __init__(self, read, repo, deadline):
         self.read, self.repo, self.deadline = read, repo, deadline
         self.session = self.turn = self.child = self.interrupt_turn = None
         self.baseline = None
         self.initial_receipt_probe = {"status": "not_observed"}
+        self.capture_contexts = set()
         self.child_turn = None
         self.lock = threading.Lock()
         self.error = None
@@ -820,6 +853,8 @@ class Model:
         with self.lock:
             self.entry_count = min(16, self.entry_count + 1)
         require(body.get("stream") is True and body.get("model") == MODEL, "provider_request_contract")
+        with self.lock:
+            self.capture_contexts.update(capture_context_tuples(body))
         # The newest actual user message distinguishes parent/child/interrupt;
         # nested tool arguments containing the child marker don't count.
         users = [item for item in body.get("input", []) if item.get("role") == "user"]
@@ -1358,6 +1393,13 @@ def run(args, report):
         primary_failure = sys.exc_info()[0] is not None
         joined = close_native(terminal, model, primary_failure=primary_failure)
         report["initial_receipt_probe"] = model.initial_receipt_probe
+        report["capture_context_probe"] = {
+            "status": "observed" if joined and model.capture_contexts else "not_observed" if joined else "unavailable",
+            "source": "model_developer_input", "completeness": "not_established",
+            "invocation_count": "unavailable",
+            "tuples": [{"kind": kind, "code": code, "durability": durability}
+                       for kind, code, durability in sorted(model.capture_contexts)] if joined else [],
+        }
         if primary_failure:
             report["failure_profile_probe"] = observe_failed_profile(
                 lambda timeout: helper_call("status", repo, runtime, tempo, "user", timeout_cap=timeout),

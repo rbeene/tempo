@@ -613,6 +613,12 @@ func sqliteReduceHostEffects(tx *sqliteio.Tx, meta sqliteStoreMeta, e HostEvent,
 			return sqliteHostTransition{}, err
 		}
 	}
+	// A native Interrupt is a terminal boundary even though its work tail
+	// stays uncertain. Pending-wait loss keeps its distinct capture review.
+	if e.Kind == "Interrupt" && p.Normalized != nil && !captureReview(r) {
+		r.Disposition = "applied"
+		r.Ordering = "supported"
+	}
 	code := ""
 	if p.Normalized != nil {
 		n := early

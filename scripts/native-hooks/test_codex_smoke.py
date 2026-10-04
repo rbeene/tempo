@@ -696,6 +696,7 @@ class HarnessTests(unittest.TestCase):
         model.baseline = None
         model.initial_receipt_probe = {"status": "not_observed"}
         model.entry_count = 0
+        model.capture_contexts = set()
         model.title_count = 0
         model.shutdown = threading.Event()
         model.phase, model.counts, model.requests = "initial", {}, []
@@ -863,6 +864,51 @@ class HarnessTests(unittest.TestCase):
         model.respond(body)
         body["input"].append({"type": "function_call_output", "call_id": "tempo-plan", "output": "Plan updated"})
         with self.assertRaises(smoke.FixtureFailure): model.respond(body)
+
+    def test_start_capture_context_is_observed_without_satisfying_child_receipt_gate(self):
+        receipts = [self.receipt("SessionStart"), self.receipt("UserPromptSubmit")]
+        model = self.model(receipts)
+        body = self.request(smoke.CHILD_PROMPT)
+        context = "tempo capture: kind=SubagentStart; code=state_busy; durability=not_committed"
+        body["input"].insert(0, {"role": "developer", "content": [{"type": "input_text", "text": context}]})
+        with mock.patch.object(smoke.subprocess, "Popen", side_effect=AssertionError("unexpected process")), \
+             mock.patch.object(smoke.threading.Thread, "start", side_effect=AssertionError("unexpected thread")), \
+             mock.patch.object(smoke.http.server, "ThreadingHTTPServer", side_effect=AssertionError("unexpected socket")):
+            with self.assertRaisesRegex(smoke.FixtureFailure, "child_start_barrier_missing"):
+                model.respond(body)
+            self.assertEqual(model.capture_contexts, {("SubagentStart", "state_busy", "not_committed")})
+            self.assertEqual(model.counts, {})
+            receipts.append(self.receipt("SubagentStart", agent_id="child-1"))
+            self.assertEqual(model.respond(body)[2], "child")
+            self.assertEqual(model.capture_contexts, {("SubagentStart", "state_busy", "not_committed")})
+            self.assertEqual(model.counts, {"child": 1})
+
+    def test_start_capture_context_projection_rejects_untrusted_shapes_and_raw_text(self):
+        exact = "tempo capture: kind=SessionStart; code=clock_unavailable; durability=committed"
+        cases = [
+            ("positive", "developer", "input_text", exact, {("SessionStart", "clock_unavailable", "committed")}),
+            ("user_lookalike", "user", "input_text", exact, set()),
+            ("assistant_lookalike", "assistant", "input_text", exact, set()),
+            ("wrong_content", "developer", "output_text", exact, set()),
+            ("unreviewed_kind", "developer", "input_text", exact.replace("SessionStart", "Stop"), set()),
+            ("unknown_code", "developer", "input_text", exact.replace("clock_unavailable", "SECRET"), set()),
+            ("unknown_durability", "developer", "input_text", exact.replace("committed", "SECRET"), set()),
+            ("prefix", "developer", "input_text", "SECRET " + exact, set()),
+            ("suffix", "developer", "input_text", exact + " SECRET", set()),
+            ("newline", "developer", "input_text", exact + "\n", set()),
+        ]
+        with mock.patch.object(smoke.subprocess, "Popen", side_effect=AssertionError("unexpected process")), \
+             mock.patch.object(smoke.threading.Thread, "start", side_effect=AssertionError("unexpected thread")), \
+             mock.patch.object(smoke.http.server, "ThreadingHTTPServer", side_effect=AssertionError("unexpected socket")):
+            for name, role, content_type, text, expected in cases:
+                with self.subTest(name=name):
+                    model = self.model([self.receipt("SessionStart"), self.receipt("UserPromptSubmit")])
+                    body = self.request(smoke.CHILD_PROMPT)
+                    body["input"].insert(0, {"role": role, "content": [{"type": content_type, "text": text}]})
+                    with self.assertRaises(smoke.FixtureFailure): model.respond(body)
+                    self.assertEqual(model.capture_contexts, expected)
+                    self.assertNotIn("SECRET", repr(model.capture_contexts))
+                    self.assertEqual(model.counts, {})
 
     def test_child_request_requires_real_child_barrier_and_is_bounded(self):
         receipts = [self.receipt("SessionStart"), self.receipt("UserPromptSubmit")]
@@ -1146,6 +1192,7 @@ class InstallIntegrationTests(unittest.TestCase):
                 model.server.server_port, model.requests, model.error = 43210, [], None
                 model.counts, model.entry_count, model.title_count = {}, 0, 0
                 model.initial_receipt_probe = {"status": "not_observed"}
+                model.capture_contexts = set()
                 # No environment variable is changed and no process is started.
                 # Only the Path returned for this read is redirected to an inert
                 # fixture; all other reads/writes remain inside our temp tree.
@@ -1298,6 +1345,7 @@ class InstallIntegrationTests(unittest.TestCase):
                 model.server.server_port, model.requests, model.error = 43210, [], None
                 model.counts, model.entry_count, model.title_count = {}, 0, 0
                 model.initial_receipt_probe = {"status": "not_observed"}
+                model.capture_contexts = set()
                 real_home = os.environ["HOME"]
                 def fixture_path(value): return home if str(value) == real_home else Path(value)
                 report = {}

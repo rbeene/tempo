@@ -30,6 +30,7 @@ type identity struct{ dev, ino uint64 }
 func fileIdentity(s *unix.Stat_t) identity { return identity{uint64(s.Dev), uint64(s.Ino)} }
 
 type rootEntry struct {
+	chain                                         []rootDirectory
 	key                                           string
 	databaseName                                  string
 	path                                          string
@@ -218,6 +219,14 @@ func acquireRoot(ctx context.Context, path, basename string, create bool, deadli
 		registry.Unlock()
 		if err == nil {
 			emit(event{Namespace: key, Role: "root", Op: "lease", Phase: "acquired", FD: fd})
+			// Waiters still own only the original leaf FD. Retain ancestors only
+			// after this lease is exclusive, under the original admission budget.
+			r.chain, err = retainRootChain(ctx, r, deadline)
+			if err != nil {
+				failure := safeError(Admission, err)
+				failure.Cleanup = joinCleanup(failure.Cleanup, releaseRoot(r))
+				return nil, failure
+			}
 			return r, nil
 		}
 		r.gate <- struct{}{}
@@ -247,9 +256,9 @@ func releaseRoot(r *rootEntry) error {
 	}
 	registry.Unlock()
 	first = joinCleanup(first, drainRejected())
-	if err := unix.Close(fd); err != nil {
-		first = joinCleanup(first, safeError(ClosePhase, err))
-	}
+	first = joinCleanup(first, closeRootChain(r.chain))
+	r.chain = nil
+	first = joinCleanup(first, closeRootDirectory(rootDirectory{fd: fd, id: r.id}))
 	r.gate <- struct{}{}
 	emit(event{Namespace: r.key, Role: "root", Op: "lease", Phase: "released", FD: fd})
 	return first
@@ -336,13 +345,8 @@ func pathEvent(r *rootEntry, name, op, phase string, flags, fd int, err error) e
 }
 
 func validateRoot(r *rootEntry) error {
-	fd, id, err := pinDirectory(r.path)
-	if err != nil {
-		return ErrUnsafe
-	}
-	_ = unix.Close(fd)
-	if id != r.id {
-		return ErrUnsafe
+	if err := validateRootPath(r); err != nil {
+		return err
 	}
 	registry.Lock()
 	poisoned := r.poisoned || registry.poisoned || registry.fatal

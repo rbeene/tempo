@@ -182,11 +182,36 @@ func iwTurn(t *testing.T, tx *Tx, source, native, inc, turn, agent string, actor
 	iwBind(t, tx, "host_turns", "turn_key,source,native_session,incarnation,turn_id,agent_id,cwd,actor_key,actor_generation,stopped", v)
 	return key
 }
+
+// iwOpen keeps qaOpen's admission budgets and Background Begin while adopting
+// even a failed Open's partial owner before checked cleanup or test failure.
+func iwOpen(t *testing.T, dir string, create bool, mode Mode) (*Conn, *Tx) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	started := time.Now()
+	c, err := Open(ctx, dir, iwName, Options{Create: create, AcquireDeadline: started.Add(250 * time.Millisecond)})
+	o := &swQAOwner{c: c}
+	t.Cleanup(func() {
+		cleanupErr := o.close()
+		if cleanupErr != nil || !o.ended {
+			t.Errorf("query fixture checked cleanup failed terminal=%t", o.ended)
+		}
+	})
+	if err == nil {
+		o.tx, err = c.Begin(context.Background(), mode)
+	}
+	if err != nil {
+		cleanupErr := o.close()
+		t.Fatalf("query fixture admission failed cleanup_terminal=%t cleanup_error=%t", o.ended, cleanupErr != nil)
+	}
+	return c, o.tx
+}
+
 func iwSeed(t *testing.T, n int) string {
 	t.Helper()
 	dir := qaDirectory(t)
-	c := qaOpen(t, dir, iwName, true)
-	tx := qaBegin(t, c, context.Background(), Write)
+	c, tx := iwOpen(t, dir, true, Write)
 	schema, err := os.ReadFile("../sqlite_schema.sql")
 	if err != nil {
 		t.Fatal(err)
@@ -339,9 +364,9 @@ func iwSeed(t *testing.T, n int) string {
 		t.Fatal("real schema native FK fixture refused", err)
 	}
 	qaCommit(t, tx)
+	iwConditionCommittedSeed(t, n, c, tx)
 	qaClose(t, c)
-	c = qaOpen(t, dir, iwName, false)
-	tx = qaBegin(t, c, context.Background(), Read)
+	c, tx = iwOpen(t, dir, false, Read)
 	iwFixtureInventory(t, tx, n)
 	if err := tx.Rollback(); err != nil {
 		t.Fatal(err)

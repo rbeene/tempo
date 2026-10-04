@@ -449,6 +449,7 @@ func TestSQLiteNormalizedCaptureN05PreparedClockSlotsAndScalarSanitation(t *test
 
 func TestSQLiteNormalizedCaptureN05ExternalCallbacksAfterNativeCloseCanAcquireWriter(t *testing.T) {
 	q := ncQANew(t, nil)
+	q.service.store.timeout = sqliteFlowTestLockTimeout() // This functional case includes two checked callback writer probes.
 	ncQAHookPositive(t, q.f)
 	e := qaEvent("A", "1", "1", "work", qaBindingA)
 	order := []string{}

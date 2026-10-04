@@ -395,9 +395,24 @@ func (c *Conn) setup(ctx context.Context, create bool) error {
 			return err
 		}
 	}
+	// These SQL builtins return the exact native compiled-library strings.
+	// Check them here without preparing two otherwise redundant statements.
+	if err := admissionError(ctx, c.acquireDeadline); err != nil {
+		return safeError(OpenPhase, err)
+	}
+	if err := c.busyRemaining(ctx); err != nil {
+		return err
+	}
+	version := lib.Xsqlite3_libversion(c.tls)
+	sourceID := lib.Xsqlite3_sourceid(c.tls)
+	if err := admissionError(ctx, c.acquireDeadline); err != nil {
+		return safeError(OpenPhase, err)
+	}
+	if version == 0 || sourceID == 0 || libc.GoString(version) != "3.53.4" ||
+		libc.GoString(sourceID) != "2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc" {
+		return safeError(OpenPhase, ErrUnsafe)
+	}
 	for _, q := range []struct{ sql, want string }{
-		{"SELECT sqlite_version()", "3.53.4"},
-		{"SELECT sqlite_source_id()", "2026-07-24 19:02:57 bf7c7f30031888f4e796e429ab3978879485813aaca6f641c7b33e4e09459bcc"},
 		{"PRAGMA journal_mode", "wal"}, {"PRAGMA synchronous", "2"},
 		{"PRAGMA foreign_keys", "1"}, {"PRAGMA wal_autocheckpoint", "0"},
 	} {

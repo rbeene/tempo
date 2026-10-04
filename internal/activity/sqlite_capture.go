@@ -189,8 +189,9 @@ func sqliteCaptureUnknown(e Event, cause error) error {
 	return errors.Join(v, sqliteCaptureError(cause))
 }
 
-// InspectForLink is the shared noncreating native inspection prerequisite. An
-// inspection error can retain a cleanup-only connection; it is never usable.
+// Reads use the complete native inspection. Writers first use the fixed
+// read-only pager prerequisite, then independently open and validate the writer.
+// An inspection error can retain a cleanup-only connection; it is never usable.
 func sqliteOpenCapture(ctx context.Context, a sqliteCaptureAdmission, mode sqliteio.Mode) (c *sqliteio.Conn, tx *sqliteio.Tx, meta sqliteStoreMeta, found bool, err error) {
 	if mode != sqliteio.Read && mode != sqliteio.Write {
 		return nil, nil, meta, false, failure("validation")
@@ -198,7 +199,11 @@ func sqliteOpenCapture(ctx context.Context, a sqliteCaptureAdmission, mode sqlit
 	if err = sqliteCaptureDeadline(ctx, a); err != nil {
 		return nil, nil, meta, false, err
 	}
-	c, kind, err := sqliteio.InspectForLink(ctx, a.Directory, a.StateBasename, a.DatabaseBasename, a.AcquireDeadline)
+	inspect := sqliteio.InspectForLink
+	if mode == sqliteio.Write {
+		inspect = sqliteio.InspectForCaptureWrite
+	}
+	c, kind, err := inspect(ctx, a.Directory, a.StateBasename, a.DatabaseBasename, a.AcquireDeadline)
 	fail := func(cause error) (*sqliteio.Conn, *sqliteio.Tx, sqliteStoreMeta, bool, error) {
 		return nil, nil, sqliteStoreMeta{}, false, sqliteCaptureError(errors.Join(cause, sqliteCaptureCleanup(c, tx)))
 	}

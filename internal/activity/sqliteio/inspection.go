@@ -25,6 +25,20 @@ const (
 // Conn. A nonnil Conn on error is the exact cleanup-only owner: the caller must
 // retain it through checked ordinary Close and may not Begin or acknowledge it.
 func InspectForLink(ctx context.Context, directory, stateBasename, databaseBasename string, deadline time.Time) (*Conn, LinkInspection, error) {
+	return inspectForLink(ctx, directory, stateBasename, databaseBasename, deadline, false)
+}
+
+// InspectForCaptureWrite keeps the noncreating read-only pager prerequisite for
+// a subsequent, separately checked writable Open. WAL success returns a
+// cleanup-only Conn: Begin is disabled, and ordinary checked close is required
+// before Open. It does not validate the application catalog or grant a write.
+// Absent/pristine and error ownership match InspectForLink. The same absolute
+// deadline must cover this probe, checked close, writable Open and Write Begin.
+func InspectForCaptureWrite(ctx context.Context, directory, stateBasename, databaseBasename string, deadline time.Time) (*Conn, LinkInspection, error) {
+	return inspectForLink(ctx, directory, stateBasename, databaseBasename, deadline, true)
+}
+
+func inspectForLink(ctx context.Context, directory, stateBasename, databaseBasename string, deadline time.Time, writePrerequisite bool) (*Conn, LinkInspection, error) {
 	if err := admissionError(ctx, deadline); err != nil {
 		return nil, 0, safeError(Admission, err)
 	}
@@ -117,18 +131,24 @@ func InspectForLink(ctx context.Context, directory, stateBasename, databaseBasen
 	}
 	var image []byte
 	var mode string
-	if proofErr == nil {
+	if proofErr == nil && writePrerequisite && !pristine {
+		// A real read transaction reaches SQLite's read-only hot-journal
+		// refusal and WAL recovery without parsing the application schema.
+		// The later writable Open still performs every setup/policy check;
+		// the activity writer still checks exact catalog/meta after BEGIN.
+		_, proofErr = c.probeInteger(admit, "PRAGMA schema_version")
+	} else if proofErr == nil {
 		mode, proofErr = c.probeText(admit, "PRAGMA journal_mode")
-	}
-	if proofErr == nil {
-		if pristine && mode == "delete" {
-			image, proofErr = c.provePristine(admit)
-		} else if !pristine && mode == "wal" {
-			// readOnly skips page/max-page/journal-limit setters. The remaining
-			// four setters are connection-local; journal_mode is only queried.
-			proofErr = c.setup(admit, false)
-		} else {
-			proofErr = safeError(OpenPhase, ErrUnsafe)
+		if proofErr == nil {
+			if pristine && mode == "delete" {
+				image, proofErr = c.provePristine(admit)
+			} else if !pristine && mode == "wal" {
+				// readOnly skips page/max-page/journal-limit setters. The remaining
+				// four setters are connection-local; journal_mode is only queried.
+				proofErr = c.setup(admit, false)
+			} else {
+				proofErr = safeError(OpenPhase, ErrUnsafe)
+			}
 		}
 	}
 	stop()
@@ -139,6 +159,11 @@ func InspectForLink(ctx context.Context, directory, stateBasename, databaseBasen
 		return fail(err)
 	}
 	if !pristine {
+		if writePrerequisite {
+			// This handle has not run full connection setup. Reuse the existing
+			// terminal-use guard so it can only be closed, never admitted.
+			c.used = true
+		}
 		return c, LinkWAL, nil
 	}
 	// Probe statements have finalized and the watcher has joined. Retain the

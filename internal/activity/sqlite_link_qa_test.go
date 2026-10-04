@@ -613,6 +613,7 @@ func TestSQLiteLinkTwoFirstContendersThroughOwnedProcessGuard(t *testing.T) {
 	for _, scenario := range []string{"same request", "different request same intent", "different request changed intent"} {
 		t.Run(scenario, func(t *testing.T) {
 			s, in, f := flQAService(t)
+			s.store.timeout = sqliteFlowTestLockTimeout() // Calibrate only these functional contenders under race.
 			release := flQAOwnedHelper(t, f, "guard")
 			second := in
 			if scenario != "same request" {

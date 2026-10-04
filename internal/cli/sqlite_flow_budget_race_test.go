@@ -1,10 +1,10 @@
-//go:build (darwin || linux) && (amd64 || arm64) && race
+//go:build race
 
 package cli_test
 
 import "time"
 
-// The race detector instruments the generated SQLite engine. Only the two
-// opted-in functional flows use this supported budget; production and
-// ordinary/default-deadline acceptance are unchanged.
+// The race detector instruments the generated SQLite engine. Explicitly
+// opted-in functional fixtures use this supported budget; production,
+// ordinary/default-deadline acceptance, and caller deadlines are unchanged.
 func sqliteFlowTestLockTimeout() time.Duration { return time.Second }

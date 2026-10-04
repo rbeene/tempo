@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -27,12 +28,16 @@ func runHook(ctx context.Context, host string, in io.Reader, out, errOut io.Writ
 		defer cleanup()
 	}
 	result := activity.HostReceipt{Durability: "not_committed"}
+	eventKind := ""
 	if err == nil {
 		var event activity.HostEvent
 		if host == "claude" {
 			event, err = hooks.DecodeClaude(reader)
 		} else {
 			event, err = hooks.DecodeCodex(reader)
+		}
+		if err == nil {
+			eventKind = event.Kind
 		}
 		if err == nil && ctx.Err() != nil {
 			err = problem("validation", "hook input deadline exceeded")
@@ -48,21 +53,42 @@ func runHook(ctx context.Context, host string, in io.Reader, out, errOut io.Writ
 			}
 		}
 	}
+	diagnosticCode, diagnosticDurability := "", ""
 	if err != nil {
 		code, durability := hookFailure(err)
 		if result.Durability == "committed" || result.Durability == "unknown" {
 			durability = result.Durability
 		}
+		diagnosticCode, diagnosticDurability = code, durability
 		fmt.Fprintf(errOut, "tempo hook: %s; durability=%s\n", code, durability)
 	} else if result.DiagnosticCode != "" || result.Disposition == "untracked" || result.Disposition == "review_required" {
 		code := result.DiagnosticCode
 		if code == "" {
 			code = result.Disposition
 		}
-		fmt.Fprintf(errOut, "tempo hook: %s; durability=%s\n", safeHookCode(code), result.Durability)
+		diagnosticCode, diagnosticDurability = safeHookCode(code), result.Durability
+		fmt.Fprintf(errOut, "tempo hook: %s; durability=%s\n", diagnosticCode, diagnosticDurability)
 	}
-	// No control fields, approvals, context, or Tempo envelope enter host output.
+	// Start diagnostics deliberately inform the agent through Codex's native
+	// additionalContext field. They carry only fixed enums, never a veto or a
+	// retry instruction. Other events and clean captures keep the empty object.
 	if host == "codex" {
+		if diagnosticCode != "" && (eventKind == "SessionStart" || eventKind == "SubagentStart") {
+			durability := diagnosticDurability
+			switch durability {
+			case "committed", "not_committed", "unknown":
+			default:
+				durability = "unknown"
+			}
+			text := "tempo capture: kind=" + eventKind + "; code=" + diagnosticCode + "; durability=" + durability
+			output := map[string]any{"hookSpecificOutput": map[string]string{
+				"hookEventName": eventKind, "additionalContext": text,
+			}}
+			if err := json.NewEncoder(out).Encode(output); err != nil {
+				return 1
+			}
+			return 0
+		}
 		if _, writeErr := io.WriteString(out, "{}\n"); writeErr != nil {
 			return 1
 		}
