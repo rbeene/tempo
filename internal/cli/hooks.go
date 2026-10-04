@@ -47,7 +47,18 @@ func runHook(ctx context.Context, host string, in io.Reader, out, errOut io.Writ
 			if service == nil {
 				service = activity.New(activity.Options{Path: d.Getenv("TEMPO_STATE"), HookPolicies: hookstate.New(hookstate.Options{Path: d.Getenv("TEMPO_HOOK_STATE")})})
 			}
-			result, err = service.IngestHost(ctx, event)
+			// Retry only a positively known local refusal, within the original
+			// context and with the one already decoded identity. Each synchronous
+			// service call completes its own checked cleanup before returning.
+			for attempt := 0; attempt < 3; attempt++ {
+				if attempt > 0 && ctx.Err() != nil {
+					break
+				}
+				result, err = service.IngestHost(ctx, event)
+				if !hookRetryableBusy(ctx, result, err) {
+					break
+				}
+			}
 			if err == nil && result.Durability == "committed" && (result.Disposition == "applied" || result.Disposition == "duplicate") {
 				notifyWorker(ctx, d, worker.Wake)
 			}
@@ -137,4 +148,55 @@ func safeHookCode(code string) string {
 	default:
 		return "internal"
 	}
+}
+
+// A display code is not retry authority: every branch must describe a known
+// precommit local refusal. The finite walk also refuses cyclic/oversized trees.
+func hookRetryableBusy(ctx context.Context, result activity.HostReceipt, err error) bool {
+	if ctx.Err() != nil || err == nil || result.Durability != "not_committed" {
+		return false
+	}
+	remaining, domainBusy := 64, false
+	var visit func(error, bool) bool
+	visit = func(cause error, localCancellation bool) bool {
+		if cause == nil || remaining == 0 {
+			return false
+		}
+		remaining--
+		if cause == context.Canceled || cause == context.DeadlineExceeded {
+			return localCancellation
+		}
+		if domain, ok := cause.(*activity.Error); ok {
+			if domain == nil || domain.Code != "state_busy" || !domain.Retryable || domain.Uncertain {
+				return false
+			}
+			domainBusy = true
+			return true
+		}
+		known, safe, admissionCancellation := hookNativeRetryNode(cause)
+		if known && !safe {
+			return false
+		}
+		// Permission applies only to this checked admission node's Cause
+		// subtree. A cancellation sibling never inherits it.
+		localCancellation = localCancellation || admissionCancellation
+		switch wrapped := cause.(type) {
+		case interface{ Unwrap() []error }:
+			children := wrapped.Unwrap()
+			if len(children) == 0 {
+				return known && safe
+			}
+			for _, child := range children {
+				if !visit(child, localCancellation) {
+					return false
+				}
+			}
+			return true
+		case interface{ Unwrap() error }:
+			return visit(wrapped.Unwrap(), localCancellation)
+		default:
+			return known && safe
+		}
+	}
+	return visit(err, false) && domainBusy && ctx.Err() == nil
 }

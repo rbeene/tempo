@@ -401,6 +401,16 @@ owned child processes and local mock HTTP; it does not install personal services
 
 `hook codex --input-stdin` consumes one bounded native callback and normally returns `{}`. A validated `SessionStart` or `SubagentStart` with a capture diagnostic instead returns only native `hookSpecificOutput.hookEventName` and `hookSpecificOutput.additionalContext`, with fixed kind/code/durability values. This intentionally informs the model of declined, reviewed or uncertain local timing; it is not a receipt, veto or retry instruction. Clean captures/duplicates, undecodable input and other kinds retain `{}`. It runs locally without credentials or prompts; the existing fixed diagnostics and durability also remain on stderr. `--json` and `--non-interactive` preserve that host protocol. Account overrides and confirmation flags are inapplicable. Capture requires an existing link and retained eligible hook policy. This command does not install or trust hooks. See [Codex lifecycle capture](codex-hooks.md) for the supported runtime, identity rules and delivery limits.
 
+Both native hook adapters may make at most three total local capture attempts
+for a positively known retryable `state_busy` with `not_committed` durability.
+They reuse the same decoded event and original 900ms context without sleeping;
+each service call retains its existing 250ms default admission and rechecks its
+normal dependencies. A checked nonmutating admission deadline may qualify while
+the original context remains live. Caller cancellation, any joined uncertainty,
+cleanup/terminal failure, committed or unknown outcome, or other refusal stops
+the loop. Only the final result emits diagnostics or a worker wake. This never
+retries a Harvest operation or guarantees capture when local contention persists.
+
 ## Native Claude callbacks
 
 `hook claude --input-stdin` consumes one bounded Claude callback with empty stdout.
