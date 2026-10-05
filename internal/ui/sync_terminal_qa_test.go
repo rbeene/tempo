@@ -98,6 +98,7 @@ func qaSyncTerminalFixture(t *testing.T, root string, report func(string, string
 	}
 	event := activity.Event{ContractVersion: 1, Actor: activity.ActorKey{ComputerID: *snap.ComputerID, Source: "manual-test", SessionID: "sync-pty", AgentID: "synthetic"}, Generation: "1", Sequence: "1", EventID: "sync-pty/1", Kind: "work", BindingID: b.Binding.ID, BindingRevision: b.Binding.Revision}
 	if _, e = local.Ingest(context.Background(), event); e != nil {
+		report("fixture-prerequisite-failure", "work-ingest")
 		t.Fatal(e)
 	}
 	wall = wall.Add(30 * time.Second)
@@ -108,13 +109,16 @@ func qaSyncTerminalFixture(t *testing.T, root string, report func(string, string
 	event.BindingID = ""
 	event.BindingRevision = ""
 	if _, e = local.Ingest(context.Background(), event); e != nil {
+		report("fixture-prerequisite-failure", "finish-ingest")
 		t.Fatal(e)
 	}
 	sd := activity.SyncDependencies{NewProvider: deps.NewProvider}
 	if _, e = local.SyncConfigure(context.Background(), activity.SyncConfigureInput{AccountID: "11", UserID: "22", Mode: "duration", DurationPolicy: "exact", IfRevision: "0", RequestID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", Confirmed: true}, sd); e != nil {
+		report("fixture-prerequisite-failure", "sync-configure")
 		t.Fatal(e)
 	}
 	if _, e = local.SyncResume(context.Background(), "cccccccc-cccc-4ccc-8ccc-cccccccccccc"); e != nil {
+		report("fixture-prerequisite-failure", "sync-resume")
 		t.Fatal(e)
 	}
 	transport.reads.Store(0)

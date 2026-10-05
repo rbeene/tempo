@@ -244,7 +244,14 @@ func rcQAOpen(t *testing.T) (*swQAOwner, string, string) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	c, err := Open(context.Background(), dir, qaBasename, Options{Create: true, AcquireDeadline: time.Now().Add(250 * time.Millisecond)})
+	started := time.Now()
+	deadline := started.Add(rcQAPositiveSetupBudget())
+	c, err := Open(context.Background(), dir, qaBasename, Options{Create: true, AcquireDeadline: deadline})
+	var failedAt time.Time
+	if err != nil {
+		// Freeze the Open return observation before any checked owner cleanup.
+		failedAt = time.Now()
+	}
 	o := &swQAOwner{c: c}
 	t.Cleanup(func() {
 		if err := o.close(); err != nil {
@@ -252,6 +259,33 @@ func rcQAOpen(t *testing.T) (*swQAOwner, string, string) {
 		}
 	})
 	if err != nil {
+		cause := "other"
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			cause = "deadline"
+		case errors.Is(err, context.Canceled):
+			cause = "canceled"
+		case errors.Is(err, ErrBusy):
+			cause = "busy"
+		}
+		var native *Error
+		nativePresent := errors.As(err, &native) && native != nil
+		phase, category := "none", "none"
+		var code int32
+		if nativePresent {
+			phase, category = "other", "other"
+			switch native.Phase {
+			case Admission, OpenPhase, BeginPhase, PreparePhase, BindPhase, StepPhase, CommitPhase, VerifyPhase, RollbackPhase, FinalizePhase, ClosePhase, CheckpointPhase:
+				phase = string(native.Phase)
+			}
+			switch native.Category {
+			case Invalid, Busy, Canceled, Unsafe, Corrupt, Full, Constraint, IO, Closed, Misuse:
+				category = string(native.Category)
+			}
+			code = native.Code
+		}
+		t.Logf("tempo root-chain open prerequisite v1: elapsed_us=%d acquire_expired=%t cause=%s native_present=%t native_phase=%s native_category=%s native_code=%d",
+			failedAt.Sub(started).Microseconds(), !failedAt.Before(deadline), cause, nativePresent, phase, category, code)
 		t.Fatal("native acquisition", errors.Join(err, o.close()))
 	}
 	o.tx, err = c.Begin(context.Background(), Read)

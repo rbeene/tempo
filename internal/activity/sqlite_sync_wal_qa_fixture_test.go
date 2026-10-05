@@ -52,8 +52,11 @@ func mwQANew(t *testing.T, empty bool) *mwQAFixture {
 		t.Fatal("SETUP public identity", err)
 	}
 	q.event = Event{ContractVersion: 1, Actor: ActorKey{ComputerID: *snapshot.ComputerID, Source: "manual-test", SessionID: "wal-maintenance", AgentID: "root"}, Generation: "1", Sequence: "1", EventID: "wal-maintenance/1", Kind: "work", BindingID: linked.Binding.ID, BindingRevision: linked.Binding.Revision, CWD: in.Path}
+	captureStarted := time.Now()
 	q.receipt, err = q.s.Ingest(context.Background(), q.event)
+	captureElapsed := time.Since(captureStarted)
 	if err != nil || q.receipt.Disposition != "applied" {
+		t.Log(sqliteCaptureFixtureFailureLog(captureElapsed, err, q.s.store.timeout == 0))
 		t.Fatal("SETUP public capture", err)
 	}
 	// Exact replay returns the saved receipt with only its disposition projected to duplicate.

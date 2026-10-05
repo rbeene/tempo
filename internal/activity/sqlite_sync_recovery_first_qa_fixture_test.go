@@ -35,8 +35,11 @@ func srQAFailedSubmission(t *testing.T, rejected bool) (*snQAFixture, *qaSyncPro
 			t.Fatal("SETUP POST is not the actual frozen 36-second plan")
 		}
 	}
-	run, err := q.reopen().SyncNow(context.Background(), SyncRunInput{RequestID: snQAID(300)}, qaSyncDeps(t, p))
+	syncContext, syncDiagnostics := withSQLiteSyncFailureDiagnostics(context.Background())
+	postsBefore := len(p.posts)
+	run, err := q.reopen().SyncNow(syncContext, SyncRunInput{RequestID: snQAID(300)}, qaSyncDeps(t, p))
 	if err != nil {
+		t.Log(sqliteSyncFailureDiagnosticLog(syncDiagnostics, true, len(p.posts) == postsBefore))
 		t.Fatal("SETUP existing public SyncNow prerequisite", err)
 	}
 	after := snQARead(t, q, snQAID(300))
@@ -98,8 +101,10 @@ func srQAProgress(t *testing.T, before, after snQASnapshot) {
 // public cold reader and a separately opened typed SQL reader must finish.
 func srQAReserved(t *testing.T, q *snQAFixture, before snQASnapshot, id string, reconcile *SyncReconcileInput, resolve *SyncResolveInput) {
 	t.Helper()
-	status, err := q.reopen().Status(context.Background())
+	statusContext, statusDiagnostics := withSQLiteStatusFailureDiagnostics(context.Background())
+	status, err := q.reopen().Status(statusContext)
 	if err != nil || status.Worker.UnknownCount != 1 || status.Worker.SubmittingCount != 0 {
+		t.Log(sqliteStatusFailureDiagnosticLog(statusDiagnostics, true))
 		t.Fatal("provider retained SQL ownership or lost unknown state", err)
 	}
 	current := snQARead(t, q, snQAID(300), id)

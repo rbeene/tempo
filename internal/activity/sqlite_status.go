@@ -13,12 +13,19 @@ import (
 
 // statusSQLite reads one owned native snapshot. Its clock and worker callbacks
 // run only after that snapshot has been checked closed.
-func (s *Service) statusSQLite(ctx context.Context) (ActivitySnapshot, error) {
+func (s *Service) statusSQLite(ctx context.Context) (result ActivitySnapshot, retErr error) {
 	if ctx == nil || s == nil || s.store == nil {
 		return ActivitySnapshot{}, failure("validation")
 	}
+	caller := ctx
 	ctx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
 	defer cancel()
+	d := sqliteStatusFailureDiagnosticsFromContext(caller)
+	if d != nil {
+		operationDeadline, _ := ctx.Deadline()
+		d.deadline(0, operationDeadline)
+		defer func() { d.finish(caller, ctx, retErr) }()
+	}
 	directory, authority, database, err := sqliteLocation(s.store.path)
 	if err != nil {
 		return ActivitySnapshot{}, err
@@ -34,55 +41,76 @@ func (s *Service) statusSQLite(ctx context.Context) (ActivitySnapshot, error) {
 	if operationDeadline, ok := ctx.Deadline(); ok && operationDeadline.Before(deadline) {
 		deadline = operationDeadline
 	}
+	d.deadline(1, deadline)
 	facts, found, err := sqliteStatusRead(ctx, directory, authority, database, deadline)
 	if err != nil {
 		return ActivitySnapshot{}, err
 	}
+	d.begin(5)
 	if err = ctx.Err(); err != nil {
+		d.end(5, err)
 		return ActivitySnapshot{}, sqliteCaptureError(err)
 	}
 	// Unavailable evidence still supplies the ordinary offline observation time.
 	sample, _ := s.sample()
-	result := sqliteStatusProjection(facts, found, sample)
+	result = sqliteStatusProjection(facts, found, sample)
 	result.Worker = s.observedWorker(ctx, result.Worker)
+	d.end(5, nil)
 	return result, nil
 }
 
 func sqliteStatusRead(ctx context.Context, directory, authority, database string, deadline time.Time) (result sqliteStatusFacts, found bool, err error) {
+	d := sqliteStatusFailureDiagnosticsFromContext(ctx)
 	var c *sqliteio.Conn
 	var tx *sqliteio.Tx
 	defer func() {
+		d.begin(4)
 		cleanup := sqliteCaptureCleanup(c, tx)
+		d.end(4, cleanup)
 		if err != nil || cleanup != nil {
 			err = sqliteCaptureError(errors.Join(err, cleanup))
 			result, found = sqliteStatusFacts{}, false
 		}
 	}()
 	var kind sqliteio.LinkInspection
+	d.begin(0)
 	c, kind, err = sqliteio.InspectForLink(ctx, directory, authority, database, deadline)
 	if err != nil {
+		d.end(0, err)
 		return sqliteStatusFacts{}, false, err
 	}
 	if kind == sqliteio.LinkAbsent || kind == sqliteio.LinkPristine {
 		if c != nil {
-			return sqliteStatusFacts{}, false, failure("state_corrupt")
+			err = failure("state_corrupt")
+			d.end(0, err)
+			return sqliteStatusFacts{}, false, err
 		}
+		d.end(0, nil)
 		return sqliteStatusFacts{}, false, nil
 	}
 	if kind != sqliteio.LinkWAL || c == nil {
-		return sqliteStatusFacts{}, false, failure("state_corrupt")
+		err = failure("state_corrupt")
+		d.end(0, err)
+		return sqliteStatusFacts{}, false, err
 	}
+	d.end(0, nil)
+	d.begin(1)
 	tx, err = c.Begin(ctx, sqliteio.Read)
+	d.end(1, err)
 	if err != nil {
 		return sqliteStatusFacts{}, false, err
 	}
 	// Empty catalog is uninitialized; every nonempty catalog must pass the
 	// shared exact schema/meta admission used by first Link and capture.
+	d.begin(2)
 	meta, current, err := sqliteReadLinkSchema(tx, authority, database)
+	d.end(2, err)
 	if err != nil || !current {
 		return sqliteStatusFacts{}, false, err
 	}
+	d.begin(3)
 	result, err = sqliteStatusRows(tx, meta)
+	d.end(3, err)
 	if err != nil {
 		return sqliteStatusFacts{}, false, err
 	}
