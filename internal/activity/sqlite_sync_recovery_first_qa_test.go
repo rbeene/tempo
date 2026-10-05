@@ -74,7 +74,15 @@ func TestSQLiteSyncRecoveryFirstReconcileUniqueCompletePayload(t *testing.T) {
 			}
 			snQANonceOnly(t, after, snQARead(t, q, snQAID(300), in.RequestID))
 			if name != "exact" {
-				fresh, err := q.reopen().SyncNow(context.Background(), SyncRunInput{RequestID: snQAID(311)}, qaSyncNoProvider(t))
+				freshContext := context.Background()
+				var diagnostic *sqliteSyncFailureDiagnostics
+				if name == "wrong-project" {
+					freshContext, diagnostic = withSQLiteSyncFailureDiagnostics(freshContext)
+				}
+				fresh, err := q.reopen().SyncNow(freshContext, SyncRunInput{RequestID: snQAID(311)}, qaSyncNoProvider(t))
+				if name == "wrong-project" && err != nil {
+					t.Log(sqliteSyncFailureDiagnosticLog(diagnostic, true, len(p.posts) == 1))
+				}
 				if err != nil || fresh.State != "complete" || fresh.AttemptedIDs == nil || len(fresh.AttemptedIDs) != 0 || fresh.RemainingCount != 1 || len(p.posts) != 1 {
 					t.Fatal("reconciliation absence/conflict authorized another POST", err)
 				}

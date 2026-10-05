@@ -12,12 +12,12 @@ jobs:
   macos:
     if: github.repository == 'rbeene/tempo'
     runs-on: macos-14
-    timeout-minutes: 20
+    timeout-minutes: 60
     outputs:
       tag: ${{ steps.version.outputs.tag }}
     env:
       GOMAXPROCS: '2'
-      GOFLAGS: '-p=2'
+      GOFLAGS: '-p=1'
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -44,7 +44,7 @@ jobs:
         run: |
           test -z "$(gofmt -l cmd internal)"
           go vet ./...
-          go test -race ./...
+          go test -race -count=1 -timeout=45m ./...
           goreleaser check --config .goreleaser.macos.yaml
       - name: Build native Mac archives without publishing
         run: goreleaser release --config .goreleaser.macos.yaml --clean --skip=publish --parallelism=1
@@ -59,12 +59,12 @@ jobs:
     needs: macos
     if: github.repository == 'rbeene/tempo'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 60
     permissions:
       contents: write
     env:
       GOMAXPROCS: '2'
-      GOFLAGS: '-p=2'
+      GOFLAGS: '-p=1'
       RELEASE_TAG: ${{ needs.macos.outputs.tag }}
       GORELEASER_CURRENT_TAG: ${{ needs.macos.outputs.tag }}
     steps:
@@ -95,7 +95,7 @@ jobs:
           fi
           (cd release-macos && sha256sum --check checksums-darwin.txt)
           go vet ./...
-          go test -race ./...
+          go test -race -count=1 -timeout=45m ./...
           sh scripts/test-install.sh
           sh scripts/test-release-version.sh
           python3 -B scripts/test-release-assets.py

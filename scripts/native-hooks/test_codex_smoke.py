@@ -926,6 +926,128 @@ class HarnessTests(unittest.TestCase):
         raw = public+"\ntempo hook diagnostics v2: "+"["*3073
         self.assertEqual(smoke.hook_diagnostic_text(raw), (raw,None))
 
+    def admission_v3_context(self):
+        public, rows = self.eligibility_cost_context()
+        rows[0].update(effective_deadline_us=488000, eligibility_excluded_us=238000, eligibility_outcome="paused")
+        return public, rows
+
+    def admission_v3_body(self, rows, role="developer"):
+        public, _ = self.diagnostic_context()
+        return {"input": [{"role": role, "content": [{"type": "input_text", "text": public + "\ntempo hook diagnostics v3: " + json.dumps(rows, separators=(",", ":"))}]}]}
+
+    def test_admission_v3_preserves_actual_zero_receipt_gate(self):
+        public, rows = self.admission_v3_context()
+        model = self.model([])
+        model.session = None
+        model.baseline = frozenset()
+        body = self.request()
+        body["input"].insert(0, self.admission_v3_body(rows)["input"][0])
+        with mock.patch.object(smoke.subprocess, "Popen", side_effect=AssertionError("unexpected process")), \
+             mock.patch.object(smoke.threading.Thread, "start", side_effect=AssertionError("unexpected thread")), \
+             mock.patch.object(smoke.http.server, "ThreadingHTTPServer", side_effect=AssertionError("unexpected socket")):
+            with self.assertRaisesRegex(smoke.FixtureFailure, "measured_session_ambiguous"):
+                model.respond(body)
+        self.assertEqual(model.capture_contexts, {("SessionStart", "state_busy", "not_committed")})
+        self.assertEqual(model.admission_diagnostics, [{"kind": "SessionStart", "attempts": rows, "version": 3}])
+        self.assertEqual(model.initial_receipt_probe["accepted_session_starts"], 0)
+        self.assertEqual(model.counts, {})
+        self.assertEqual(model.entry_count, 1)
+
+    def test_admission_v3_outcomes_and_floor_rounding(self):
+        _, base = self.admission_v3_context()
+        variants = []
+        for effective in (488000, 488001):
+            rows = copy.deepcopy(base); rows[0]["effective_deadline_us"] = effective
+            variants.append(("paused_floor_" + str(effective), rows))
+        rows = copy.deepcopy(base); rows[0].update(caller_deadline_us=300000, effective_deadline_us=300000)
+        variants.append(("caller_clip", rows))
+        rows = copy.deepcopy(base); rows[0].update(eligibility_excluded_us=0, effective_deadline_us=250000)
+        rows[0]["phase_us"][5] = rows[0]["phase_us"][4]
+        rows[0]["eligibility"] = {"p": [0, 0, -1, -1, -1, -1, 0], "r": [[0]*9 for _ in range(6)], "c": [0, 0], "d": False}
+        variants.append(("submicrosecond_nonhash_pause", rows))
+        rows = copy.deepcopy(rows); rows[0]["phase_us"][5] += 1; rows[0]["effective_deadline_us"] += 1
+        variants.append(("submicrosecond_floor_difference", rows))
+        rows = copy.deepcopy(base); rows[0].update(caller="deadline", caller_deadline_us=260000, effective_deadline_us=260000)
+        variants.append(("absolute_deadline_observed_before_context_signal", rows))
+        for outcome in ("not_called", "error", "caller_stopped"):
+            rows = copy.deepcopy(base)
+            rows[0].update(eligibility_outcome=outcome, eligibility_excluded_us=0, effective_deadline_us=250000)
+            if outcome == "not_called":
+                rows[0]["phase_us"][4:6] = [-1, -1]
+                rows[0]["eligibility"] = {"p": [-1]*7, "r": [[0]*9 for _ in range(6)], "c": [-1, -1], "d": False}
+            if outcome == "caller_stopped": rows[0]["caller"] = "deadline"
+            variants.append((outcome, rows))
+        rows = copy.deepcopy(next(rows for name, rows in variants if name == "error")); rows[0]["caller"] = "canceled"
+        variants.append(("policy_error_wins_cancellation", rows))
+        rows = copy.deepcopy(next(rows for name, rows in variants if name == "not_called")); rows[0].update(deadline_us=-1, effective_deadline_us=-1)
+        rows[0]["phase_us"] = [-1]*8
+        variants.append(("not_called_no_deadline", rows))
+        for name, rows in variants:
+            with self.subTest(name=name):
+                self.assertEqual(smoke.capture_admission_diagnostics(self.admission_v3_body(rows)), [{"kind": "SessionStart", "attempts": rows, "version": 3}])
+                self.assertEqual(smoke.capture_context_tuples(self.admission_v3_body(rows)), {("SessionStart", "state_busy", "not_committed")})
+
+    def test_admission_v3_three_attempts_share_original_caller(self):
+        _, base = self.admission_v3_context()
+        rows = []
+        for index in range(3):
+            row = copy.deepcopy(base[0]); offset = index * 270000
+            row["ordinal"] = index + 1
+            for key in ("start_us", "end_us", "deadline_us"):
+                row[key] += offset
+            row["phase_us"] = [stamp + offset for stamp in row["phase_us"]]
+            row["effective_deadline_us"] = min(row["deadline_us"] + row["eligibility_excluded_us"], row["caller_deadline_us"])
+            rows.append(row)
+        body = self.admission_v3_body(rows)
+        text = body["input"][0]["content"][0]["text"]
+        self.assertLessEqual(len(text.split("\ntempo hook diagnostics v3: ")[1]), 3072)
+        self.assertEqual(smoke.capture_admission_diagnostics(body), [{"kind": "SessionStart", "attempts": rows, "version": 3}])
+
+    def test_admission_v3_rejects_invalid_cross_fields_and_shapes(self):
+        _, base = self.admission_v3_context()
+        mutations = {
+            "missing": lambda r: r.pop("effective_deadline_us"),
+            "extra": lambda r: r.update(path="PRIVATE-PATH"),
+            "bool_effective": lambda r: r.update(effective_deadline_us=True),
+            "bool_excluded": lambda r: r.update(eligibility_excluded_us=True),
+            "negative_excluded": lambda r: r.update(eligibility_excluded_us=-1),
+            "large_effective": lambda r: r.update(effective_deadline_us=120000001),
+            "large_excluded": lambda r: r.update(eligibility_excluded_us=120000001),
+            "unknown_outcome": lambda r: r.update(eligibility_outcome="trusted"),
+            "object_outcome": lambda r: r.update(eligibility_outcome={}),
+            "list_outcome": lambda r: r.update(eligibility_outcome=[]),
+            "no_original": lambda r: r.update(deadline_us=-1),
+            "reset": lambda r: r.update(effective_deadline_us=509000),
+            "too_low": lambda r: r.update(effective_deadline_us=487999),
+            "too_high": lambda r: r.update(effective_deadline_us=488002),
+            "past_caller": lambda r: r.update(caller_deadline_us=300000),
+            "unearned_exclusion": lambda r: r.update(eligibility_excluded_us=260001),
+            "exclusion_above_measured_span": lambda r: r.update(eligibility_excluded_us=238001, effective_deadline_us=488001),
+            "exclusion_below_measured_span": lambda r: r.update(eligibility_excluded_us=237998, effective_deadline_us=487998),
+            "reversed_phase": lambda r: r["phase_us"].__setitem__(5, 0),
+            "unreached_policy": lambda r: r["phase_us"].__setitem__(4, -1),
+            "phase_before_attempt": lambda r: r.update(start_us=22000),
+            "error_credit": lambda r: r.update(eligibility_outcome="error"),
+            "not_called_stamped": lambda r: r.update(eligibility_outcome="not_called", eligibility_excluded_us=0, effective_deadline_us=250000),
+            "caller_stopped_live": lambda r: r.update(eligibility_outcome="caller_stopped", eligibility_excluded_us=0, effective_deadline_us=250000),
+        }
+        for name, mutate in mutations.items():
+            rows = copy.deepcopy(base); mutate(rows[0])
+            with self.subTest(name=name):
+                body = self.admission_v3_body(rows)
+                self.assertEqual(smoke.capture_admission_diagnostics(body), [])
+                self.assertEqual(smoke.capture_context_tuples(body), set())
+        self.assertEqual(smoke.capture_admission_diagnostics(self.admission_v3_body(base, "user")), [])
+
+    def test_admission_v3_rejects_duplicate_mixed_and_oversized_envelopes(self):
+        public, rows = self.admission_v3_context()
+        encoded = json.dumps(rows, separators=(",", ":"))
+        duplicate = encoded.replace('"eligibility_outcome":"paused"', '"eligibility_outcome":"paused","eligibility_outcome":"error"')
+        for suffix in (duplicate, "["*3073, encoded + "\ntempo hook diagnostics v2: []"):
+            text = public + "\ntempo hook diagnostics v3: " + suffix
+            with self.subTest(suffix=suffix[:40]):
+                self.assertEqual(smoke.hook_diagnostic_text(text), (text, None))
+
     def test_cpu_capability_probe_is_bounded_post_join_projection(self):
         cases = [
             (b"processor : 0\nflags : sha_ni avx avx2 bmi2 sse4_1 ssse3 PRIVATE-CONTENT\n", "observed"),
@@ -1619,6 +1741,400 @@ class InstallIntegrationTests(unittest.TestCase):
         drifted["context"]["artifacts"].append({"role": "repository", "path": "/tmp/new-boundary", "sha256": "c" * 64})
         with self.assertRaisesRegex(smoke.FixtureFailure, "installed_profile_drift"):
             smoke.require_unchanged_profile(original, drifted)
+
+
+
+class TerminalFailureProbeTests(unittest.TestCase):
+    """Old-API controls: real run/finally/close_native, no external effects."""
+
+    def run_boundary(self, cached=0, *, success=False, close_failure=None,
+                     missing=None, labels=None, raising_getter=False):
+        from contextlib import ExitStack, nullcontext
+        from types import SimpleNamespace
+        import io
+        import stat
+
+        case = self
+        events, launches, actions, memory, blocked_effects = [], [], [], {}, []
+        primary = smoke.FixtureFailure("host_exited_early")
+        report = {"status": "failed", "host": "codex"}
+        command = "'/fixture/root/tempo' hook codex --input-stdin"
+        definitions = json.dumps({"hooks": {event: [{"hooks": [
+            {"type": "command", "command": command, "timeout": 2}]}]
+            for event in smoke.INSTALLED_EVENTS}}).encode()
+
+        def forbidden(*_args, **_kwargs):
+            blocked_effects.append("external_effect")
+            raise AssertionError("unexpected external effect")
+
+        class MemoryPath:
+            def __init__(self, value):
+                self.value = str(value)
+            def __str__(self):
+                return self.value
+            def __truediv__(self, part):
+                return MemoryPath(self.value.rstrip("/") + "/" + str(part))
+            @property
+            def parent(self):
+                return MemoryPath(self.value.rsplit("/", 1)[0])
+            def with_name(self, name):
+                return self.parent / name
+            def resolve(self, strict=False):
+                return self
+            def is_file(self):
+                return True
+            def is_absolute(self):
+                return self.value.startswith("/")
+            def mkdir(self, **_kwargs):
+                return None
+            def chmod(self, _mode):
+                return None
+            def write_text(self, value):
+                memory[self.value] = value
+                return len(value)
+            def read_text(self):
+                if self.value.endswith("/codex-0.159.3.json"):
+                    return json.dumps({"version": "0.159.3", "sha256": "a" * 64})
+                case.assertIn(self.value, memory)
+                return memory[self.value]
+
+        class Source(io.BytesIO):
+            def fileno(self):
+                return 911
+
+        def open_definitions(path, flags):
+            case.assertEqual(str(path), "/fixture/home/.codex/hooks.json")
+            case.assertEqual(flags, smoke.os.O_RDONLY | smoke.os.O_NOFOLLOW | smoke.os.O_NONBLOCK)
+            return 911
+
+        def fdopen(fd, mode):
+            case.assertEqual((fd, mode), (911, "rb"))
+            return Source(definitions)
+
+        def profile(confirmed):
+            value = InstallIntegrationTests.profile(case, confirmed)
+            value["hooks"][0]["path"] = "/fixture/root/project"
+            value["hooks"][0]["profile"]["context"]["path"] = "/fixture/root/project"
+            return value
+
+        def receipt(kind, actor, **extra):
+            return {"id": kind, "kind": kind, "source": "codex", "origin": "unverified",
+                    "session_id": "session", "turn_id": "parent-turn", "agent_id": "",
+                    "disposition": "applied", "durability": "committed", "ordering": "supported",
+                    "profile_basis": "operator_declared", "actor": actor, **extra}
+
+        parent, child, interrupt = {"id": "parent"}, {"id": "child"}, {"id": "interrupt"}
+        rows = [receipt(kind, parent) for kind in ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop")]
+        rows += [receipt("SubagentStart", child, agent_id="child", turn_id="child-turn"),
+                 receipt("SubagentStop", child, agent_id="child", turn_id="child-turn"),
+                 receipt("Interrupt", interrupt, turn_id="interrupt-turn"),
+                 receipt("SessionEnd", interrupt, turn_id="interrupt-turn", disposition="stale")]
+        detail = {"actor": interrupt, "reason": "source_lost", "state": "unresolved",
+                  "bounded": True, "resolution_present": False, "discarded": False}
+        read_count = 0
+
+        def bounded(argv, _env, _cwd, **_kwargs):
+            nonlocal read_count
+            if argv[0] == "/usr/bin/git":
+                case.assertEqual(argv[1:], ["-c", "credential.helper=", "init", "-q", "/fixture/root/project"])
+                return b""
+            case.assertEqual(argv[:2], ["/fixture/helper", "fixture"])
+            action = argv[2]
+            actions.append(action)
+            if action == "link":
+                return b""
+            if action == "install" and missing == "terminal":
+                raise primary
+            if action in ("install", "status", "confirm"):
+                return json.dumps(profile(action != "install" and (action == "confirm" or len(launches) == 2))).encode()
+            case.assertEqual(action, "read")
+            read_count += 1
+            if read_count == 1:
+                return b'{"receipts":[]}'
+            final = read_count >= 5
+            actor_rows = [{"ref": parent, "state": "wait_user"}, {"ref": child, "state": "working"},
+                          {"ref": interrupt, "state": "interrupted"}]
+            return json.dumps({"receipts": rows, "actors": actor_rows, "queued": 2,
+                               "uncertainties": 1 if final else 0,
+                               "uncertainty_details": [detail] if final else [],
+                               "capture_reviews": 0}).encode()
+
+        class Event:
+            def is_set(self):
+                return True
+            def set(self):
+                events.append("child_release")
+
+        model = SimpleNamespace(server=SimpleNamespace(server_port=43210), requests=[], error=None,
+            counts={"parent": 3, "child": 1, "interrupt": 1} if success else {}, entry_count=0, title_count=0,
+            initial_receipt_probe={"status": "not_observed"}, capture_contexts=set(),
+            admission_diagnostics=[], admission_diagnostics_saturated=False, lock=nullcontext(),
+            baseline=None, session=None, phase="initial", child="child", child_turn="child-turn",
+            interrupt_turn="interrupt-turn", child_seen=Event(), child_release=Event(), interrupt_seen=Event())
+
+        class Proc:
+            def __init__(self):
+                self.cached = cached
+            @property
+            def returncode(self):
+                events.append("cached_status_read")
+                if raising_getter:
+                    raise RuntimeError("PRIVATE-GETTER")
+                return self.cached
+            @returncode.setter
+            def returncode(self, value):
+                self.cached = value
+            def poll(self):
+                if not success:
+                    return forbidden()
+                events.append("normal_exit_poll")
+                return self.cached
+            wait = terminate = kill = forbidden
+
+        class Terminal:
+            def __init__(self, *_args):
+                launches.append(self)
+                if missing != "proc":
+                    self.proc = Proc() if missing != "returncode" else SimpleNamespace()
+                if labels is None:
+                    self.last_wait, self.last_input_action = "browser_input_unavailable", "end"
+                elif labels != "absent":
+                    self.last_wait, self.last_input_action = labels
+            def close(self):
+                events.append("terminal_close")
+                if missing not in ("proc", "returncode"):
+                    self.proc.cached = -15 if type(cached) is int and cached == -9 else -9
+                if close_failure in ("terminal", "both"):
+                    raise RuntimeError("PRIVATE-TERMINAL-CLEANUP")
+            def command(self, value):
+                if value == smoke.PARENT_PROMPT:
+                    model.session = "session"
+                elif value == "/quit":
+                    self.proc.cached = 0
+                else:
+                    case.assertEqual(value, smoke.INTERRUPT_PROMPT)
+            def send(self, value):
+                case.assertEqual(value, b"\x1b")
+            def until(self, predicate, _code, seconds=20):
+                case.assertTrue(predicate(""))
+                return ""
+
+        def model_close():
+            events.append("model_close")
+            if close_failure in ("model", "both"):
+                raise RuntimeError("PRIVATE-MODEL-CLEANUP")
+        model.close = model_close
+
+        def trust(terminal, repo, actual_command, trusted, _workspace, _startup, probes):
+            events.append("normal_trust")
+            case.assertIs(terminal, launches[0])
+            case.assertEqual((str(repo), actual_command), ("/fixture/root/project", command))
+            if success:
+                trusted.extend(smoke.EVENT_ORDER)
+                return
+            probes["browser"] = {"inventory_caption_present": True,
+                                 "inventory_first_row": True, "inventory_last_row": False}
+            raise primary
+
+        fake_os = SimpleNamespace(environ={"HOME": "/fixture/home", "RUNNER_TEMP": "/fixture"},
+            getuid=lambda: 123, open=open_definitions, fdopen=fdopen,
+            fstat=lambda fd: SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_size=len(definitions)),
+            O_RDONLY=os.O_RDONLY, O_NOFOLLOW=os.O_NOFOLLOW, O_NONBLOCK=os.O_NONBLOCK,
+            read=forbidden, write=forbidden, close=forbidden, kill=forbidden, killpg=forbidden)
+        env = {"TEMPO_STATE": "/fixture/state", "TEMPO_HOOK_STATE": "/fixture/policy"}
+        caught = None
+        with ExitStack() as stack:
+            replacements = {"Path": MemoryPath, "os": fake_os,
+                "platform": SimpleNamespace(system=lambda: "Linux", machine=lambda: "x86_64"),
+                "pwd": SimpleNamespace(getpwuid=lambda _: SimpleNamespace(pw_dir="/fixture/home")),
+                "time": SimpleNamespace(monotonic=lambda: 100.0, sleep=forbidden),
+                "tempfile": SimpleNamespace(mkdtemp=lambda **_: "/fixture/root"),
+                "hosted_precondition": lambda *_: None, "require_absent": lambda *_: None,
+                "child_environment": lambda *_: env,
+                "download_runtime": lambda *_: MemoryPath("/fixture/runtime"),
+                "digest": lambda *_: "b" * 64, "bounded_run": bounded, "Model": lambda *_: model,
+                "Terminal": Terminal, "normal_trust": trust,
+                "observe_cpu_flags": lambda _: {"status": "unavailable", "flags": {}},
+                "artifact_match_probe": lambda _: {"available": True}}
+            for name, value in replacements.items():
+                stack.enter_context(mock.patch.object(smoke, name, value))
+            stack.enter_context(mock.patch.object(smoke.shutil, "copy2", return_value=None))
+            for owner, name in ((smoke.subprocess, "Popen"), (smoke.subprocess, "run"),
+                                (smoke.pty, "openpty"), (smoke.threading.Thread, "start"),
+                                (smoke.http.server, "ThreadingHTTPServer"),
+                                (smoke.urllib.request, "urlopen")):
+                stack.enter_context(mock.patch.object(owner, name, side_effect=forbidden))
+            try:
+                smoke.run(SimpleNamespace(tempo="/fixture/source-tempo", helper="/fixture/helper"), report)
+            except smoke.FixtureFailure as exc:
+                caught = exc
+            if success:
+                self.assertIsNone(caught)
+                self.assertEqual((report["status"], report["stage"]), ("passed", "complete"))
+                self.assertEqual(events.count("terminal_close"), 2)
+                self.assertEqual(events.count("model_close"), 1)
+                self.assertEqual(events.count("normal_exit_poll"), 1)
+                self.assertEqual(read_count, 6)
+            else:
+                self.assertIs(caught, primary)
+                self.assertEqual(caught.args, ("host_exited_early",))
+                self.assertEqual(report["status"], "failed")
+                expected_stage = "production_install" if missing == "terminal" else "normal_trust_ui"
+                self.assertEqual(report["stage"], expected_stage)
+                self.assertEqual(actions, ["link", "install"])
+                self.assertEqual(len(launches), 0 if missing == "terminal" else 1)
+                self.assertEqual(events.count("normal_trust"), 0 if missing == "terminal" else 1)
+                closes = [event for event in events if event in ("terminal_close", "model_close")]
+                self.assertEqual(closes, ["model_close"] if missing == "terminal" else ["terminal_close", "model_close"])
+                self.assertNotIn("receipts", report)
+                self.assertNotIn("profile_fingerprint", report)
+                if missing != "terminal":
+                    self.assertEqual(report["trusted_events"], [])
+                self.assertEqual(report["initial_receipt_probe"], {"status": "not_observed"})
+                self.assertEqual(report["failure_profile_probe"]["status"],
+                                 "cleanup_incomplete" if close_failure else "unconfirmed")
+            self.assertEqual(blocked_effects, [])
+            self.assertNotIn("PRIVATE-", json.dumps(report))
+        return report, events
+
+    @staticmethod
+    def projection(status, termination="unavailable", returncode=None, signal_number=None,
+                   wait="browser_input_unavailable", action="end"):
+        return {"source": "cached_process_status_before_cleanup", "status": status,
+                "termination": termination, "returncode": returncode, "signal": signal_number,
+                "last_wait": wait, "last_input_action": action}
+
+    def test_failed_run_cached_status_is_copied_before_cleanup(self):
+        for label, value, termination, signal_number in (
+                ("zero", 0, "exit", None), ("one", 1, "exit", None),
+                ("exit137", 137, "exit", None), ("signal9", -9, "signal", 9),
+                ("signal15", -15, "signal", 15), ("unobserved", None, "unavailable", None)):
+            with self.subTest(case=label):
+                report, events = self.run_boundary(value)
+                status = "not_observed" if value is None else "observed"
+                # Baseline failure, stage, cleanup and absent-receipt witnesses
+                # have already passed. Old source fails only this observation.
+                self.assertEqual(report.get("terminal_failure_probe"),
+                                 self.projection(status, termination, value, signal_number))
+                self.assertEqual(events.count("cached_status_read"), 1)
+                self.assertLess(events.index("cached_status_read"), events.index("terminal_close"))
+
+    def test_failed_run_rejects_nonprimitive_status_without_formatting(self):
+        class Trap:
+            calls = 0
+            def forbidden(self, *_):
+                self.calls += 1
+                raise AssertionError("private object was inspected")
+            __str__ = __repr__ = __int__ = __index__ = __hash__ = __eq__ = forbidden
+        trap = Trap()
+        for label, value in (("bool", True), ("string", "PRIVATE-STATUS"),
+                             ("too_large", 256), ("too_small", -256), ("object", trap)):
+            with self.subTest(case=label):
+                report, _ = self.run_boundary(value)
+                self.assertEqual(trap.calls, 0)
+                self.assertEqual(report.get("terminal_failure_probe"), self.projection("invalid_status"))
+
+    def test_failed_run_metadata_fallback_and_cleanup_preserve_primary(self):
+        for label, options, expected in (
+                ("terminal_close", {"cached": -9, "close_failure": "terminal"}, self.projection("observed", "signal", -9, 9)),
+                ("model_close", {"cached": -9, "close_failure": "model"}, self.projection("observed", "signal", -9, 9)),
+                ("both_close", {"cached": -9, "close_failure": "both"}, self.projection("observed", "signal", -9, 9)),
+                ("getter", {"raising_getter": True}, self.projection("unavailable", wait="none", action="none")),
+                ("no_terminal", {"missing": "terminal"}, self.projection("unavailable", wait="none", action="none")),
+                ("no_proc", {"missing": "proc"}, self.projection("unavailable", wait="none", action="none")),
+                ("no_returncode", {"missing": "returncode"}, self.projection("unavailable", wait="none", action="none")),
+                ("no_labels", {"labels": "absent"}, self.projection("observed", "exit", 0, wait="none", action="none"))):
+            with self.subTest(case=label):
+                report, _ = self.run_boundary(**options)
+                self.assertEqual(report.get("terminal_failure_probe"), expected)
+
+    def test_failed_run_label_projection_rejects_custom_objects(self):
+        class Trap:
+            calls = 0
+            def forbidden(self, *_):
+                self.calls += 1
+                raise AssertionError("private label was inspected")
+            __str__ = __repr__ = __hash__ = __eq__ = forbidden
+        class StringSubclass(str):
+            calls = 0
+            def __hash__(self):
+                type(self).calls += 1
+                raise AssertionError("string subclass hashed")
+            def __eq__(self, _):
+                type(self).calls += 1
+                raise AssertionError("string subclass compared")
+        trap = Trap()
+        for label, value in (("unknown", "PRIVATE-LABEL"), ("unhashable", []),
+                             ("object", trap), ("subclass", StringSubclass("end"))):
+            with self.subTest(case=label):
+                report, _ = self.run_boundary(labels=(value, value))
+                self.assertEqual(trap.calls, 0)
+                self.assertEqual(StringSubclass.calls, 0)
+                self.assertEqual(report.get("terminal_failure_probe"),
+                                 self.projection("observed", "exit", 0, wait="other", action="other"))
+
+    def test_normal_return_omits_failure_probe(self):
+        report, _ = self.run_boundary(success=True)
+        self.assertNotIn("terminal_failure_probe", report)
+
+    def test_existing_until_retains_poll_predicate_and_timeout_order(self):
+        from types import SimpleNamespace
+        for label, value in (("zero", 0), ("one", 1), ("signal", -9)):
+            with self.subTest(case=label):
+                terminal = smoke.Terminal.__new__(smoke.Terminal)
+                terminal.deadline, terminal.screen = 20, smoke.Screen()
+                terminal.pump = mock.Mock()
+                terminal.proc = SimpleNamespace(returncode=None)
+                def poll():
+                    terminal.proc.returncode = value
+                    return value
+                terminal.proc.poll = mock.Mock(side_effect=poll)
+                with mock.patch.object(smoke.time, "monotonic", return_value=1):
+                    with self.assertRaisesRegex(smoke.FixtureFailure, "^host_exited_early$"):
+                        terminal.until(lambda _: False, "browser_input_unavailable", seconds=2)
+                terminal.pump.assert_called_once_with()
+                terminal.proc.poll.assert_called_once_with()
+                self.assertEqual(terminal.proc.returncode, value)
+                self.assertEqual(getattr(terminal, "last_wait", None), "browser_input_unavailable")
+        for label in ("predicate_first", "normal_exit", "timeout"):
+            with self.subTest(case=label):
+                terminal = smoke.Terminal.__new__(smoke.Terminal)
+                terminal.deadline, terminal.screen = 20, smoke.Screen()
+                terminal.pump = mock.Mock()
+                terminal.proc = mock.Mock(returncode=None)
+                terminal.proc.poll.return_value = 0 if label == "normal_exit" else None
+                clock = [0, 1, 3] if label == "timeout" else [0, 1]
+                with mock.patch.object(smoke.time, "monotonic", side_effect=clock):
+                    if label == "timeout":
+                        with self.assertRaisesRegex(smoke.FixtureFailure, "^browser_input_unavailable$"):
+                            terminal.until(lambda _: False, "browser_input_unavailable", seconds=2)
+                    else:
+                        predicate = (lambda _: True) if label == "predicate_first" else (lambda _: terminal.proc.poll() is not None)
+                        terminal.until(predicate, "normal_exit_missing", seconds=2)
+                self.assertEqual(terminal.proc.poll.call_count, 0 if label == "predicate_first" else 1)
+                terminal.pump.assert_called_once_with()
+
+    def test_existing_send_keeps_bytes_and_ignores_query_reply_labels(self):
+        pairs = [(b"\r", "enter"), (b"\x1b", "escape"), (b"\x1b[A", "up"),
+                 (b"\x1b[B", "down"), (b"\x1b[F", "end"), (b"\x1b[H", "home"),
+                 (b"1", "review_shortcut"), (b"t", "trust_shortcut"),
+                 (b"\x1b[200~PRIVATE-PASTE\x1b[201~", "command_paste"), (b"\xffPRIVATE-BYTES", "other")]
+        for index, (data, expected) in enumerate(pairs):
+            with self.subTest(case=index):
+                terminal = smoke.Terminal.__new__(smoke.Terminal)
+                terminal.master, terminal.last_input_action = 987, "none"
+                with mock.patch.object(smoke.os, "write", return_value=len(data)) as write:
+                    terminal.send(data)
+                write.assert_called_once_with(987, data)
+                self.assertEqual(getattr(terminal, "last_input_action", None), expected)
+        terminal = smoke.Terminal.__new__(smoke.Terminal)
+        terminal.master, terminal.last_input_action = 987, "none"
+        payloads = [b"\x1b[F", b"\x1b[1;1R", b"\x1b[?1;2c", b"\x1b[>0;0;0c"]
+        with mock.patch.object(smoke.os, "write") as write:
+            for data in payloads:
+                terminal.send(data)
+            self.assertEqual(write.call_args_list, [mock.call(987, data) for data in payloads])
+        self.assertEqual(getattr(terminal, "last_input_action", None), "end")
 
 
 if __name__ == "__main__":

@@ -70,7 +70,7 @@ func TestQAHostAdmissionDiagnosticsFailureOnlyOptIn(t *testing.T) {
 				t.Fatal("native response was not valid JSON")
 			}
 			public := "tempo capture: kind=SessionStart; code=state_busy; durability=not_committed"
-			const prefix = "\ntempo hook diagnostics v2: "
+			const prefix = "\ntempo hook diagnostics v3: "
 			if opt != "1" {
 				if response.Hook.Kind != "SessionStart" || response.Hook.Text != public {
 					t.Error("default public three-field diagnostic changed")
@@ -82,19 +82,22 @@ func TestQAHostAdmissionDiagnosticsFailureOnlyOptIn(t *testing.T) {
 					t.Error("opt-in omitted bounded admission metadata")
 				} else {
 					var rows []struct {
-						Ordinal        int      `json:"ordinal"`
-						Start          int64    `json:"start_us"`
-						End            int64    `json:"end_us"`
-						Deadline       int64    `json:"deadline_us"`
-						CallerDeadline int64    `json:"caller_deadline_us"`
-						Phase          [8]int64 `json:"phase_us"`
-						Caller         string   `json:"caller"`
-						Retry          bool     `json:"retry"`
-						NativePhase    string   `json:"native_phase"`
-						NativeCategory string   `json:"native_category"`
-						NativeCode     int32    `json:"native_code"`
-						NativeCleanup  bool     `json:"native_cleanup"`
-						Eligibility    *struct {
+						Ordinal           int      `json:"ordinal"`
+						Start             int64    `json:"start_us"`
+						End               int64    `json:"end_us"`
+						Deadline          int64    `json:"deadline_us"`
+						EffectiveDeadline int64    `json:"effective_deadline_us"`
+						Excluded          int64    `json:"eligibility_excluded_us"`
+						PolicyOutcome     string   `json:"eligibility_outcome"`
+						CallerDeadline    int64    `json:"caller_deadline_us"`
+						Phase             [8]int64 `json:"phase_us"`
+						Caller            string   `json:"caller"`
+						Retry             bool     `json:"retry"`
+						NativePhase       string   `json:"native_phase"`
+						NativeCategory    string   `json:"native_category"`
+						NativeCode        int32    `json:"native_code"`
+						NativeCleanup     bool     `json:"native_cleanup"`
+						Eligibility       *struct {
 							P [7]int64    `json:"p"`
 							R [6][9]int64 `json:"r"`
 							C [2]int64    `json:"c"`
@@ -139,6 +142,11 @@ func TestQAHostAdmissionDiagnosticsFailureOnlyOptIn(t *testing.T) {
 							}
 							if row.Ordinal != i+1 || row.Start < 0 || row.End < row.Start || row.Deadline <= row.Start || row.Deadline > row.CallerDeadline || row.CallerDeadline > 900000 || row.Caller != "live" || !row.Retry {
 								t.Error("attempt/deadline evidence changed", i)
+							}
+							lower := min(row.Deadline+row.Excluded, row.CallerDeadline)
+							upper := min(row.Deadline+row.Excluded+1, row.CallerDeadline)
+							if row.PolicyOutcome != "paused" || row.Excluded < 0 || row.Phase[5]-row.Phase[4] < row.Excluded || row.Phase[5]-row.Phase[4]-row.Excluded > 1 || row.EffectiveDeadline < lower || row.EffectiveDeadline > upper || row.EffectiveDeadline < row.Deadline {
+								t.Error("policy exclusion reset or misreported the original allowance", i)
 							}
 							for p, stamp := range row.Phase {
 								if stamp < row.Start || stamp > row.End || p > 0 && stamp < row.Phase[p-1] {

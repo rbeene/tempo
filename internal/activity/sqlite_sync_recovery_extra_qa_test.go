@@ -308,8 +308,11 @@ func TestSQLiteSyncRecoveryExtraManualProviderBoundaries(t *testing.T) {
 			_, err = q.reopen().SyncResolve(context.Background(), in, qaSyncNoProvider(t))
 			sxQAUnknown(t, err, in.RequestID)
 			snQANonceOnly(t, recovered, snQARead(t, q, snQAID(300), in.RequestID))
-			fresh, err := q.reopen().SyncNow(context.Background(), SyncRunInput{RequestID: snQAID(461)}, qaSyncNoProvider(t))
+			freshContext, freshDiagnostics := withSQLiteSyncFailureDiagnostics(context.Background())
+			postsBeforeFresh := len(p.posts)
+			fresh, err := q.reopen().SyncNow(freshContext, SyncRunInput{RequestID: snQAID(461)}, qaSyncNoProvider(t))
 			if err != nil || fresh.AttemptedIDs == nil || len(fresh.AttemptedIDs) != 0 || fresh.RemainingCount != 1 || len(p.posts) != 1 {
+				t.Log(sqliteSyncFailureDiagnosticLog(freshDiagnostics, true, len(p.posts) == postsBeforeFresh))
 				t.Fatal("failed attachment authorized rePOST", err)
 			}
 		})

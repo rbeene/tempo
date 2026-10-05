@@ -72,6 +72,7 @@ func (s *Service) ingestHostSQLite(ctx context.Context, e HostEvent) (HostReceip
 		}
 		return result, nil
 	}
+	admission.AcquireDeadline = prepared.AcquireDeadline
 	hostCaptureTraceMark(ctx, hostTraceWriterBegin)
 	c, tx, meta, found, err := sqliteOpenCapture(ctx, admission, sqliteio.Write)
 	hostCaptureTraceMark(ctx, hostTraceWriterEnd)
