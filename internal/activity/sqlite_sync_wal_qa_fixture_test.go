@@ -208,6 +208,12 @@ type mwQATrace struct {
 // Observation only: no injected result, SQL, provider or filesystem mutation.
 func mwQARun(t *testing.T, s *Service, id string) (SyncRun, error, *mwQATrace, time.Duration) {
 	t.Helper()
+	return mwQARunContext(t, context.Background(), s, id)
+}
+
+// The explicit post-reader-release retry alone supplies a diagnostic context.
+func mwQARunContext(t *testing.T, ctx context.Context, s *Service, id string) (SyncRun, error, *mwQATrace, time.Duration) {
+	t.Helper()
 	p := &mwQATrace{}
 	ncQAHooks(t, ncQASQLHooks{Observe: func(e ncQASQLEvent) {
 		p.mu.Lock()
@@ -257,7 +263,7 @@ func mwQARun(t *testing.T, s *Service, id string) (SyncRun, error, *mwQATrace, t
 	defer clear()
 	t.Cleanup(clear)
 	start := time.Now()
-	r, err := s.SyncNow(context.Background(), SyncRunInput{RequestID: id}, qaSyncNoProvider(t))
+	r, err := s.SyncNow(ctx, SyncRunInput{RequestID: id}, qaSyncNoProvider(t))
 	return r, err, p, time.Since(start)
 }
 

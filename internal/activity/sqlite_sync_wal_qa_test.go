@@ -99,8 +99,11 @@ func TestSQLiteSyncNowWALMaintenancePinnedReaderBusyThenExplicitRetry(t *testing
 		t.Fatal("checked guard probe close", err)
 	}
 	release()
-	run, err, trace, _ = mwQARun(t, q.reopen(), id)
+	retryContext, retryDiagnostic := withSQLiteSyncFailureDiagnostics(context.Background())
+	run, err, trace, _ = mwQARunContext(t, retryContext, q.reopen(), id)
 	if err != nil || run.State != "complete" || run.RequestID != id || run.RemainingCount != 1 || len(run.AttemptedIDs) != 0 || trace.checkpoints != 1 || trace.completed != 1 || trace.code != 0 {
+		// The unchanged no-provider dependency cannot return after provider construction.
+		t.Log(sqliteSyncFailureDiagnosticLog(retryDiagnostic, true, true))
 		t.Fatal("explicit same-ID retry after actual reader release", err)
 	}
 	mwQAMaintained(t, q.f, before, rows, run)

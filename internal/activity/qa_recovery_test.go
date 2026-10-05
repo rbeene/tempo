@@ -485,7 +485,7 @@ func TestQARecoveryLaterAttributionEpochResolvesBeforeEarlierBoundedUncertainty(
 	if err != nil {
 		t.Fatalf("disjoint later epoch blocked by bounded old uncertainty: %v", err)
 	}
-	s := h.snapshot()
+	s := qaRecoveryObservedSnapshot(h)
 	qaIntervals(t, s, [][2]int64{{7200, 7800}})
 	if s.ClosedIntervals[0].Attribution != second.Binding.Attribution {
 		t.Fatal("later recovery used historical attribution")
