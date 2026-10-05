@@ -33,7 +33,7 @@ func TestQAUIActivityActionPTYChild(t *testing.T) {
 	report := func(kind, msg string) { json.NewEncoder(f).Encode(map[string]string{"kind": kind, "message": msg}) }
 	startupStage := "owned-root"
 	stage := func(name string) { startupStage = name; report("startup-stage", name) }
-	startupError := func(err error) {
+	activityCode := func(err error) string {
 		code := "none"
 		if err != nil {
 			code = "non_domain"
@@ -46,8 +46,9 @@ func TestQAUIActivityActionPTYChild(t *testing.T) {
 				}
 			}
 		}
-		report("startup-result", startupStage+":"+code)
+		return code
 	}
+	startupError := func(err error) { report("startup-result", startupStage+":"+activityCode(err)) }
 	stage("owned-root")
 	root := os.Getenv("TEMPO_QA_ACTIVITY_ROOT")
 	if !filepath.IsAbs(root) {
@@ -141,7 +142,12 @@ func TestQAUIActivityActionPTYChild(t *testing.T) {
 	defer cancel(nil)
 	var active, writes atomic.Int32
 	submitted := ""
-	actions := &ui.ActivityActions{Status: service.Status, Review: service.Review, Preview: service.Preview, Resolve: func(ctx context.Context, in activity.ResolveInput) (activity.MutationResult, error) {
+	actions := &ui.ActivityActions{Status: service.Status, Review: func(ctx context.Context, in activity.ReviewInput) (activity.ReviewList, error) {
+		report("review-stage", "begin")
+		list, err := service.Review(ctx, in)
+		report("review-result", activityCode(err))
+		return list, err
+	}, Preview: service.Preview, Resolve: func(ctx context.Context, in activity.ResolveInput) (activity.MutationResult, error) {
 		writes.Add(1)
 		return service.Resolve(ctx, in)
 	}, Interrupt: func(ctx context.Context, in activity.InterruptInput) (activity.MutationResult, error) {
@@ -257,7 +263,16 @@ def startup_diagnostic():
  results=[v for v in results if len(v)==2 and v[0] in stages and v[1] in codes]
  tail=transcript[-4096:]
  markers=((b'--- FAIL:','test_fail'),(b'panic:','panic'),(b'actual Activity seed link failed:','seed_link_failure'),(b'seed no computer identity','seed_identity_failure'),(b'actual work seed:','seed_work_failure'),(b'actual observation seed:','seed_observe_failure'),(b'seed lacks actor','seed_actor_failure'),(b'actual uncertainty seed:','seed_interrupt_failure'),(b'uncertainty fixture invalid','seed_review_failure'))
- return json.dumps({'stage':observed[-1] if observed else 'unobserved','result':results[-1] if results else [],'child_exit':p.poll(),'terminal_tail_classes':[label for token,label in markers if token in tail]},sort_keys=True)
+ # Failure output retains only bounded enum values, never frame bodies or IDs.
+ review_results=[r['message'] for r in reports if r.get('kind')=='review-result' and r.get('message') in codes]
+ titles=('TEMPO','Activity actions','Timing uncertainties','Recovery','Recovery boundary','UTC recovery end','Recovery reason','Recovery preview','Review scoped change','Activity · Failed','Activity · Complete')
+ frame_titles=[]
+ for r in reports:
+  if r.get('kind')=='frame' and isinstance(r.get('message'),str):
+   heading=r['message'].split('\n')[0]
+   title=next((known for known in sorted(titles,key=len,reverse=True) if known in heading),None)
+   if title and (not frame_titles or frame_titles[-1]!=title):frame_titles=(frame_titles+[title])[-4:]
+ return json.dumps({'stage':observed[-1] if observed else 'unobserved','result':results[-1] if results else [],'review_started':any(r.get('kind')=='review-stage' and r.get('message')=='begin' for r in reports),'review_result':review_results[-1] if review_results else 'unobserved','frame_titles':frame_titles[-4:],'child_exit':p.poll(),'terminal_tail_classes':[label for token,label in markers if token in tail]},sort_keys=True)
 def until(pred,seconds=2):
  global diagnostic_failure
  deadline=time.monotonic()+seconds

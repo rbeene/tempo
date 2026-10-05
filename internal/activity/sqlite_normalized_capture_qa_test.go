@@ -1415,6 +1415,7 @@ func TestSQLiteNormalizedCaptureN10CapsHistoricalDuplicateMembershipAndConfirmOr
 			t.Fatal(err)
 		}
 	})
+	q.service.store.timeout = sqliteFlowTestLockTimeout() // Compare retained semantics under race; ordinary keeps the default250ms.
 	ncQACompare(t, q, qaEvent("A", "2", "1", "work", qaBindingA), 30, "", 1)
 	st := ncQAReadState(t, q)
 	a := st.Actors[actorKey(qaEvent("A", "1", "1", "work", "").Actor)]

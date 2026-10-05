@@ -66,7 +66,7 @@ func hapQACalibrate(t *testing.T, q *habQARun, e HostEvent, budget time.Duration
 	return last, p
 }
 
-func hapQAInvoke(t *testing.T, q *habQARun, e HostEvent, releaseOrdinal int) {
+func hapQAInvoke(t *testing.T, q *habQARun, e HostEvent, releaseOrdinal int, requireDeadlineCrossing bool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), q.plan.caller)
 	defer cancel()
@@ -122,7 +122,7 @@ func hapQAInvoke(t *testing.T, q *habQARun, e HostEvent, releaseOrdinal int) {
 		t.Error("failed post-policy admission changed full32 activity rows")
 	}
 	r, d := q.row, q.row.Eligibility
-	if q.callerErr != nil || r.EligibilityOutcome != "paused" || r.PhaseUS[4] < 0 || r.PhaseUS[4] >= r.DeadlineUS || r.PhaseUS[5] <= r.DeadlineUS || d == nil || d.D || d.P[0] < (q.plan.policyHold-20*time.Millisecond).Microseconds() || d.P[4] < 0 {
+	if q.callerErr != nil || r.EligibilityOutcome != "paused" || r.PhaseUS[4] < 0 || r.PhaseUS[4] >= r.DeadlineUS || r.PhaseUS[5] < r.PhaseUS[4] || (requireDeadlineCrossing && r.PhaseUS[5] <= r.DeadlineUS) || d == nil || d.D || d.P[0] < (q.plan.policyHold-20*time.Millisecond).Microseconds() || d.P[4] < 0 {
 		// Failure-only witness from already captured values; preserve the guard.
 		metadataUS, fingerprintUS := int64(-1), int64(-1)
 		notDropped := false
@@ -202,10 +202,19 @@ func TestSQLiteHostEligibilityAdmissionBranches(t *testing.T) {
 			// The separate six core deadline tests retain their original budgets.
 			budget, consume, policyHold := 250*time.Millisecond, 100*time.Millisecond, 190*time.Millisecond
 			caller := 900 * time.Millisecond
+			requireDeadlineCrossing := true
 			if sqliteFlowTestLockTimeout() != 0 {
 				budget, consume, policyHold = 600*time.Millisecond, 400*time.Millisecond, 210*time.Millisecond
 				// Only this measured functional call allows instrumented post-BEGIN work.
 				caller = 2 * time.Second
+				if name == "new-root-prompt-injected-resolver-generic-capture-path" {
+					// Generic capture repeats checked native admission after the callback.
+					// Under race, test its committed state and exact policy exclusion with
+					// the existing functional allowance; the six core deadline cases
+					// independently retain forced crossing and spent-remainder refusal.
+					budget = sqliteFlowTestLockTimeout()
+					requireDeadlineCrossing = false
+				}
 			}
 			q := habQANew(t, habQAPlan{consume: consume, policyHold: policyHold, caller: caller})
 			h := q.h
@@ -213,7 +222,7 @@ func TestSQLiteHostEligibilityAdmissionBranches(t *testing.T) {
 				// Keep the independent real policy metadata acquisition cap at250ms.
 				h.s = New(Options{Path: h.path, LockTimeout: budget, HookPolicies: h.policies, Clock: h.s.clock})
 			}
-			t.Logf("postcore functional admission_us=%d pre_policy_us=%d policy_hold_us=%d caller_us=%d", budget.Microseconds(), consume.Microseconds(), policyHold.Microseconds(), caller.Microseconds())
+			t.Logf("postcore functional admission_us=%d pre_policy_us=%d policy_hold_us=%d caller_us=%d require_deadline_crossing=%t", budget.Microseconds(), consume.Microseconds(), policyHold.Microseconds(), caller.Microseconds(), requireDeadlineCrossing)
 			setup := func(e HostEvent) HostReceipt {
 				ctx, cancel := context.WithTimeout(context.Background(), 900*time.Millisecond)
 				defer cancel()
@@ -308,7 +317,7 @@ func TestSQLiteHostEligibilityAdmissionBranches(t *testing.T) {
 				}
 			}
 			calls := h.clockCalls
-			hapQAInvoke(t, q, e, ordinal)
+			hapQAInvoke(t, q, e, ordinal, requireDeadlineCrossing)
 			after, rows := mwQAAudit(t, h.f)
 			policyBytes, err := os.ReadFile(h.policyPath)
 			if err != nil {
